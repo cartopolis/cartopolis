@@ -33,7 +33,7 @@ pub fn header_action(ui: &mut egui::Ui, label: &str) -> egui::Response {
         egui::Button::new(
             egui::RichText::new(label)
                 .size(SIZE_BODY)
-                .color(p().accent_word),
+                .color(p32().accent_word),
         )
         .frame_when_inactive(false),
     )
@@ -179,18 +179,18 @@ pub(super) fn menu_entry_full(
     });
     let hovered = enabled && resp.hovered();
     let ink = match (enabled, selected, hovered) {
-        (false, _, _) => p().text_dim.gamma_multiply(0.6),
-        _ if danger => p().error,
-        (_, true, _) => p().accent_text,
-        (_, false, true) => p().cream,
-        _ => p().text,
+        (false, _, _) => p32().text_dim.gamma_multiply(0.6),
+        _ if danger => p32().error,
+        (_, true, _) => p32().accent_text,
+        (_, false, true) => p32().cream,
+        _ => p32().text,
     };
     let p = ui.painter();
     if hovered || resp.is_pointer_button_down_on() {
         let fill = if resp.is_pointer_button_down_on() {
-            self::p().accent_muted
+            self::p32().accent_muted
         } else {
-            self::p().surface_hover
+            self::p32().surface_hover
         };
         p.rect_filled(rect, CornerRadius::same(RADIUS_SM), fill);
     }
@@ -201,7 +201,7 @@ pub(super) fn menu_entry_full(
             rect.left_top() + egui::vec2(1.0, 5.0),
             egui::vec2(3.0, height - 10.0),
         );
-        p.rect_filled(bar, CornerRadius::same(2), self::p().accent);
+        p.rect_filled(bar, CornerRadius::same(2), self::p32().accent);
     }
     let x = rect.left() + 8.0;
     if !icon.is_empty() {
@@ -260,9 +260,9 @@ pub fn chip_sized(
 
 pub(super) fn chip_button(label: &str, selected: bool) -> egui::Button<'static> {
     let (fill, stroke, ink) = if selected {
-        (p().accent, p().accent_ring, p().on_accent)
+        (p32().accent, p32().accent_ring, p32().on_accent)
     } else {
-        (p().surface_raised, p().control_edge, p().text)
+        (p32().surface_raised, p32().control_edge, p32().text)
     };
     egui::Button::new(egui::RichText::new(label).size(SIZE_CHIP).color(ink))
         .fill(fill)
@@ -284,11 +284,11 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     // Frameless at rest: a header carries one obvious action, and boxing it makes
     // the title bar look like it has a second panel in it.
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (p().accent_muted, p().accent_ring, p().cream)
+        (p32().accent_muted, p32().accent_ring, p32().cream)
     } else if resp.hovered() {
-        (p().surface_hover, p().accent, p().cream)
+        (p32().surface_hover, p32().accent, p32().cream)
     } else {
-        (Color32::TRANSPARENT, Color32::TRANSPARENT, p().text_dim)
+        (Color32::TRANSPARENT, Color32::TRANSPARENT, p32().text_dim)
     };
     let p = ui.painter();
     p.rect(
@@ -330,11 +330,11 @@ pub fn kebab_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(side), egui::Sense::click());
     let resp = named(ui, resp, "More");
     let (fill, ring, ink) = if resp.is_pointer_button_down_on() {
-        (p().accent_muted, p().accent_ring, p().cream)
+        (p32().accent_muted, p32().accent_ring, p32().cream)
     } else if resp.hovered() {
-        (p().surface_hover, p().accent, p().cream)
+        (p32().surface_hover, p32().accent, p32().cream)
     } else {
-        (p().surface_raised, p().control_edge, p().text_dim)
+        (p32().surface_raised, p32().control_edge, p32().text_dim)
     };
     let p = ui.painter();
     p.rect(
@@ -400,7 +400,7 @@ pub fn panel_header_with(
             egui::pos2(band.left(), band.bottom() - 0.5),
             egui::pos2(band.right(), band.bottom() - 0.5),
         ],
-        Stroke::new(1.0, p().overlay_line),
+        Stroke::new(1.0, p32().overlay_line),
     );
 
     let close;
@@ -429,7 +429,7 @@ pub fn panel_header_with(
                 egui::Label::new(
                     egui::RichText::new(title)
                         .font(FontId::new(SIZE_PANEL_TITLE, brand_family()))
-                        .color(p().cream),
+                        .color(p32().cream),
                 )
                 .truncate()
                 .selectable(false),

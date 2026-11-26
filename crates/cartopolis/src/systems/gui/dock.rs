@@ -922,8 +922,8 @@ fn space_switch(ui: &mut egui::Ui, width: f32, on: Space, unread: usize) -> Opti
     p.rect(
         rect,
         pill,
-        theme::p().map_fill,
-        egui::Stroke::new(1.0, theme::p().map_rim),
+        theme::p32().map_fill,
+        egui::Stroke::new(1.0, theme::p32().map_rim),
         egui::StrokeKind::Inside,
     );
     let inner = rect.shrink(4.0);
@@ -952,13 +952,13 @@ fn space_switch(ui: &mut egui::Ui, width: f32, on: Space, unread: usize) -> Opti
             picked = Some(side);
         }
         let (fill, ink) = if chosen {
-            (theme::p().accent, theme::p().on_accent)
+            (theme::p32().accent, theme::p32().on_accent)
         } else if resp.is_pointer_button_down_on() {
-            (theme::p().accent_muted, theme::p().cream)
+            (theme::p32().accent_muted, theme::p32().cream)
         } else if resp.hovered() {
-            (theme::p().surface_hover, theme::p().cream)
+            (theme::p32().surface_hover, theme::p32().cream)
         } else {
-            (egui::Color32::TRANSPARENT, theme::p().map_ink)
+            (egui::Color32::TRANSPARENT, theme::p32().map_ink)
         };
         p.rect_filled(r, pill, fill);
         let badge = (side == Space::Community && unread > 0).then(|| {
@@ -993,7 +993,7 @@ fn paint_segment(
         p.layout_no_wrap(
             b.to_string(),
             egui::FontId::proportional(11.0),
-            theme::p().on_gold,
+            theme::p32().on_gold,
         )
     });
     let badge_w = badge_g
@@ -1043,9 +1043,9 @@ fn paint_segment(
     if let Some(g) = badge_g {
         let w = g.size().x.max(8.0) + 10.0;
         let pill = egui::Rect::from_min_size(egui::pos2(x, y - 9.0), egui::vec2(w, 18.0));
-        p.rect_filled(pill, egui::CornerRadius::same(9), theme::p().gold);
+        p.rect_filled(pill, egui::CornerRadius::same(9), theme::p32().gold);
         let gs = g.size();
-        p.galley(pill.center() - gs / 2.0, g, theme::p().on_gold);
+        p.galley(pill.center() - gs / 2.0, g, theme::p32().on_gold);
     }
 }
 
@@ -1093,14 +1093,14 @@ fn search_bar(ui: &mut egui::Ui, width: f32, open: bool, face: Option<Face<'_>>)
     let p = ui.painter().clone();
     p.add(theme::card_shadow().as_shape(rect, pill));
     let ring = if open || resp.hovered() {
-        theme::p().accent
+        theme::p32().accent
     } else {
-        theme::p().map_rim
+        theme::p32().map_rim
     };
     p.rect(
         rect,
         pill,
-        theme::p().map_fill,
+        theme::p32().map_fill,
         egui::Stroke::new(if open { 1.5 } else { 1.0 }, ring),
         egui::StrokeKind::Inside,
     );
@@ -1110,12 +1110,12 @@ fn search_bar(ui: &mut egui::Ui, width: f32, open: bool, face: Option<Face<'_>>)
         egui::Align2::CENTER_CENTER,
         crate::systems::icons::SEARCH,
         egui::FontId::proportional(19.0),
-        theme::p().map_ink,
+        theme::p32().map_ink,
     );
     let mut job = egui::text::LayoutJob::simple_singleline(
         "Search places".to_string(),
         egui::FontId::proportional(theme::SIZE_VALUE),
-        theme::p().text_dim,
+        theme::p32().text_dim,
     );
     job.wrap =
         egui::text::TextWrapping::truncate_at_width((field.right() - rect.left() - 52.0).max(10.0));
@@ -1124,7 +1124,7 @@ fn search_bar(ui: &mut egui::Ui, width: f32, open: bool, face: Option<Face<'_>>)
     p.galley(
         egui::pos2(rect.left() + 44.0, y - gh / 2.0),
         g,
-        theme::p().text_dim,
+        theme::p32().text_dim,
     );
     out.search = resp.on_hover_text("Search places (Ctrl+L)").clicked();
 
@@ -1168,22 +1168,22 @@ pub(crate) fn paint_face(
             size,
         ),
         None => {
-            p.circle_filled(c, r, theme::p().surface_hover);
+            p.circle_filled(c, r, theme::p32().surface_hover);
             p.text(
                 c,
                 egui::Align2::CENTER_CENTER,
                 crate::systems::icons::APPEARANCE,
                 egui::FontId::proportional(size * 0.55),
-                theme::p().text_dim,
+                theme::p32().text_dim,
             );
         }
     }
     if lit {
-        p.circle_stroke(c, r + 1.5, egui::Stroke::new(2.0, theme::p().accent));
+        p.circle_stroke(c, r + 1.5, egui::Stroke::new(2.0, theme::p32().accent));
     }
     if waiting {
         let dot = c + egui::vec2(r * 0.72, -r * 0.72);
-        p.circle_filled(dot, 6.0, theme::p().surface);
+        p.circle_filled(dot, 6.0, theme::p32().surface);
         p.circle_filled(dot, 4.5, theme::BRAND);
     }
 }
@@ -1219,7 +1219,7 @@ fn word_under(painter: &egui::Painter, at: egui::Pos2, word: &str) {
     // a black shadow (2026-11-10, the dock's) all but vanished over a sunlit
     // city in the light theme, at 10.5 pt.
     let font = egui::FontId::new(theme::SIZE_SUB, theme::brand_family());
-    let edge = theme::p().map_fill;
+    let edge = theme::p32().map_fill;
     for (dx, dy) in [
         (-1.0, 0.0),
         (1.0, 0.0),
@@ -1243,7 +1243,7 @@ fn word_under(painter: &egui::Painter, at: egui::Pos2, word: &str) {
         egui::Align2::CENTER_CENTER,
         word,
         font,
-        theme::p().map_ink,
+        theme::p32().map_ink,
     );
 }
 

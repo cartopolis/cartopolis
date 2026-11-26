@@ -214,10 +214,9 @@ fn mode() -> Option<Mode> {
     })
 }
 
-/// An egui colour as Bevy's.
-fn c(colour: egui::Color32) -> Color {
-    let [r, g, b, a] = colour.to_array();
-    Color::srgba_u8(r, g, b, a)
+/// A theme colour as Bevy's.
+fn c(colour: theme::Rgba8) -> Color {
+    colour.to_bevy()
 }
 
 struct Faces {
@@ -226,7 +225,7 @@ struct Faces {
 }
 
 impl Faces {
-    fn text(&self, size: f32, colour: egui::Color32) -> (TextFont, TextColor) {
+    fn text(&self, size: f32, colour: theme::Rgba8) -> (TextFont, TextColor) {
         (
             TextFont {
                 font: self.body.clone().into(),
@@ -237,7 +236,7 @@ impl Faces {
         )
     }
 
-    fn strong(&self, size: f32, colour: egui::Color32) -> (TextFont, TextColor) {
+    fn strong(&self, size: f32, colour: theme::Rgba8) -> (TextFont, TextColor) {
         (
             TextFont {
                 font: self.semibold.clone().into(),

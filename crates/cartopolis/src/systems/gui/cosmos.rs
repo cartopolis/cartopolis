@@ -148,7 +148,7 @@ fn thousands(n: u64) -> String {
 /// A label with a dark halo, so it reads over anything.
 fn label(p: &egui::Painter, at: Pos2, align: egui::Align2, text: &str, size: f32, ink: Color32) {
     let font = egui::FontId::proportional(size);
-    let halo = alpha(theme::DARK.ink, ink.a() as f32 / 255.0);
+    let halo = alpha(theme::DARK32.ink, ink.a() as f32 / 255.0);
     for d in [
         vec2(1.0, 0.0),
         vec2(-1.0, 0.0),
@@ -1007,7 +1007,7 @@ fn render_cosmos_frame(
                 align: egui::Align2::LEFT_BOTTOM,
                 text: words.to_string(),
                 size: theme::SIZE_TINY,
-                ink: theme::DARK.text_dim,
+                ink: theme::DARK32.text_dim,
                 a,
             });
         }
@@ -1063,7 +1063,7 @@ fn render_cosmos_frame(
             align: egui::Align2::CENTER_BOTTOM,
             text: format!("Galactic centre · {} light years", thousands(GC_LY as u64)),
             size: theme::SIZE_SUB,
-            ink: theme::DARK.text,
+            ink: theme::DARK32.text,
             a: gx * apart(gc_at, sun_at, 30.0, 80.0) * fade_out(alt, 2.0e21, 6.0e21),
         });
         tags.push(Tag {
@@ -1071,7 +1071,7 @@ fn render_cosmos_frame(
             align: egui::Align2::CENTER_TOP,
             text: "Milky Way · you".into(),
             size: theme::SIZE_BODY,
-            ink: theme::DARK.cream,
+            ink: theme::DARK32.cream,
             a: gx * fade_in(alt, 2.0e21, 6.0e21),
         });
     }
@@ -1134,7 +1134,7 @@ fn render_cosmos_frame(
                     distance_words(g.light_years * LIGHT_YEAR_M)
                 ),
                 size: theme::SIZE_TINY,
-                ink: theme::DARK.text,
+                ink: theme::DARK32.text,
                 // At the top the whole survey is a dot; its names would bury it.
                 a: a * fade_out(alt, 1.0e26, 6.0e26),
             });
@@ -1162,7 +1162,7 @@ fn render_cosmos_frame(
             align: egui::Align2::LEFT_BOTTOM,
             text: "every galaxy mapped here · 2 billion light years".into(),
             size: theme::SIZE_TINY,
-            ink: theme::DARK.text,
+            ink: theme::DARK32.text,
             a: ea * fade_in(alt, 3.0e25, 3.0e26),
         });
     }
@@ -1205,7 +1205,7 @@ fn render_cosmos_frame(
             format!("star {i}"),
             q,
             if s.members > 1 { 3.5 } else { 2.5 },
-            theme::DARK.cream,
+            theme::DARK32.cream,
             a,
         );
         star_tags.push(Tag {
@@ -1213,7 +1213,7 @@ fn render_cosmos_frame(
             align: egui::Align2::LEFT_CENTER,
             text: format!("{} · {:.1} ly", s.name, s.light_years),
             size: theme::SIZE_TINY,
-            ink: theme::DARK.text,
+            ink: theme::DARK32.text,
             a,
         });
     }
@@ -1262,7 +1262,7 @@ fn render_cosmos_frame(
                 light_time_words(xyz.distance(earth))
             ),
             size: theme::SIZE_SUB,
-            ink: theme::DARK.cream,
+            ink: theme::DARK32.cream,
             a,
         });
     }
@@ -1320,7 +1320,14 @@ fn render_cosmos_frame(
         );
     }
     // Home: the ring stays on the Earth, wherever the Earth has shrunk to.
-    out.ring("home", earth_at, earth_r + 6.0, 2.0, theme::BRAND, bd);
+    out.ring(
+        "home",
+        earth_at,
+        earth_r + 6.0,
+        2.0,
+        theme::BRAND.to_egui(),
+        bd,
+    );
 
     // ── Labels, the nearer first ────────────────────────────────────────────
     let sun_words = if you_apart < 0.5 {
@@ -1334,7 +1341,7 @@ fn render_cosmos_frame(
             align: egui::Align2::CENTER_TOP,
             text: "Earth · you".into(),
             size: theme::SIZE_BODY,
-            ink: theme::DARK.cream,
+            ink: theme::DARK32.cream,
             a: bd * you_apart,
         },
         Tag {
@@ -1354,7 +1361,7 @@ fn render_cosmos_frame(
                 light_time_words(MOON_DIST_M)
             ),
             size: theme::SIZE_SUB,
-            ink: theme::DARK.cream,
+            ink: theme::DARK32.cream,
             a: ma,
         },
     ];
@@ -1413,7 +1420,7 @@ fn render_cosmos_frame(
                     .unwrap_or_default()
             },
             size: theme::SIZE_SUB,
-            ink: theme::DARK.text_dim,
+            ink: theme::DARK32.text_dim,
             a: bd,
         });
     }
@@ -1423,7 +1430,7 @@ fn render_cosmos_frame(
         text: "To scale in the middle, squeezed towards the edge · rings at light-travel distances"
             .into(),
         size: theme::SIZE_SUB,
-        ink: theme::DARK.text_dim,
+        ink: theme::DARK32.text_dim,
         a: ruler,
     });
     // Clear of the rail on the right and of the captions and the bar below.

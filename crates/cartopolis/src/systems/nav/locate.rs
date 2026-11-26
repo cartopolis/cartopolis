@@ -909,9 +909,9 @@ fn paint_accuracy_halo(painter: &egui::Painter, here: egui::Pos2, radius: Option
         here,
         radius,
         egui::Color32::from_rgba_unmultiplied(
-            theme::p().accent.r(),
-            theme::p().accent.g(),
-            theme::p().accent.b(),
+            theme::p32().accent.r(),
+            theme::p32().accent.g(),
+            theme::p32().accent.b(),
             HALO_FILL_ALPHA,
         ),
     );
@@ -920,7 +920,7 @@ fn paint_accuracy_halo(painter: &egui::Painter, here: egui::Pos2, radius: Option
         radius,
         egui::Stroke::new(
             HALO_RIM,
-            theme::p().accent_ring.gamma_multiply(HALO_RIM_ALPHA),
+            theme::p32().accent_ring.gamma_multiply(HALO_RIM_ALPHA),
         ),
     );
 }
@@ -940,8 +940,8 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
     // floating over it — the pins do the same and for the same reason.
     painter.circle_filled(here, SHADOW_R, egui::Color32::from_black_alpha(50));
     let Some(forward) = facing else {
-        painter.circle_filled(here, DOT_R, theme::p().accent);
-        painter.circle_stroke(here, DOT_R, egui::Stroke::new(DOT_RIM, theme::p().cream));
+        painter.circle_filled(here, DOT_R, theme::p32().accent);
+        painter.circle_stroke(here, DOT_R, egui::Stroke::new(DOT_RIM, theme::p32().cream));
         return;
     };
     // Screen-space right, for a screen whose y grows downward.
@@ -961,7 +961,7 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
     for tri in [[nose, left, notch], [nose, notch, right_tail]] {
         painter.add(egui::Shape::convex_polygon(
             tri.to_vec(),
-            theme::p().accent,
+            theme::p32().accent,
             egui::Stroke::NONE,
         ));
     }
@@ -969,7 +969,7 @@ fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option
     // hides the shared edge the fill was split on.
     painter.add(egui::Shape::closed_line(
         vec![nose, left, notch, right_tail],
-        egui::Stroke::new(KITE_RIM, theme::p().cream),
+        egui::Stroke::new(KITE_RIM, theme::p32().cream),
     ));
 }
 

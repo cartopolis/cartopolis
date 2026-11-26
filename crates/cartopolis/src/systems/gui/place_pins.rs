@@ -100,19 +100,21 @@ fn sharing_chip(ctx: &egui::Context, lines: &[(String, String)]) -> Option<Strin
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
-                .fill(theme::REAL_LOCATION)
+                .fill(theme::REAL_LOCATION.to_egui())
                 .corner_radius(12.0)
                 .inner_margin(egui::Margin::symmetric(10, 5))
                 .show(ui, |ui| {
                     for (channel, line) in lines {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(line).color(theme::DARK.ink));
+                            ui.label(egui::RichText::new(line).color(theme::DARK32.ink));
                             // A word on the location-sharing chip, whose fill is one
                             // colour in both themes, so its ink is the dark theme's
                             // whatever the palette.
                             // egui's own: the theme's buttons would take the palette's ink.
                             let word = egui::Button::new(
-                                egui::RichText::new("Stop").color(theme::DARK.ink).strong(),
+                                egui::RichText::new("Stop")
+                                    .color(theme::DARK32.ink)
+                                    .strong(),
                             );
                             if ui.add(word).clicked() {
                                 stop = Some(channel.clone());
@@ -1050,9 +1052,9 @@ fn pin(
                 centre,
                 r * HOLE_R,
                 egui::Color32::from_rgba_unmultiplied(
-                    theme::DARK.cream.r(),
-                    theme::DARK.cream.g(),
-                    theme::DARK.cream.b(),
+                    theme::DARK32.cream.r(),
+                    theme::DARK32.cream.g(),
+                    theme::DARK32.cream.b(),
                     235,
                 ),
             );
@@ -1108,7 +1110,7 @@ fn point_pin(
             let mut job = egui::text::LayoutJob::simple_singleline(
                 name.to_string(),
                 font.clone(),
-                theme::DARK.ink,
+                theme::DARK32.ink,
             );
             job.wrap = egui::text::TextWrapping::truncate_at_width(170.0);
             let galley = p.layout_job(job);
@@ -1142,34 +1144,34 @@ fn point_pin(
                     egui::pos2(tip.x + 1.0, dot.y),
                 ),
                 egui::CornerRadius::ZERO,
-                theme::DARK.cream,
+                theme::DARK32.cream,
             );
             p.circle(
                 dot,
                 DOT_R,
-                theme::DARK.cream,
-                egui::Stroke::new(2.0, theme::DARK.ink),
+                theme::DARK32.cream,
+                egui::Stroke::new(2.0, theme::DARK32.ink),
             );
             let fill = if response.hovered() {
                 egui::Color32::WHITE
             } else {
-                theme::DARK.cream
+                theme::DARK32.cream
             };
             p.rect_filled(head, egui::CornerRadius::same(14), fill);
             let n = egui::pos2(head.left() + 4.0 + 11.0, head.center().y);
-            p.circle_filled(n, 11.0, theme::DARK.ink);
+            p.circle_filled(n, 11.0, theme::DARK32.ink);
             p.text(
                 n,
                 egui::Align2::CENTER_CENTER,
                 number,
                 egui::FontId::proportional(12.0),
-                theme::DARK.cream,
+                theme::DARK32.cream,
             );
             let gs = galley.size();
             p.galley(
                 egui::pos2(n.x + 11.0 + 7.0, head.center().y - gs.y / 2.0),
                 galley,
-                theme::DARK.ink,
+                theme::DARK32.ink,
             );
             response
         })
@@ -1207,7 +1209,7 @@ pub fn paint_pin_glyph(painter: &egui::Painter, rect: egui::Rect, color: egui::C
         color,
         egui::Stroke::new(1.0, rim),
     ));
-    painter.circle_filled(centre, r * HOLE_R, theme::DARK.cream);
+    painter.circle_filled(centre, r * HOLE_R, theme::DARK32.cream);
 }
 
 /// Outline of the pin: the tip, then the head circle's arc from one tangent
@@ -1238,7 +1240,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
     let font = egui::FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
-        .layout_no_wrap(name.to_string(), font, theme::DARK.cream);
+        .layout_no_wrap(name.to_string(), font, theme::DARK32.cream);
     let pad = theme::CHIP_PADDING;
     let mut chip = egui::Rect::from_center_size(
         egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
@@ -1252,7 +1254,7 @@ fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: 
     ));
     let painter = ui.painter();
     painter.rect_filled(chip, theme::RADIUS_SM, theme::LABEL_CHIP);
-    painter.galley(chip.min + pad, galley, theme::DARK.cream);
+    painter.galley(chip.min + pad, galley, theme::DARK32.cream);
 }
 
 #[cfg(test)]

@@ -521,7 +521,7 @@ pub fn render_place_names(
                 painter.rect_stroke(
                     pill,
                     egui::CornerRadius::same(theme::RADIUS_PILL),
-                    egui::Stroke::new(1.5, theme::DARK.accent),
+                    egui::Stroke::new(1.5, theme::DARK32.accent),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -599,7 +599,7 @@ fn view_altitude_m(p: &Place) -> f64 {
 }
 
 /// The dark pill a banner and a station share.
-const CHIP: egui::Color32 = theme::LABEL_CHIP;
+const CHIP: egui::Color32 = theme::LABEL_CHIP.to_egui();
 
 /// What one name took on the screen: where it answers a click, the pill to
 /// ring in the accent while the pointer is on it (a banner has one), and its
@@ -633,12 +633,12 @@ fn banner(
         _ => 12.0,
     };
     let font = egui::FontId::new(name_size, theme::brand_family());
-    let name = painter.layout_no_wrap(p.name.clone(), font, theme::DARK.cream);
+    let name = painter.layout_no_wrap(p.name.clone(), font, theme::DARK32.cream);
     let pop = (p.population > 0).then(|| {
         painter.layout_no_wrap(
             population_label(p.population),
             egui::FontId::new(name_size - 2.5, theme::brand_family()),
-            theme::DARK.ink,
+            theme::DARK32.ink,
         )
     });
     let h = name_size + 9.5;
@@ -676,15 +676,15 @@ fn banner(
         painter.circle(
             at,
             4.0,
-            theme::DARK.cream,
-            egui::Stroke::new(1.5, theme::DARK.ink),
+            theme::DARK32.cream,
+            egui::Stroke::new(1.5, theme::DARK32.ink),
         );
     }
     painter.rect(
         rect,
         egui::CornerRadius::same(theme::RADIUS_PILL),
         CHIP,
-        egui::Stroke::new(1.0, theme::DARK.overlay_line),
+        egui::Stroke::new(1.0, theme::DARK32.overlay_line),
         egui::StrokeKind::Inside,
     );
     let mut x = rect.min.x + 3.0;
@@ -694,15 +694,15 @@ fn banner(
         painter.rect_filled(
             badge,
             egui::CornerRadius::same(theme::RADIUS_PILL),
-            theme::DARK.accent,
+            theme::DARK32.accent,
         );
-        painter.galley(badge.center() - pop.size() / 2.0, pop, theme::DARK.ink);
+        painter.galley(badge.center() - pop.size() / 2.0, pop, theme::DARK32.ink);
         x = badge.max.x + 6.0;
     } else {
         x += 6.0;
     }
     let y = rect.center().y - name.size().y / 2.0;
-    painter.galley(egui::pos2(x, y), name, theme::DARK.cream);
+    painter.galley(egui::pos2(x, y), name, theme::DARK32.cream);
     Some(Drawn {
         hit,
         pill: Some(rect),
@@ -725,7 +725,7 @@ fn station(
         painter.layout_no_wrap(
             p.name.clone(),
             egui::FontId::new(11.5, theme::brand_family()),
-            theme::DARK.cream,
+            theme::DARK32.cream,
         )
     });
     let w = name
@@ -748,9 +748,9 @@ fn station(
             look,
         });
     }
-    painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::DARK.accent));
+    painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::DARK32.accent));
     // The train: a body, a window line, two wheels.
-    let s = egui::Stroke::new(1.3, theme::DARK.cream);
+    let s = egui::Stroke::new(1.3, theme::DARK32.cream);
     let body = egui::Rect::from_min_max(at + egui::vec2(-3.5, -4.0), at + egui::vec2(3.5, 2.0));
     painter.rect_stroke(body, 1.0, s, egui::StrokeKind::Middle);
     painter.line_segment([at + egui::vec2(-3.5, 0.0), at + egui::vec2(3.5, 0.0)], s);
@@ -787,7 +787,7 @@ fn district(
         0.0,
         egui::TextFormat {
             font_id: egui::FontId::new(size, theme::brand_family()),
-            color: theme::DARK.cream,
+            color: theme::DARK32.cream,
             extra_letter_spacing: 1.4,
             ..Default::default()
         },
@@ -831,7 +831,7 @@ fn haloed(painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui:
     ] {
         painter.galley_with_override_text_color(pos + d, galley.clone(), halo);
     }
-    painter.galley(pos, galley, theme::DARK.cream);
+    painter.galley(pos, galley, theme::DARK32.cream);
 }
 
 #[cfg(test)]

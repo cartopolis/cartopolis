@@ -37,7 +37,7 @@ pub const CAN_SIGN_IN: &str = "Can sign in (off: stopped at the next sign-in)";
 
 /// Admin's colour, everywhere it appears: the web page's gold.
 fn gold() -> egui::Color32 {
-    theme::p().warn
+    theme::p32().warn
 }
 
 /// How often the open-report count behind the You page's badge is refreshed.
@@ -790,7 +790,7 @@ pub fn render_admin_panel(
     )
     .frame(
         egui::Frame::NONE
-            .fill(theme::p().panel)
+            .fill(theme::p32().panel)
             .inner_margin(egui::Margin::symmetric(12, 10)),
     )
     .show_collapsible(egui.ui_mut(), &mut open, |ui| {
@@ -1101,17 +1101,17 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                 ui.label(
                     egui::RichText::new(&r.subject_username)
                         .size(14.5)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(short_time(&r.created_at))
                             .size(12.0)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                 });
             });
-            chip(ui, reason_word(&r.reason), theme::BRAND);
+            chip(ui, reason_word(&r.reason), theme::BRAND.to_egui());
             let said = report_said(r);
             if !said.is_empty() {
                 ui.add(
@@ -1119,13 +1119,13 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
                         egui::RichText::new(format!("\u{201c}{said}\u{201d}"))
                             .italics()
                             .size(13.0)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     )
                     .truncate(),
                 );
             }
             let by = reported_by(r);
-            ui.label(egui::RichText::new(by).size(12.0).color(theme::p().line));
+            ui.label(egui::RichText::new(by).size(12.0).color(theme::p32().line));
         });
     let rect = inner.response.rect;
     let resp = ui.interact(rect, ui.id().with(("report", r.id)), egui::Sense::click());
@@ -1134,7 +1134,7 @@ fn report_row(ui: &mut egui::Ui, r: &Report) -> egui::Response {
         ui.painter().rect_stroke(
             rect,
             egui::CornerRadius::same(8),
-            egui::Stroke::new(1.0, theme::p().line),
+            egui::Stroke::new(1.0, theme::p32().line),
             egui::StrokeKind::Inside,
         );
     }
@@ -1155,7 +1155,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
         .show(ui, |ui| {
             // The line as it was reported, or the reporter's own words.
             egui::Frame::NONE
-                .fill(theme::p().surface_raised)
+                .fill(theme::p32().surface_raised)
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
@@ -1164,14 +1164,14 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                         ui.label(
                             egui::RichText::new(format!("\u{201c}{m}\u{201d}"))
                                 .size(14.0)
-                                .color(theme::p().text),
+                                .color(theme::p32().text),
                         );
                     }
                     if !r.note.is_empty() {
                         ui.label(
                             egui::RichText::new(format!("Note: {}", r.note))
                                 .size(13.0)
-                                .color(theme::p().text),
+                                .color(theme::p32().text),
                         );
                     }
                     ui.label(
@@ -1184,7 +1184,7 @@ fn report_page(ui: &mut egui::Ui, admin: &mut AdminState, identity: &AuthIdentit
                             short_time(&r.created_at)
                         ))
                         .size(12.0)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                     );
                 });
             ui.add_space(8.0);
@@ -1305,7 +1305,11 @@ fn accounts_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                     } else {
                         theme::RowEnd::Word(status)
                     };
-                    let tone = if a.disabled { theme::p().error } else { gold() };
+                    let tone = if a.disabled {
+                        theme::p32().error
+                    } else {
+                        gold()
+                    };
                     let icon = if a.disabled {
                         icons::CLEAR
                     } else {
@@ -1446,17 +1450,17 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                 ui.label(
                                     egui::RichText::new(&role.name)
                                         .size(14.5)
-                                        .color(theme::p().cream),
+                                        .color(theme::p32().cream),
                                 );
                                 if role.built_in {
-                                    chip(ui, "built in", theme::p().text_dim);
+                                    chip(ui, "built in", theme::p32().text_dim);
                                 }
                             });
                             let people = role_people(role);
                             ui.label(
                                 egui::RichText::new(people)
                                     .size(12.0)
-                                    .color(theme::p().text_dim),
+                                    .color(theme::p32().text_dim),
                             );
                             let may = role_may(role);
                             if !may.is_empty() {
@@ -1464,7 +1468,7 @@ fn roles_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                                     egui::Label::new(
                                         egui::RichText::new(may.join(" · "))
                                             .size(12.0)
-                                            .color(theme::p().text),
+                                            .color(theme::p32().text),
                                     )
                                     .wrap(),
                                 );
@@ -1514,12 +1518,12 @@ fn claims_page(ui: &mut egui::Ui, admin: &mut AdminState) {
                             ui.label(
                                 egui::RichText::new(claim_place(c))
                                     .size(14.5)
-                                    .color(theme::p().cream),
+                                    .color(theme::p32().cream),
                             );
                             ui.label(
                                 egui::RichText::new(claim_holder(c))
                                     .size(12.0)
-                                    .color(theme::p().text_dim),
+                                    .color(theme::p32().text_dim),
                             );
                             if theme::confirm_button(
                                 ui,

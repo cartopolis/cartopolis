@@ -506,8 +506,8 @@ fn draw_sheet(
         .show(ctx, |ui| {
             crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::NONE
-                .fill(theme::p().panel)
-                .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
+                .fill(theme::p32().panel)
+                .stroke(egui::Stroke::new(1.0, theme::p32().panel_rim))
                 .shadow(theme::card_shadow())
                 .corner_radius(corner)
                 .inner_margin(egui::Margin {
@@ -548,7 +548,7 @@ struct SheetIn<'a> {
 
 fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, close: &mut bool) {
     use crate::systems::theme::RowEnd;
-    let accent = theme::p().accent;
+    let accent = theme::p32().accent;
     // Who you are, and the close.
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
@@ -575,7 +575,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
                                 theme::SIZE_HEADING,
                                 theme::brand_family(),
                             ))
-                            .color(theme::p().cream),
+                            .color(theme::p32().cream),
                     )
                     .truncate(),
                 );
@@ -584,7 +584,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
                         egui::Label::new(
                             egui::RichText::new(sub)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         )
                         .truncate(),
                     );
@@ -671,7 +671,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
                     .then(|| format!("{waiting} waiting"))
                     .as_deref(),
                 RowEnd::Badge(waiting),
-                theme::p().warn,
+                theme::p32().warn,
             )
             .clicked()
             {
@@ -756,7 +756,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             ui.painter().rect_filled(
                 rect,
                 egui::CornerRadius::same(theme::RADIUS),
-                theme::p().surface_hover,
+                theme::p32().surface_hover,
             );
         }
         ui.painter().text(
@@ -764,7 +764,7 @@ fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, clo
             egui::Align2::CENTER_CENTER,
             label,
             egui::FontId::new(theme::SIZE_VALUE, theme::brand_family()),
-            theme::p().error,
+            theme::p32().error,
         );
         if resp.clicked() {
             *act = Some(SheetAct::SignOut);
@@ -1638,8 +1638,8 @@ fn xyz_fields(
 /// a lit rim, the shared corner radius and real margins.
 fn dialog_frame(style: &egui::Style) -> egui::Frame {
     egui::Frame::window(style)
-        .fill(theme::p().glass)
-        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
+        .fill(theme::p32().glass)
+        .stroke(egui::Stroke::new(1.0, theme::p32().overlay_line))
         .inner_margin(egui::Margin::symmetric(10, 10))
 }
 
@@ -2123,7 +2123,7 @@ fn surface_tab(
                         ui.label(
                             egui::RichText::new(note.as_str())
                                 .small()
-                                .color(crate::systems::theme::p().text_dim),
+                                .color(crate::systems::theme::p32().text_dim),
                         );
                     }
                 })

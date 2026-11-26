@@ -11,8 +11,8 @@ use super::*;
 /// invisible until you put two of them on screen at once.
 pub fn overlay_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(p().overlay)
-        .stroke(Stroke::new(1.0, p().overlay_line))
+        .fill(p32().overlay)
+        .stroke(Stroke::new(1.0, p32().overlay_line))
         .corner_radius(CornerRadius::same(RADIUS_LG))
         .inner_margin(Margin::symmetric(14, 12))
 }
@@ -47,7 +47,7 @@ pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
 /// `.stroke(...)` for the ones that carry a folder's colour.
 pub fn chip_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(LABEL_CHIP)
+        .fill(LABEL_CHIP.to_egui())
         .corner_radius(CornerRadius::same(RADIUS_SM))
         .inner_margin(Margin::symmetric(
             CHIP_PADDING.x as i8,
@@ -59,8 +59,8 @@ pub fn chip_frame() -> egui::Frame {
 /// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
 pub fn glass_frame() -> egui::Frame {
     egui::Frame::NONE
-        .fill(p().glass)
-        .stroke(egui::Stroke::new(1.0, p().panel_rim))
+        .fill(p32().glass)
+        .stroke(egui::Stroke::new(1.0, p32().panel_rim))
         .corner_radius(CornerRadius::same(20))
         .inner_margin(Margin::symmetric(12, 10))
 }
@@ -92,7 +92,7 @@ pub fn halo_text_aligned(
                 align,
                 text,
                 font.clone(),
-                p().overlay,
+                p32().overlay,
             );
         }
     }
@@ -150,13 +150,13 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
     let hovered = was.as_ref().is_some_and(egui::Response::hovered);
     let focused = was.as_ref().is_some_and(egui::Response::has_focus);
     let fill = if !ui.is_enabled() {
-        p().accent_muted
+        p32().accent_muted
     } else if held {
-        p().accent_pressed
+        p32().accent_pressed
     } else if hovered {
-        p().accent_lift
+        p32().accent_lift
     } else {
-        p().accent
+        p32().accent
     };
     // Depth (see `lift_shadow`): the accent's glow under it and a lit top edge,
     // both gone while it is held — a pressed key is down in the glass. The glow
@@ -170,12 +170,12 @@ pub fn primary_button_sized(ui: &mut egui::Ui, label: &str, min_width: f32) -> e
             egui::RichText::new(label)
                 .size(SIZE_VALUE)
                 .strong()
-                .color(p().on_accent),
+                .color(p32().on_accent),
             egui::Atom::grow(),
         ))
         .fill(fill)
         .stroke(if focused {
-            Stroke::new(FOCUS_RING, p().accent_ring)
+            Stroke::new(FOCUS_RING, p32().accent_ring)
         } else {
             Stroke::NONE
         })
@@ -226,13 +226,13 @@ pub fn secondary_toggle(
     let gap = 6.0;
     let mut icon_g = (!icon.is_empty()).then(|| {
         ui.painter()
-            .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), p().accent)
+            .layout_no_wrap(icon.to_string(), FontId::proportional(17.0), p32().accent)
     });
     let word_g = (!label.is_empty()).then(|| {
         ui.painter().layout_no_wrap(
             label.to_string(),
             FontId::new(SIZE_BODY, brand_family()),
-            p().cream,
+            p32().cream,
         )
     });
     let content = |icon: &Option<std::sync::Arc<egui::Galley>>| {
@@ -275,15 +275,15 @@ pub fn secondary_toggle(
     // hub's soft teal tag. The hairline is [`Palette::control_edge`], the hub's
     // soft border a step firmer.
     let (fill, line, ink) = if !enabled {
-        (p().surface, p().surface_hover, p().cream)
+        (p32().surface, p32().surface_hover, p32().cream)
     } else if on {
-        (p().accent_muted, p().accent_muted, p().accent_word)
+        (p32().accent_muted, p32().accent_muted, p32().accent_word)
     } else if held {
-        (p().surface_hover, p().line, p().cream)
+        (p32().surface_hover, p32().line, p32().cream)
     } else if resp.hovered() {
-        (p().surface_raised, p().accent, p().cream)
+        (p32().surface_raised, p32().accent, p32().cream)
     } else {
-        (p().surface, p().control_edge, p().cream)
+        (p32().surface, p32().control_edge, p32().cream)
     };
     let p = ui.painter();
     if enabled && !held && !on {
@@ -365,8 +365,8 @@ pub(super) fn paint_focus_ring(
     // Outer first, wider, so the light ring is drawn over the middle of it and
     // what is left either side is a dark edge on both flanks.
     for (width, colour) in [
-        (FOCUS_RING * 2.0, self::p().ink),
-        (FOCUS_RING, self::p().cream),
+        (FOCUS_RING * 2.0, self::p32().ink),
+        (FOCUS_RING, self::p32().cream),
     ] {
         let stroke = Stroke::new(width, colour);
         if round {
@@ -397,7 +397,7 @@ pub fn round_button(
     tooltip: &str,
     selected: bool,
 ) -> egui::Response {
-    round_button_on(ui, icon, tooltip, selected, (p().map_fill, p().map_rim))
+    round_button_on(ui, icon, tooltip, selected, (p32().map_fill, p32().map_rim))
 }
 
 pub(super) fn round_button_on(
@@ -412,9 +412,9 @@ pub(super) fn round_button_on(
     let resp = named(ui, resp, tooltip);
     let hovered = resp.hovered();
     let (fill, ring, ink) = match (selected, hovered) {
-        (true, _) => (p().accent, p().accent_ring, p().on_accent),
-        (false, true) => (p().surface_hover, p().accent, p().cream),
-        (false, false) => (rest.0, rest.1, p().map_ink),
+        (true, _) => (p32().accent, p32().accent_ring, p32().on_accent),
+        (false, true) => (p32().surface_hover, p32().accent, p32().cream),
+        (false, false) => (rest.0, rest.1, p32().map_ink),
     };
     // Under the finger the disc gives a little (`motion::press`): the one
     // acknowledgement a painted control can make before its action shows.
@@ -452,11 +452,11 @@ pub fn named(ui: &egui::Ui, resp: egui::Response, label: &str) -> egui::Response
 /// Hang-up red: the one control in the app that is red at rest, because
 /// ending a call is the action every phone draws in it, and a person reaching
 /// for it in a hurry looks for the colour before the shape.
-pub const CALL_END_RED: Color32 = Color32::from_rgb(0xD6, 0x45, 0x45);
+pub const CALL_END_RED: Rgba8 = Rgba8::from_rgb(0xD6, 0x45, 0x45);
 
 /// Answer green: the other half of [`CALL_END_RED`], on the one screen where
 /// both appear — a call coming in.
-pub const CALL_ACCEPT_GREEN: Color32 = Color32::from_rgb(0x2E, 0xA0, 0x5A);
+pub const CALL_ACCEPT_GREEN: Rgba8 = Rgba8::from_rgb(0x2E, 0xA0, 0x5A);
 
 /// What a [`call_button`] is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -500,24 +500,28 @@ pub fn call_button(
             c
         };
         // The glyph on a call colour is white in both themes, as on a phone.
-        (c, c, DARK.cream)
+        (c, c, DARK32.cream)
     };
     // The frosted plate of a switch that is on: white over the dark call
     // screen, black over a light banner.
     let veil = |a: u8| {
-        if p().dark {
+        if p32().dark {
             Color32::from_white_alpha(a)
         } else {
             Color32::from_black_alpha(a / 2)
         }
     };
     let (fill, ring, ink) = match tone {
-        CallTone::HangUp => solid(CALL_END_RED),
-        CallTone::Accept => solid(CALL_ACCEPT_GREEN),
+        CallTone::HangUp => solid(CALL_END_RED.to_egui()),
+        CallTone::Accept => solid(CALL_ACCEPT_GREEN.to_egui()),
         CallTone::Off => (
-            if hovered { p().accent_ring } else { p().cream },
-            p().accent_ring,
-            p().ink,
+            if hovered {
+                p32().accent_ring
+            } else {
+                p32().cream
+            },
+            p32().accent_ring,
+            p32().ink,
         ),
         CallTone::On => (
             veil(if pressed {
@@ -528,7 +532,7 @@ pub fn call_button(
                 38
             }),
             veil(46),
-            p().cream,
+            p32().cream,
         ),
     };
     paint_disc(
@@ -575,7 +579,7 @@ pub(super) fn shadow(offset: [i8; 2], blur: u8, alpha: u8) -> Shadow {
         offset,
         blur,
         spread: 0,
-        color: Color32::from_black_alpha((f32::from(alpha) * p().shadow).round() as u8),
+        color: Color32::from_black_alpha((f32::from(alpha) * p32().shadow).round() as u8),
     }
 }
 
@@ -598,7 +602,7 @@ pub(super) fn segment_shadow() -> Shadow {
 /// small shadow ([`segmented`], the Community | World switch).
 pub fn paint_raised(painter: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
     painter.add(segment_shadow().as_shape(rect, corner));
-    painter.rect_filled(rect, corner, p().surface_raised);
+    painter.rect_filled(rect, corner, p32().surface_raised);
 }
 
 /// A card in a panel, painted: its [`card_shadow`] and then its fill. For the
@@ -663,7 +667,7 @@ pub(crate) fn level_bar(ui: &mut egui::Ui, meter: f32, peak: f32) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, egui::CornerRadius::same(RADIUS_SM), super::p().ink);
+    p.rect_filled(rect, egui::CornerRadius::same(RADIUS_SM), super::p32().ink);
     let inner = rect.shrink2(egui::vec2(4.0, 4.0));
     let gap = 2.0;
     let n = METER_SEGMENTS as f32;
@@ -702,8 +706,8 @@ fn segment_colour(at: f32) -> egui::Color32 {
         return meter_colour(at);
     }
     let t = (at / 0.75).clamp(0.0, 1.0);
-    let low = egui::Rgba::from(p().accent_pressed);
-    let high = egui::Rgba::from(p().accent_bright);
+    let low = egui::Rgba::from(p32().accent_pressed);
+    let high = egui::Rgba::from(p32().accent_bright);
     egui::Color32::from(low * (1.0 - t) + high * t)
 }
 
@@ -717,10 +721,10 @@ fn segment_colour(at: f32) -> egui::Color32 {
 /// monochrome palette still says in colour.
 pub(crate) fn meter_colour(meter: f32) -> egui::Color32 {
     if meter > 0.9 {
-        p().error
+        p32().error
     } else if meter > 0.75 {
-        p().warn
+        p32().warn
     } else {
-        p().accent
+        p32().accent
     }
 }

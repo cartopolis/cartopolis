@@ -170,14 +170,14 @@ fn ring_vars() -> String {
          --ring-ink: {}; --ring-cream: {}; --ring-dim: {}; --ring-orbit: {}; \
          --ring-chip: {}; --ring-cross: {}",
         css(theme::BRAND),
-        css(egui::Color32::WHITE),
+        css(theme::Rgba8::WHITE),
         css(p.glass),
         css(p.overlay_line),
         css(p.text),
         css(p.cream),
         css(p.text_dim),
         // The orbit's faint white, as `action_ring::show` strokes it.
-        css(egui::Color32::from_white_alpha(40)),
+        css(theme::Rgba8::WHITE.with_alpha(40)),
         css(theme::LABEL_CHIP),
         css(theme::DARK.text_dim),
     )

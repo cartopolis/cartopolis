@@ -781,8 +781,8 @@ pub(crate) fn rule_word(r: JoinRule) -> &'static str {
 fn rule_tone(r: JoinRule) -> egui::Color32 {
     match r {
         JoinRule::Open => egui::Color32::from_rgb(0x9F, 0xD3, 0xB4),
-        JoinRule::Ask => theme::p().warn,
-        JoinRule::Invite => theme::p().text_dim,
+        JoinRule::Ask => theme::p32().warn,
+        JoinRule::Invite => theme::p32().text_dim,
     }
 }
 
@@ -831,7 +831,7 @@ fn page_head(
                 egui::Label::new(
                     egui::RichText::new(icons::CHEVRON_LEFT)
                         .size(26.0)
-                        .color(theme::p().text),
+                        .color(theme::p32().text),
                 )
                 .sense(egui::Sense::click()),
             );
@@ -854,7 +854,7 @@ fn page_head(
                         egui::Label::new(
                             egui::RichText::new(name)
                                 .font(egui::FontId::new(theme::SIZE_TITLE, theme::brand_family()))
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         )
                         .truncate(),
                     );
@@ -862,7 +862,7 @@ fn page_head(
                         egui::Label::new(
                             egui::RichText::new(facts)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         )
                         .truncate(),
                     );
@@ -888,7 +888,7 @@ fn title_row_with(
             egui::Label::new(
                 egui::RichText::new(icons::CHEVRON_LEFT)
                     .size(26.0)
-                    .color(theme::p().text),
+                    .color(theme::p32().text),
             )
             .sense(egui::Sense::click()),
         );
@@ -904,7 +904,7 @@ fn title_row_with(
                     theme::SIZE_PANEL_TITLE,
                     theme::brand_family(),
                 ))
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if theme::close_button(ui).clicked() {
@@ -966,7 +966,7 @@ fn card_row_with(
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
     let inner = egui::Frame::NONE
         .fill(if hovered {
-            theme::p().surface_hover
+            theme::p32().surface_hover
         } else {
             crate::systems::chats::row_card()
         })
@@ -982,7 +982,9 @@ fn card_row_with(
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(name).size(15.0).color(theme::p().cream),
+                                egui::RichText::new(name)
+                                    .size(15.0)
+                                    .color(theme::p32().cream),
                             )
                             .truncate(),
                         );
@@ -1218,11 +1220,11 @@ fn find_screen(ui: &mut egui::Ui, cs: &mut Communities, out: &mut Out) {
             ChatKind::Community,
             picture.as_ref(),
             &sub,
-            theme::p().text_dim,
+            theme::p32().text_dim,
             |ui| match l.mine {
-                ListingState::Member => badge(ui, "You're in", theme::p().accent),
-                ListingState::Asked => badge(ui, "Asked", theme::p().text_dim),
-                ListingState::Refused => badge(ui, "Can't join", theme::p().error),
+                ListingState::Member => badge(ui, "You're in", theme::p32().accent),
+                ListingState::Asked => badge(ui, "Asked", theme::p32().text_dim),
+                ListingState::Refused => badge(ui, "Can't join", theme::p32().error),
                 ListingState::Outside => badge(ui, rule_word(l.join), rule_tone(l.join)),
             },
         );
@@ -1266,13 +1268,17 @@ fn hero(
     ui.vertical_centered(|ui| {
         face(ui, name, ChatKind::Community, picture, 64.0);
         ui.add_space(6.0);
-        ui.label(egui::RichText::new(name).size(21.0).color(theme::p().cream));
+        ui.label(
+            egui::RichText::new(name)
+                .size(21.0)
+                .color(theme::p32().cream),
+        );
         if !about.is_empty() {
             ui.add(
                 egui::Label::new(
                     egui::RichText::new(about)
                         .size(13.5)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 )
                 .wrap(),
             );
@@ -1281,7 +1287,7 @@ fn hero(
             ui.label(
                 egui::RichText::new(line)
                     .size(12.5)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
         }
     });
@@ -1351,7 +1357,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
         theme::section(ui, "Topics");
         ui.horizontal_wrapped(|ui| {
             for t in &l.topics {
-                badge(ui, &format!("# {t}"), theme::p().text_dim);
+                badge(ui, &format!("# {t}"), theme::p32().text_dim);
             }
         });
     }
@@ -1364,7 +1370,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
             &who,
             ChatKind::Private,
             role_word(m.role),
-            theme::p().text_dim,
+            theme::p32().text_dim,
             |_| {},
         );
         if r.clicked() {
@@ -1399,7 +1405,7 @@ fn preview_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut O
             raised_frame().show(ui, |ui| {
                 ui.label(
                     egui::RichText::new("A moderator confirms new members.")
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 theme::note(
                     ui,
@@ -1425,7 +1431,7 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
     ui.label(
         egui::RichText::new("Name")
             .size(12.5)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
     crate::systems::theme::text_field(
         ui,
@@ -1438,7 +1444,7 @@ fn settings_form(ui: &mut egui::Ui, d: &mut Draft) {
     ui.label(
         egui::RichText::new("What is it for? (optional)")
             .size(12.5)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
     crate::systems::theme::text_field(
         ui,
@@ -1668,7 +1674,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
             egui::Label::new(
                 egui::RichText::new(c.settings.about.trim())
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             )
             .wrap(),
         );
@@ -1726,7 +1732,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 Some((_, code)) => {
                     let link = crate::systems::place_link::invite_link(&code);
                     ui.add(
-                        egui::Label::new(egui::RichText::new(&link).color(theme::p().cream).size(13.0))
+                        egui::Label::new(egui::RichText::new(&link).color(theme::p32().cream).size(13.0))
                             .wrap(),
                     );
                     ui.horizontal(|ui| {
@@ -1796,7 +1802,7 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                 &who,
                 ChatKind::Private,
                 &line,
-                theme::p().text_dim,
+                theme::p32().text_dim,
                 |ui| {
                     // On a phone the word leaves the request's own message one
                     // word per line; the tick beside the cross says it alone.
@@ -1842,13 +1848,13 @@ fn community_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str,
                         r.reason.label()
                     ))
                     .size(12.5)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
                 );
                 if !r.line.is_empty() {
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!("\u{201c}{}\u{201d}", r.line))
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         )
                         .wrap(),
                     );
@@ -1953,12 +1959,12 @@ fn review_row(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, waiting
                     ui.label(
                         egui::RichText::new(title)
                             .size(theme::SIZE_BODY)
-                            .color(theme::p().warn),
+                            .color(theme::p32().warn),
                     );
                     ui.label(
                         egui::RichText::new(parts.join(" · "))
                             .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                 });
             });
@@ -1974,7 +1980,7 @@ fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &
             icons::LOCK
         ))
         .size(theme::SIZE_SUB)
-        .color(theme::p().text_dim),
+        .color(theme::p32().text_dim),
     );
     for t in &c.topics {
         let key = channel_key(&t.group);
@@ -1991,7 +1997,7 @@ fn topics_list(ui: &mut egui::Ui, cs: &mut Communities, c: &CommunityDto, out: &
             &format!("# {}", t.name),
             ChatKind::Topic,
             sub,
-            theme::p().text_dim,
+            theme::p32().text_dim,
             |ui| {
                 if t.joined {
                     let muted = cs.is_muted(&key);
@@ -2029,7 +2035,7 @@ fn edit_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, out: &mut Out)
         theme::section(ui, "Topics");
         for (i, t) in cs.draft.topic_edits.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("#").color(theme::p().text_dim));
+                ui.label(egui::RichText::new("#").color(theme::p32().text_dim));
                 crate::systems::theme::text_field(
                     ui,
                     egui::TextEdit::singleline(&mut t.name)
@@ -2078,10 +2084,10 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                 &who,
                 ChatKind::Private,
                 if is_me { "You" } else { role_word(m.role) },
-                theme::p().text_dim,
+                theme::p32().text_dim,
                 |ui| {
                     if !is_me {
-                        ui.label(egui::RichText::new(icons::MORE).color(theme::p().text_dim));
+                        ui.label(egui::RichText::new(icons::MORE).color(theme::p32().text_dim));
                     }
                 },
             );
@@ -2089,7 +2095,7 @@ fn people_screen(ui: &mut egui::Ui, cs: &mut Communities, id: Uuid, me: &str, ou
                 continue;
             }
             row.context_menu(|ui| {
-                ui.label(egui::RichText::new(&who).strong().color(theme::p().cream));
+                ui.label(egui::RichText::new(&who).strong().color(theme::p32().cream));
                 ui.separator();
                 if theme::menu_entry(ui, icons::CHAT, "Message").clicked() {
                     out.message = Some(m.address.clone());
@@ -2225,12 +2231,12 @@ pub fn confirm_account_delete(ctx: &egui::Context, cs: &mut Communities) {
                     "Delete {who}'s account? Their devices, memberships and contacts go, \
                      and it cannot be undone."
                 ))
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
             );
             ui.horizontal(|ui| {
                 yes = theme::action_button(
                     ui,
-                    egui::RichText::new("Delete the account").color(theme::p().error),
+                    egui::RichText::new("Delete the account").color(theme::p32().error),
                 )
                 .clicked();
                 no = theme::action_button(ui, "Cancel").clicked();

@@ -194,7 +194,7 @@ fn view_of(l: &Live) -> View {
         "position: absolute; left: 0; top: 0; right: 0; bottom: 0; z-index: {Z}; \
          pointer-events: none"
     );
-    let shade = alpha(egui::Color32::BLACK, SHADE_PCT);
+    let shade = alpha(theme::Rgba8::BLACK, SHADE_PCT);
     // Four boxes round the square: above, below, left and right of it.
     let sides: Vec<View> = (0..4)
         .map(|i| {

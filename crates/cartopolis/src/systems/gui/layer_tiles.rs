@@ -92,18 +92,18 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
         // fit; dark goes with teal"). In the light theme the disc is a white
         // card, its glyph the same teal.
         let fill = if on {
-            theme::p().accent
+            theme::p32().accent
         } else if resp.hovered() {
-            theme::p().surface_hover
-        } else if theme::p().dark {
-            theme::p().ink
+            theme::p32().surface_hover
+        } else if theme::p32().dark {
+            theme::p32().ink
         } else {
-            theme::p().card
+            theme::p32().card
         };
         theme::paint_disc_lift(painter, centre, DISC / 2.0);
         painter.circle_filled(centre, DISC / 2.0, fill);
         if !on {
-            painter.circle_stroke(centre, DISC / 2.0, Stroke::new(1.0, theme::p().list_line));
+            painter.circle_stroke(centre, DISC / 2.0, Stroke::new(1.0, theme::p32().list_line));
         }
         painter.text(
             centre,
@@ -111,9 +111,9 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
             cat.icon(),
             FontId::proportional(20.0),
             if on {
-                theme::p().on_accent
+                theme::p32().on_accent
             } else {
-                theme::p().accent_word
+                theme::p32().accent_word
             },
         );
         painter.text(
@@ -122,20 +122,20 @@ pub fn category_strip(ui: &mut Ui, selected: &mut LayerCategory, counts: [usize;
             cat.label(),
             FontId::proportional(theme::SIZE_CHIP),
             if on {
-                theme::p().cream
+                theme::p32().cream
             } else {
-                theme::p().text_dim
+                theme::p32().text_dim
             },
         );
         if counts[i] > 0 {
             let badge = Pos2::new(centre.x + DISC / 2.0 - 4.0, col.top() + 5.0);
-            painter.circle_filled(badge, 8.0, theme::p().gold);
+            painter.circle_filled(badge, 8.0, theme::p32().gold);
             painter.text(
                 badge,
                 Align2::CENTER_CENTER,
                 counts[i].to_string(),
                 FontId::proportional(10.0),
-                theme::p().on_gold,
+                theme::p32().on_gold,
             );
         }
     }
@@ -195,8 +195,8 @@ pub fn tile_grid(
     ui.painter().rect(
         card,
         corner,
-        theme::p().card,
-        Stroke::new(1.0, theme::p().list_line),
+        theme::p32().card,
+        Stroke::new(1.0, theme::p32().list_line),
         StrokeKind::Inside,
     );
     for (index, (tile, on)) in tiles.iter_mut().enumerate() {
@@ -263,20 +263,20 @@ fn paint_row(
         painter.rect_filled(
             rect.shrink(1.0),
             CornerRadius::same(14),
-            theme::p().surface_raised,
+            theme::p32().surface_raised,
         );
     }
     if rule {
         painter.hline(
             (rect.left() + 48.0)..=rect.right(),
             rect.bottom() - 0.5,
-            Stroke::new(1.0, theme::p().list_line),
+            Stroke::new(1.0, theme::p32().list_line),
         );
     }
     let text = if dim {
-        theme::p().text_dim
+        theme::p32().text_dim
     } else {
-        theme::p().text
+        theme::p32().text
     };
     painter.text(
         Pos2::new(rect.left() + 24.0, rect.center().y),
@@ -284,9 +284,9 @@ fn paint_row(
         tile.icon,
         FontId::proportional(18.0),
         if on && !dim {
-            theme::p().accent_word
+            theme::p32().accent_word
         } else {
-            theme::p().text_dim
+            theme::p32().text_dim
         },
     );
     // The name, cut to the room left of the ⋯ and the switch.
@@ -312,7 +312,7 @@ fn paint_row(
         painter.rect_stroke(
             r,
             CornerRadius::same(3),
-            Stroke::new(1.0, theme::p().overlay_line),
+            Stroke::new(1.0, theme::p32().overlay_line),
             StrokeKind::Inside,
         );
         painter.text(
@@ -320,7 +320,7 @@ fn paint_row(
             Align2::CENTER_CENTER,
             "NL",
             FontId::proportional(8.5),
-            theme::p().text_dim,
+            theme::p32().text_dim,
         );
     }
     if tile.more {
@@ -330,9 +330,9 @@ fn paint_row(
             icons::MORE,
             FontId::proportional(18.0),
             if open {
-                theme::p().accent
+                theme::p32().accent
             } else {
-                theme::p().text_dim
+                theme::p32().text_dim
             },
         );
     }
@@ -345,9 +345,9 @@ fn paint_row(
         pill,
         CornerRadius::same(10),
         if on {
-            theme::p().accent
+            theme::p32().accent
         } else {
-            theme::p().surface_hover
+            theme::p32().surface_hover
         },
     );
     let knob_x = if on {
@@ -359,9 +359,9 @@ fn paint_row(
         Pos2::new(knob_x, pill.center().y),
         7.0,
         if on {
-            theme::p().knob_on
+            theme::p32().knob_on
         } else {
-            theme::p().text_dim
+            theme::p32().text_dim
         },
     );
 }
@@ -403,9 +403,9 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
         }
         let sel = current == choice;
         let ink = if sel {
-            theme::p().accent_word
+            theme::p32().accent_word
         } else {
-            theme::p().text
+            theme::p32().text
         };
         let painter = ui.painter();
         painter.add(theme::card_shadow().as_shape(rect, CornerRadius::same(12)));
@@ -413,14 +413,14 @@ pub fn basemap_choice(ui: &mut Ui, current: Basemap) -> Option<Basemap> {
             rect,
             CornerRadius::same(12),
             if resp.hovered() && !sel {
-                theme::p().surface_raised
+                theme::p32().surface_raised
             } else {
-                theme::p().card
+                theme::p32().card
             },
             if sel {
-                Stroke::new(2.0, theme::p().accent)
+                Stroke::new(2.0, theme::p32().accent)
             } else {
-                Stroke::new(1.0, theme::p().list_line)
+                Stroke::new(1.0, theme::p32().list_line)
             },
             StrokeKind::Inside,
         );
@@ -453,7 +453,7 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     let font = FontId::proportional(theme::SIZE_SUB);
     let galley = ui
         .painter()
-        .layout_no_wrap(label.to_string(), font, theme::p().text);
+        .layout_no_wrap(label.to_string(), font, theme::p32().text);
     let size = Vec2::new(galley.size().x + 30.0, 26.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = theme::named(ui, resp, label);
@@ -465,10 +465,10 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     painter.rect(
         rect,
         CornerRadius::same(13),
-        theme::p()
+        theme::p32()
             .surface_raised
             .gamma_multiply(if *on { 1.0 } else { 0.7 }),
-        Stroke::new(1.0, theme::p().overlay_line),
+        Stroke::new(1.0, theme::p32().overlay_line),
         StrokeKind::Inside,
     );
     painter.circle_filled(
@@ -479,7 +479,7 @@ pub fn swatch_chip(ui: &mut Ui, on: &mut bool, color: Color32, label: &str) -> b
     painter.galley(
         Pos2::new(rect.left() + 22.0, rect.center().y - galley.size().y / 2.0),
         galley,
-        theme::p().text.gamma_multiply(alpha),
+        theme::p32().text.gamma_multiply(alpha),
     );
     resp.clicked()
 }

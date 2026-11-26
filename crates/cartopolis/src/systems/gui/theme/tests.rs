@@ -1,8 +1,12 @@
 use super::*;
 use crate::systems::egui_manager::UnpaintedPasses as _;
 
-/// Relative luminance per WCAG 2.x, on a `Color32`'s sRGB bytes.
-fn luminance(c: Color32) -> f64 {
+/// Relative luminance per WCAG 2.x, on a colour's sRGB bytes. Every colour
+/// these tests measure is opaque (translucent ones go through [`over`]
+/// first), so taking a [`Color32`] — what egui's visuals hand back — or an
+/// [`Rgba8`] reads the same bytes.
+fn luminance(c: impl Into<Color32>) -> f64 {
+    let c: Color32 = c.into();
     let ch = |v: u8| {
         let v = v as f64 / 255.0;
         if v <= 0.03928 {
@@ -14,7 +18,7 @@ fn luminance(c: Color32) -> f64 {
     0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
 }
 
-fn contrast(a: Color32, b: Color32) -> f64 {
+fn contrast(a: impl Into<Color32>, b: impl Into<Color32>) -> f64 {
     let (x, y) = (luminance(a), luminance(b));
     let (hi, lo) = if x > y { (x, y) } else { (y, x) };
     (hi + 0.05) / (lo + 0.05)
@@ -73,15 +77,17 @@ fn text_colours_clear_their_backgrounds() {
     }
 }
 
-/// Composite a translucent [`Color32`] over an opaque one.
+/// Composite a translucent colour over an opaque one, as egui paints it.
 ///
-/// `Color32` stores its channels **premultiplied** (`from_rgba_unmultiplied`
-/// multiplies on construction), so the source term is already `rgb·a` and
-/// this is plain `src + dst·(1 − a)`.
-fn over(fg: Color32, bg: Color32) -> Color32 {
+/// Done on the [`Color32`] egui is handed, which stores its channels
+/// **premultiplied** (`from_rgba_unmultiplied` multiplies on construction),
+/// so the source term is already `rgb·a` and this is plain
+/// `src + dst·(1 − a)`. The result is opaque.
+fn over(fg: impl Into<Color32>, bg: impl Into<Color32>) -> Rgba8 {
+    let (fg, bg): (Color32, Color32) = (fg.into(), bg.into());
     let inv = 1.0 - f32::from(fg.a()) / 255.0;
     let ch = |f: u8, b: u8| (f32::from(f) + f32::from(b) * inv).round() as u8;
-    Color32::from_rgb(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
+    Rgba8::from_rgb(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
 }
 
 /// The basemap under every overlay box, at its brightest.
@@ -91,9 +97,9 @@ fn over(fg: Color32, bg: Color32) -> Color32 {
 /// fact `globe::GLOBE_DEEP_ALBEDO` exists to deal with. A translucent chrome
 /// box tested only against the panel fill it borrows its colour from has
 /// been tested against the one background it never has.
-const BRIGHT_MAP: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
+const BRIGHT_MAP: Rgba8 = Rgba8::from_rgb(0xFF, 0xFF, 0xFF);
 /// The same at the other end — a night city, a dark aerial, deep water.
-const DARK_MAP: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
+const DARK_MAP: Rgba8 = Rgba8::from_rgb(0x18, 0x18, 0x18);
 
 /// The panel is solid and cool, never warmer (the brown a mix of the brand
 /// orange produced, red above blue, is what this pins against).
@@ -337,7 +343,7 @@ fn the_state_ladder_rises() {
 #[test]
 fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
     for (theme, c) in BOTH {
-        let v = visuals_of(c);
+        let v = visuals_of(&Palette32::of(c));
         // A button at rest is edged in the hub's soft border, not a 3:1
         // line: the person called a page of 3:1-edged buttons "cheap"
         // (2026-11-10), and the hub tells its buttons by plate, shape and
@@ -461,10 +467,10 @@ fn the_documented_ratios_are_the_measured_ones() {
 #[test]
 fn derived_text_colours_come_from_the_palette() {
     for (theme, c) in BOTH {
-        let v = visuals_of(c);
-        assert_eq!(v.text_color(), c.text, "{theme}");
-        assert_eq!(v.weak_text_color(), c.text_dim, "{theme}");
-        assert_eq!(v.strong_text_color(), c.cream, "{theme}");
+        let v = visuals_of(&Palette32::of(c));
+        assert_eq!(v.text_color(), c.text.into(), "{theme}");
+        assert_eq!(v.weak_text_color(), c.text_dim.into(), "{theme}");
+        assert_eq!(v.strong_text_color(), c.cream.into(), "{theme}");
         assert_eq!(v.dark_mode, c.dark, "{theme}");
     }
 }
@@ -475,7 +481,7 @@ fn derived_text_colours_come_from_the_palette() {
 /// person's word; anything else that moves here should be asked for too.
 #[test]
 fn the_dark_palette_is_the_look_it_was() {
-    let rgb = |c: Color32| (c.r(), c.g(), c.b(), c.a());
+    let rgb = |c: Rgba8| (c.r(), c.g(), c.b(), c.a());
     assert_eq!(rgb(DARK.ink), (0x0F, 0x14, 0x16, 255));
     assert_eq!(rgb(DARK.surface), (0x14, 0x1A, 0x1C, 255));
     assert_eq!(rgb(DARK.surface_raised), (0x1F, 0x28, 0x29, 255));
@@ -498,7 +504,7 @@ fn the_dark_palette_is_the_look_it_was() {
         "a status plate is labelled in ink"
     );
     for white in [DARK.on_accent, DARK.accent_bright, DARK.accent_text] {
-        assert_eq!(white, Color32::WHITE);
+        assert_eq!(white, Rgba8::WHITE);
     }
     assert_eq!(rgb(DARK.accent_lift), (0x27, 0x7A, 0x75, 255));
     assert_eq!(rgb(DARK.accent_word), (0xA8, 0xDC, 0xD8, 255));
@@ -525,7 +531,7 @@ fn the_map_buttons_wear_the_teal_in_both_themes() {
         let m = contrast(pal.map_mark, pal.map_fill);
         assert!(m >= 3.0, "the rail's thumb on a plate is {m:.2}:1");
     }
-    assert_eq!(LIGHT.map_fill, Color32::WHITE);
+    assert_eq!(LIGHT.map_fill, Rgba8::WHITE);
     // Teal: green and blue well above red, in the glyph and the rim.
     for teal in [LIGHT.map_ink, LIGHT.map_rim, LIGHT.map_mark] {
         assert!(

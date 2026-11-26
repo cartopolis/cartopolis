@@ -167,8 +167,11 @@ pub fn responsive_right_panel(
     // 14 x 10 until 2026-11-08 ("less cramped"). The Chats screen sets its own
     // frame over this one.
     let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::p().panel)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::p().panel_rim))
+        .fill(crate::systems::theme::p32().panel)
+        .stroke(egui::Stroke::new(
+            1.0,
+            crate::systems::theme::p32().panel_rim,
+        ))
         .inner_margin(egui::Margin::symmetric(16, 14));
     if compact {
         egui::Panel::right(id)
@@ -257,8 +260,11 @@ pub fn bottom_sheet(
     let mut close = false;
     let height = egui.viewport_pts().y * share;
     let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::p().panel)
-        .stroke(egui::Stroke::new(1.0, crate::systems::theme::p().panel_rim))
+        .fill(crate::systems::theme::p32().panel)
+        .stroke(egui::Stroke::new(
+            1.0,
+            crate::systems::theme::p32().panel_rim,
+        ))
         .inner_margin(egui::Margin::symmetric(14, 10));
     let ctx = egui.ctx().clone();
     crate::systems::motion::with_panel_time(&ctx, open, || {

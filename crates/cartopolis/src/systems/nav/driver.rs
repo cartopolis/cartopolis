@@ -2901,7 +2901,7 @@ pub fn render_driver_hud(
                         egui::Align2::CENTER_CENTER,
                         glyph,
                         egui::FontId::proportional(40.0),
-                        theme::p().cream,
+                        theme::p32().cream,
                     );
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
@@ -2909,7 +2909,7 @@ pub fn render_driver_hud(
                             ui.label(big(
                                 &title,
                                 if instructing { 30.0 } else { 22.0 },
-                                theme::p().cream,
+                                theme::p32().cream,
                             ));
                             // The turn after this one, when it follows at once —
                             // right-aligned, a footnote to the instruction.
@@ -2921,9 +2921,9 @@ pub fn render_driver_hud(
                                         ui.label(
                                             egui::RichText::new(icons::maneuver(next))
                                                 .size(18.0)
-                                                .color(theme::p().text),
+                                                .color(theme::p32().text),
                                         );
-                                        ui.label(small("then", theme::p().text_dim));
+                                        ui.label(small("then", theme::p32().text_dim));
                                     },
                                 );
                             }
@@ -2933,7 +2933,7 @@ pub fn render_driver_hud(
                                 egui::Label::new(
                                     egui::RichText::new(sub.as_str())
                                         .size(theme::SIZE_BODY)
-                                        .color(theme::p().text),
+                                        .color(theme::p32().text),
                                 )
                                 .truncate(),
                             );
@@ -3009,8 +3009,8 @@ pub fn render_driver_hud(
                                 egui::Layout::top_down(egui::Align::Center),
                                 |ui| {
                                     ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(big(value, 19.0, theme::p().cream));
-                                    ui.label(small(caption, theme::p().text_dim));
+                                    ui.label(big(value, 19.0, theme::p32().cream));
+                                    ui.label(small(caption, theme::p32().text_dim));
                                 },
                             );
                         }
@@ -3034,7 +3034,7 @@ pub fn render_driver_hud(
                 let p = ui.painter();
                 p.line_segment(
                     [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                    egui::Stroke::new(3.0, theme::p().overlay_line),
+                    egui::Stroke::new(3.0, theme::p32().overlay_line),
                 );
                 if driven > 0.0 {
                     p.line_segment(
@@ -3062,11 +3062,11 @@ pub fn render_driver_hud(
                         ui.allocate_exact_size(egui::Vec2::splat(SPEED_DISC), egui::Sense::hover());
                     let p = ui.painter();
                     let c = rect.center();
-                    p.circle_filled(c, SPEED_DISC * 0.5, theme::p().overlay);
+                    p.circle_filled(c, SPEED_DISC * 0.5, theme::p32().overlay);
                     p.circle_stroke(
                         c,
                         SPEED_DISC * 0.5,
-                        egui::Stroke::new(1.0, theme::p().overlay_line),
+                        egui::Stroke::new(1.0, theme::p32().overlay_line),
                     );
                     // Over the limit turns the *speed* red, not the sign: the sign
                     // states a fact about the road and reads the same whatever the
@@ -3076,14 +3076,14 @@ pub fn render_driver_hud(
                         egui::Align2::CENTER_CENTER,
                         format!("{speed_kmh:.0}"),
                         egui::FontId::new(22.0, theme::brand_family()),
-                        if over { SIGN_RED } else { theme::p().cream },
+                        if over { SIGN_RED } else { theme::p32().cream },
                     );
                     p.text(
                         c + egui::vec2(0.0, 13.0),
                         egui::Align2::CENTER_CENTER,
                         "km/h",
                         egui::FontId::proportional(theme::SIZE_TINY),
-                        theme::p().text_dim,
+                        theme::p32().text_dim,
                     );
                 });
             });
@@ -3245,11 +3245,11 @@ fn approach_bar(ui: &mut egui::Ui, step_distance_m: f64) {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::p().ink.gamma_multiply(0.35));
+    painter.rect_filled(rect, 2.0, theme::p32().ink.gamma_multiply(0.35));
     if filled > 0.0 {
         let mut fill = rect;
         fill.set_width(rect.width() * filled);
-        painter.rect_filled(fill, 2.0, theme::p().cream);
+        painter.rect_filled(fill, 2.0, theme::p32().cream);
     }
 }
 

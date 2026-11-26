@@ -711,7 +711,7 @@ pub fn render_release_approval(egui: EguiRef) {
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             ui.painter()
-                .rect_filled(screen, 0.0, theme::DARK.ink.gamma_multiply(0.86));
+                .rect_filled(screen, 0.0, theme::DARK32.ink.gamma_multiply(0.86));
             // unnamed: a blocker under the card, not a control
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
         });
@@ -727,7 +727,7 @@ pub fn render_release_approval(egui: EguiRef) {
                 ui.label(
                     egui::RichText::new(title)
                         .size(theme::SIZE_HEADING)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 line(
                     ui,
@@ -741,7 +741,7 @@ pub fn render_release_approval(egui: EguiRef) {
                         if let Review::Done(v) = &request.review {
                             for f in &v.findings {
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.label(egui::RichText::new("!").color(theme::p().error));
+                                    ui.label(egui::RichText::new("!").color(theme::p32().error));
                                     ui.label(
                                         egui::RichText::new(format!("{} {}", f.file, f.lines))
                                             .monospace(),
@@ -769,7 +769,7 @@ pub fn render_release_approval(egui: EguiRef) {
                                 theme::section(ui, "Checks");
                                 if let Phase::Checking(what) = &request.phase {
                                     ui.horizontal(|ui| {
-                                        ui.add(egui::Spinner::new().color(theme::p().accent));
+                                        ui.add(egui::Spinner::new().color(theme::p32().accent));
                                         line(ui, what);
                                     });
                                 }
@@ -780,9 +780,9 @@ pub fn render_release_approval(egui: EguiRef) {
                                         "!"
                                     };
                                     let colour = if c.ok {
-                                        theme::p().accent
+                                        theme::p32().accent
                                     } else {
-                                        theme::p().error
+                                        theme::p32().error
                                     };
                                     ui.horizontal_wrapped(|ui| {
                                         ui.label(egui::RichText::new(mark).color(colour));
@@ -958,20 +958,20 @@ fn verdict_block(ui: &mut egui::Ui, review: &Review) {
     match verdict_view(review) {
         VerdictView::Pending(what) => {
             ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().color(theme::p().accent));
+                ui.add(egui::Spinner::new().color(theme::p32().accent));
                 ui.label(
                     egui::RichText::new("Claude is checking this release")
                         .size(theme::SIZE_BODY)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
             });
             line(ui, &what);
         }
         VerdictView::Said { title, green, body } => {
             let colour = if green {
-                theme::p().accent
+                theme::p32().accent
             } else {
-                theme::p().error
+                theme::p32().error
             };
             ui.label(
                 egui::RichText::new(title)
@@ -1001,6 +1001,6 @@ fn line(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
 }

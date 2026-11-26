@@ -774,7 +774,7 @@ fn bubble(
             // colour their initial has there, so the balloon and the line it
             // also appears as read as one person.
             let frame = egui::Frame::NONE
-                .fill(theme::p().glass)
+                .fill(theme::p32().glass)
                 .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(11, 7))
@@ -794,7 +794,7 @@ fn bubble(
                                 egui::Label::new(
                                     egui::RichText::new(body)
                                         .size(BODY_PT)
-                                        .color(theme::p().cream),
+                                        .color(theme::p32().cream),
                                 )
                                 .wrap(),
                             );
@@ -810,7 +810,7 @@ fn bubble(
                     egui::pos2(tip.x + 7.0, r.bottom()),
                     tip,
                 ],
-                theme::p().glass,
+                theme::p32().glass,
                 egui::Stroke::NONE,
             ));
         });
@@ -1002,7 +1002,7 @@ pub fn render_chat_chip(
                     .fill(if talking {
                         VOICE_FILL
                     } else {
-                        theme::p().glass
+                        theme::p32().glass
                     })
                     .corner_radius(egui::CornerRadius::same(18))
                     .inner_margin(egui::Margin::symmetric(8, 6))
@@ -1080,7 +1080,7 @@ pub fn render_chat_chip(
                                                         6.0,
                                                         egui::TextFormat::simple(
                                                             egui::FontId::proportional(BODY_PT),
-                                                            theme::p().text,
+                                                            theme::p32().text,
                                                         ),
                                                     );
                                                     job
@@ -1088,7 +1088,7 @@ pub fn render_chat_chip(
                                                 None => egui::text::LayoutJob::simple_singleline(
                                                     "Talking nearby".into(),
                                                     egui::FontId::proportional(BODY_PT),
-                                                    theme::p().cream,
+                                                    theme::p32().cream,
                                                 ),
                                             };
                                             let mut text = text;
@@ -1157,7 +1157,7 @@ fn unread_pill(ui: &mut egui::Ui, n: usize) {
         n.to_string()
     };
     egui::Frame::NONE
-        .fill(theme::p().accent)
+        .fill(theme::p32().accent)
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_PILL))
         .inner_margin(egui::Margin::symmetric(7, 1))
         .show(ui, |ui| {
@@ -1165,7 +1165,7 @@ fn unread_pill(ui: &mut egui::Ui, n: usize) {
                 egui::RichText::new(text)
                     .size(NAME_PT)
                     .strong()
-                    .color(theme::p().on_accent),
+                    .color(theme::p32().on_accent),
             );
         });
 }
@@ -1524,7 +1524,7 @@ pub fn render_chat_sheet(
                     egui::CornerRadius::same(18)
                 };
                 let inner = egui::Frame::NONE
-                    .fill(theme::p().glass)
+                    .fill(theme::p32().glass)
                     .stroke(egui::Stroke::new(1.0, crate::systems::chats::gline()))
                     .corner_radius(corners)
                     .shadow(lift())
@@ -1542,7 +1542,7 @@ pub fn render_chat_sheet(
                         ui.painter().rect_filled(
                             egui::Rect::from_center_size(handle.center(), egui::vec2(38.0, 4.0)),
                             egui::CornerRadius::same(2),
-                            theme::p().line,
+                            theme::p32().line,
                         );
                         if resp.drag_stopped() && resp.drag_delta().y >= 0.0 {
                             let moved = ui.input(|i| {
@@ -1650,7 +1650,7 @@ pub fn render_chat_sheet(
                             .size(NAME_PT - 1.0)
                             .color(match kind {
                                 crate::systems::chats::ChatKind::Private
-                                | crate::systems::chats::ChatKind::Topic => theme::p().text_dim,
+                                | crate::systems::chats::ChatKind::Topic => theme::p32().text_dim,
                                 _ => PUBLIC_INK,
                             }),
                     );
@@ -1793,7 +1793,7 @@ pub fn render_chat_sheet(
                                     ui.label(
                                         egui::RichText::new("Nothing said yet")
                                             .size(NAME_PT)
-                                            .color(theme::p().text_dim),
+                                            .color(theme::p32().text_dim),
                                     );
                                 });
                             }
@@ -1864,7 +1864,7 @@ pub fn render_chat_sheet(
                                 "Message"
                             };
                             let field = egui::Frame::NONE
-                                .fill(theme::p().surface_raised)
+                                .fill(theme::p32().surface_raised)
                                 .corner_radius(egui::CornerRadius::same(19))
                                 .inner_margin(egui::Margin::symmetric(14, 9))
                                 .show(ui, |ui| {
@@ -1876,10 +1876,10 @@ pub fn render_chat_sheet(
                                             .id(field_id)
                                             .frame(egui::Frame::NONE)
                                             .font(egui::FontId::proportional(BODY_PT))
-                                            .text_color(theme::p().text)
+                                            .text_color(theme::p32().text)
                                             .desired_width(ui.available_width())
                                             .hint_text(
-                                                egui::RichText::new(hint).color(theme::p().line),
+                                                egui::RichText::new(hint).color(theme::p32().line),
                                             ),
                                     )
                                 })
@@ -2050,9 +2050,9 @@ fn tab(
         name.to_string(),
         egui::FontId::proportional(NAME_PT + 0.5),
         if on {
-            theme::p().cream
+            theme::p32().cream
         } else {
-            theme::p().text_dim
+            theme::p32().text_dim
         },
     );
     let disc = 20.0;
@@ -2064,13 +2064,13 @@ fn tab(
     let p = ui.painter();
     let (fill, stroke) = if on {
         (
-            theme::p().accent_muted,
-            egui::Stroke::new(1.0, theme::p().accent),
+            theme::p32().accent_muted,
+            egui::Stroke::new(1.0, theme::p32().accent),
         )
     } else if resp.hovered() {
-        (theme::p().surface_hover, egui::Stroke::NONE)
+        (theme::p32().surface_hover, egui::Stroke::NONE)
     } else {
-        (theme::p().surface_raised, egui::Stroke::NONE)
+        (theme::p32().surface_raised, egui::Stroke::NONE)
     };
     p.rect(
         rect,
@@ -2086,12 +2086,12 @@ fn tab(
         rect.center().y - galley.size().y / 2.0,
     );
     let text_w = galley.size().x;
-    p.galley(text_at, galley, theme::p().cream);
+    p.galley(text_at, galley, theme::p32().cream);
     if unread {
         p.circle_filled(
             egui::pos2(text_at.x + text_w + 7.0, rect.center().y),
             3.5,
-            theme::p().accent,
+            theme::p32().accent,
         );
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -2110,17 +2110,17 @@ fn voice_key(ui: &mut egui::Ui, on: bool, tip: &str) -> egui::Response {
 fn chip(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
     let resp = egui::Frame::NONE
         .fill(if on {
-            theme::p().accent_muted
+            theme::p32().accent_muted
         } else {
-            theme::p().surface_raised
+            theme::p32().surface_raised
         })
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(text).size(NAME_PT).color(if on {
-                theme::p().cream
+                theme::p32().cream
             } else {
-                theme::p().text
+                theme::p32().text
             }));
         })
         .response;
@@ -2135,7 +2135,7 @@ fn strip(ui: &mut egui::Ui, body: impl FnOnce(&mut egui::Ui)) {
         .fill(VOICE_FILL)
         .stroke(egui::Stroke::new(
             1.0,
-            theme::CALL_ACCEPT_GREEN.gamma_multiply(0.6),
+            theme::CALL_ACCEPT_GREEN.to_egui().gamma_multiply(0.6),
         ))
         .corner_radius(egui::CornerRadius::same(16))
         .inner_margin(egui::Margin::symmetric(10, 7))
@@ -2156,12 +2156,12 @@ fn strip_label(ui: &mut egui::Ui, title: &str, detail: &str) {
             egui::RichText::new(title)
                 .size(BODY_PT - 0.5)
                 .strong()
-                .color(theme::DARK.cream),
+                .color(theme::DARK32.cream),
         );
         ui.label(
             egui::RichText::new(detail)
                 .size(NAME_PT - 1.0)
-                .color(theme::DARK.cream.gamma_multiply(0.75)),
+                .color(theme::DARK32.cream.gamma_multiply(0.75)),
         );
     });
 }
@@ -2200,7 +2200,7 @@ fn sheet_run(ui: &mut egui::Ui, run: &Run, column: f32) -> Option<PersonAction> 
             let last = run.lines.len().saturating_sub(1);
             for (i, line) in run.lines.iter().enumerate() {
                 egui::Frame::NONE
-                    .fill(theme::p().accent_muted)
+                    .fill(theme::p32().accent_muted)
                     .corner_radius(egui::CornerRadius {
                         nw: 14,
                         sw: 14,
@@ -2214,7 +2214,7 @@ fn sheet_run(ui: &mut egui::Ui, run: &Run, column: f32) -> Option<PersonAction> 
                             egui::Label::new(
                                 egui::RichText::new(summary(line))
                                     .size(BODY_PT)
-                                    .color(theme::p().cream),
+                                    .color(theme::p32().cream),
                             )
                             .wrap(),
                         );
@@ -2253,7 +2253,7 @@ fn sheet_run(ui: &mut egui::Ui, run: &Run, column: f32) -> Option<PersonAction> 
                     egui::Label::new(
                         egui::RichText::new(summary(line))
                             .size(BODY_PT)
-                            .color(theme::p().text),
+                            .color(theme::p32().text),
                     )
                     .wrap(),
                 );

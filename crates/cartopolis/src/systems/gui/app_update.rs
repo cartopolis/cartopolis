@@ -224,18 +224,18 @@ fn pill(egui: &EguiRef, title: &str, line: &str, ready: bool) -> Option<UpdateAc
                     ui.label(
                         egui::RichText::new(icons::DOWNLOAD)
                             .size(theme::SIZE_TITLE)
-                            .color(theme::p().accent),
+                            .color(theme::p32().accent),
                     );
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new(title)
                                 .size(theme::SIZE_BODY)
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         );
                         ui.label(
                             egui::RichText::new(line)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -250,7 +250,7 @@ fn pill(egui: &EguiRef, title: &str, line: &str, ready: bool) -> Option<UpdateAc
                             ui.add(
                                 egui::Spinner::new()
                                     .size(theme::SIZE_BODY)
-                                    .color(theme::p().accent),
+                                    .color(theme::p32().accent),
                             );
                         }
                     });
@@ -270,7 +270,7 @@ fn too_old_card(egui: &EguiRef, t: &TooOld) -> Option<UpdateAction> {
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             ui.painter()
-                .rect_filled(screen, 0.0, theme::DARK.ink.gamma_multiply(0.82));
+                .rect_filled(screen, 0.0, theme::DARK32.ink.gamma_multiply(0.82));
             // Every tap on the veil is taken here, so none reaches the world.
             // unnamed: a blocker under the card, not a control
             ui.allocate_rect(screen, egui::Sense::click_and_drag());
@@ -287,7 +287,7 @@ fn too_old_card(egui: &EguiRef, t: &TooOld) -> Option<UpdateAction> {
                     ui.label(
                         egui::RichText::new(icons::DOWNLOAD)
                             .size(theme::SIZE_PANEL_TITLE)
-                            .color(theme::p().accent),
+                            .color(theme::p32().accent),
                     );
                     ui.add_space(4.0);
                     title(ui, heading);
@@ -296,7 +296,7 @@ fn too_old_card(egui: &EguiRef, t: &TooOld) -> Option<UpdateAction> {
                         ui.add(
                             egui::ProgressBar::new(*fraction)
                                 .desired_height(8.0)
-                                .fill(theme::p().accent),
+                                .fill(theme::p32().accent),
                         );
                         line(ui, mb);
                     }
@@ -326,7 +326,7 @@ fn title(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_HEADING)
-            .color(theme::p().cream),
+            .color(theme::p32().cream),
     );
 }
 
@@ -334,7 +334,7 @@ fn line(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
 }
 

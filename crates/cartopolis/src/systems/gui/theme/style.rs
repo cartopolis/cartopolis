@@ -2,7 +2,7 @@ use super::*;
 
 // ─── Style ────────────────────────────────────────────────────────────────────
 
-pub(super) fn widgets(c: &Palette) -> Widgets {
+pub(super) fn widgets(c: &Palette32) -> Widgets {
     let visuals = |bg: Color32, line: Color32, fg: Color32| WidgetVisuals {
         bg_fill: bg,
         weak_bg_fill: bg,
@@ -43,7 +43,7 @@ pub(super) fn widgets(c: &Palette) -> Widgets {
 /// The full brand [`egui::Visuals`] for the palette in force ([`p`]).
 #[must_use]
 pub fn visuals() -> egui::Visuals {
-    visuals_of(p())
+    visuals_of(p32())
 }
 
 /// The brand [`egui::Visuals`] for one palette, built by overriding
@@ -51,7 +51,7 @@ pub fn visuals() -> egui::Visuals {
 /// scratch so the fields this doesn't have an opinion about (notably the
 /// font colour transfer function) stay at egui's tuned defaults.
 #[must_use]
-pub fn visuals_of(c: &Palette) -> egui::Visuals {
+pub fn visuals_of(c: &Palette32) -> egui::Visuals {
     let mut v = if c.dark {
         egui::Visuals::dark()
     } else {

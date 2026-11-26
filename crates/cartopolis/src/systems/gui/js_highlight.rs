@@ -295,6 +295,7 @@ fn color(token: Token) -> egui::Color32 {
         Token::Api => theme::CODE_API,
         Token::Call => theme::CODE_CALL,
     }
+    .into()
 }
 
 /// The coloured layout of `src`, for a `TextEdit::layouter`.

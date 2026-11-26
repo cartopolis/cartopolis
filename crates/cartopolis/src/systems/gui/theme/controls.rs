@@ -145,15 +145,18 @@ pub(super) fn flat_button(
     let icon_size = if small { 15.0 } else { 17.0 };
     let word_size = if small { SIZE_SUB } else { SIZE_BODY };
     let icon_g = (!icon.is_empty()).then(|| {
-        ui.painter()
-            .layout_no_wrap(icon.to_string(), FontId::proportional(icon_size), p().text)
+        ui.painter().layout_no_wrap(
+            icon.to_string(),
+            FontId::proportional(icon_size),
+            p32().text,
+        )
     });
     let i = icon_g.as_ref().map_or(0.0, |g| g.size().x);
     let word_g = (!label.is_empty()).then(|| {
         let mut job = egui::text::LayoutJob::simple_singleline(
             label.to_string(),
             FontId::new(word_size, brand_family()),
-            p().text,
+            p32().text,
         );
         if min_width > 0.0 {
             let room = min_width - 2.0 * pad - if i > 0.0 { i + gap } else { 0.0 };
@@ -191,21 +194,23 @@ pub(super) fn flat_button(
     // the secondary button's surface and hairline. Danger is the error tone's
     // soft fill (the tone at 16 %, as `inline_error` draws it) with the error
     // ink, firmer under the pointer.
-    let soft_error = p().error.gamma_multiply(0.16);
+    let soft_error = p32().error.gamma_multiply(0.16);
     let (fill, line, ink) = match (dress, held, hovered) {
-        (Dress::Ghost, true, _) => (p().surface_hover, Color32::TRANSPARENT, p().cream),
-        (Dress::Ghost, false, true) => (p().surface_raised, p().control_edge, p().cream),
-        (Dress::Ghost, false, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, p().text),
-        (Dress::Outlined, true, _) => (p().surface_hover, p().line, p().cream),
-        (Dress::Outlined, false, true) => (p().surface_raised, p().accent, p().cream),
-        (Dress::Outlined, false, false) => (p().surface, p().control_edge, p().text),
-        (Dress::Danger, true, _) => (p().error.gamma_multiply(0.3), p().error, p().error),
+        (Dress::Ghost, true, _) => (p32().surface_hover, Color32::TRANSPARENT, p32().cream),
+        (Dress::Ghost, false, true) => (p32().surface_raised, p32().control_edge, p32().cream),
+        (Dress::Ghost, false, false) => (Color32::TRANSPARENT, Color32::TRANSPARENT, p32().text),
+        (Dress::Outlined, true, _) => (p32().surface_hover, p32().line, p32().cream),
+        (Dress::Outlined, false, true) => (p32().surface_raised, p32().accent, p32().cream),
+        (Dress::Outlined, false, false) => (p32().surface, p32().control_edge, p32().text),
+        (Dress::Danger, true, _) => (p32().error.gamma_multiply(0.3), p32().error, p32().error),
         (Dress::Danger, false, true) => (
-            p().error.gamma_multiply(0.22),
-            p().error.gamma_multiply(0.6),
-            p().error,
+            p32().error.gamma_multiply(0.22),
+            p32().error.gamma_multiply(0.6),
+            p32().error,
         ),
-        (Dress::Danger, false, false) => (soft_error, p().error.gamma_multiply(0.35), p().error),
+        (Dress::Danger, false, false) => {
+            (soft_error, p32().error.gamma_multiply(0.35), p32().error)
+        }
     };
     let radius = CornerRadius::same(if small { 6 } else { RADIUS });
     let painter = ui.painter();
@@ -233,9 +238,9 @@ pub(super) fn flat_button(
             egui::pos2(x, rect.center().y - g.size().y / 2.0),
             g,
             dim(if dress == Dress::Danger {
-                p().error
+                p32().error
             } else {
-                p().accent
+                p32().accent
             }),
         );
         x += gw + gap;
@@ -271,8 +276,8 @@ pub(super) fn text_field_inset(
     let mut margin = Margin::symmetric(12, 9);
     margin.right = margin.right.saturating_add(right_inset.round() as i8);
     let frame = egui::Frame::new()
-        .fill(p().card)
-        .stroke(Stroke::new(1.0, p().control_edge))
+        .fill(p32().card)
+        .stroke(Stroke::new(1.0, p32().control_edge))
         .corner_radius(CornerRadius::same(RADIUS))
         .inner_margin(margin);
     let resp = crate::systems::text_touch::field(
@@ -291,20 +296,20 @@ pub(super) fn text_field_inset(
         ui.painter().rect_stroke(
             rect.expand(2.0),
             CornerRadius::same(RADIUS + 2),
-            Stroke::new(3.0, p().accent.gamma_multiply(0.3)),
+            Stroke::new(3.0, p32().accent.gamma_multiply(0.3)),
             egui::StrokeKind::Inside,
         );
         ui.painter().rect_stroke(
             rect,
             radius,
-            Stroke::new(1.0, p().accent),
+            Stroke::new(1.0, p32().accent),
             egui::StrokeKind::Inside,
         );
     } else if resp.hovered() && ui.is_enabled() {
         ui.painter().rect_stroke(
             rect,
             radius,
-            Stroke::new(1.0, p().line),
+            Stroke::new(1.0, p32().line),
             egui::StrokeKind::Inside,
         );
     }
@@ -326,13 +331,17 @@ pub fn labelled<R>(
             egui::RichText::new(label)
                 .size(SIZE_SUB)
                 .strong()
-                .color(p().cream),
+                .color(p32().cream),
         );
         let r = control(ui);
         if !help.is_empty() {
             ui.add(
-                egui::Label::new(egui::RichText::new(help).size(SIZE_SUB).color(p().text_dim))
-                    .wrap(),
+                egui::Label::new(
+                    egui::RichText::new(help)
+                        .size(SIZE_SUB)
+                        .color(p32().text_dim),
+                )
+                .wrap(),
             );
         }
         r
@@ -369,7 +378,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     let mut job = egui::text::LayoutJob::simple_singleline(
         label.to_string(),
         FontId::proportional(SIZE_BODY),
-        dim(p().text),
+        dim(p32().text),
     );
     job.wrap =
         egui::text::TextWrapping::truncate_at_width((rect.width() - track_w - 12.0).max(0.0));
@@ -377,7 +386,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     painter.galley(
         egui::pos2(rect.left(), rect.center().y - words.size().y / 2.0),
         words,
-        dim(p().text),
+        dim(p32().text),
     );
     let track = egui::Rect::from_center_size(
         egui::pos2(rect.right() - track_w / 2.0, rect.center().y),
@@ -391,9 +400,9 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
         crate::systems::motion::STATE,
     );
     let (fill, line) = if is_on {
-        (p().accent, p().accent_ring)
+        (p32().accent, p32().accent_ring)
     } else {
-        (p().surface_hover, p().control_edge)
+        (p32().surface_hover, p32().control_edge)
     };
     painter.rect(
         track,
@@ -407,7 +416,7 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     painter.circle_filled(
         egui::pos2(x0 + (x1 - x0) * t, track.center().y),
         knob / 2.0,
-        dim(p().knob_on),
+        dim(p32().knob_on),
     );
     paint_focus_ring(ui, &resp, track, false);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -421,7 +430,7 @@ pub fn divider_with(ui: &mut egui::Ui, text: &str) {
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
         FontId::proportional(SIZE_SUB),
-        p().text_dim,
+        p32().text_dim,
     );
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), galley.size().y.max(16.0)),
@@ -430,7 +439,7 @@ pub fn divider_with(ui: &mut egui::Ui, text: &str) {
     let gap = 10.0;
     let half = galley.size().x / 2.0 + gap;
     let y = rect.center().y;
-    let line = Stroke::new(1.0, p().overlay_line);
+    let line = Stroke::new(1.0, p32().overlay_line);
     let painter = ui.painter();
     painter.line_segment(
         [
@@ -452,7 +461,7 @@ pub fn divider_with(ui: &mut egui::Ui, text: &str) {
             y - galley.size().y / 2.0,
         ),
         galley,
-        p().text_dim,
+        p32().text_dim,
     );
     ui.add_space(6.0);
 }

@@ -127,10 +127,8 @@ const STREETS_INK: f32 = 0.09;
 /// The streets' ink, opaque: the page colour with the streets already mixed
 /// in. One writer for egui's strokes and the library's raster
 /// (`lib_splash`).
-pub(crate) fn streets_ink() -> egui::Color32 {
-    theme::DARK
-        .surface
-        .lerp_to_gamma(theme::DARK.text_dim, STREETS_INK)
+pub(crate) fn streets_ink() -> theme::Rgba8 {
+    theme::DARK.surface.lerp(theme::DARK.text_dim, STREETS_INK)
 }
 
 /// Where the plan stands to cover a `size` box as the web's
@@ -699,7 +697,7 @@ pub fn boot_splash(
 
     // Matches index.html's radial gradient closely enough to read as continuous;
     // egui has no gradient primitive, so this is the gradient's middle tone.
-    painter.rect_filled(rect, 0.0, fade(theme::DARK.surface, backdrop, 1.0));
+    painter.rect_filled(rect, 0.0, fade(theme::DARK32.surface, backdrop, 1.0));
     // The street plan behind the web's glass, at the web's strength.
     paint_streets(&painter, rect, backdrop);
 
@@ -722,7 +720,7 @@ pub fn boot_splash(
         egui::Align2::CENTER_CENTER,
         MOTTO,
         egui::FontId::proportional(theme::SPLASH_MOTTO),
-        fade(theme::DARK.text_dim, content, 0.9),
+        fade(theme::DARK32.text_dim, content, 0.9),
     );
 
     // The track and the line under it — `index.html`'s `#track` / `#bar` /
@@ -736,7 +734,7 @@ pub fn boot_splash(
     painter.rect_filled(
         track,
         TRACK_H * 0.5,
-        fade(theme::DARK.surface_raised, content, 1.0),
+        fade(theme::DARK32.surface_raised, content, 1.0),
     );
     // A measured fill from the left or, nothing measured yet, a segment
     // sweeping the track. The alternative is a bar sitting at zero, which is
@@ -747,14 +745,14 @@ pub fn boot_splash(
         egui::vec2(span.1 * track_w, TRACK_H),
     );
     if bar.width() > 0.0 {
-        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::DARK.accent, content, 1.0));
+        painter.rect_filled(bar, TRACK_H * 0.5, fade(theme::DARK32.accent, content, 1.0));
     }
     painter.text(
         egui::pos2(c.x, c.y + 128.0),
         egui::Align2::CENTER_CENTER,
         &label,
         egui::FontId::proportional(STATUS_TEXT),
-        fade(theme::DARK.text_dim, content, 0.75),
+        fade(theme::DARK32.text_dim, content, 0.75),
     );
 }
 

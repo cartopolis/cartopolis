@@ -212,14 +212,9 @@ fn view_of(l: &Live) -> View {
     let p = theme::p();
     let accent = hex(p.accent);
     let cream = hex(p.cream);
-    let wash = css(egui::Color32::from_rgba_unmultiplied(
-        p.accent.r(),
-        p.accent.g(),
-        p.accent.b(),
-        HALO_FILL_ALPHA,
-    ));
-    let hairline = css(p.accent_ring.gamma_multiply(HALO_RIM_ALPHA));
-    let shadow_ink = css(egui::Color32::from_black_alpha(SHADOW_ALPHA));
+    let wash = css(p.accent.with_alpha(HALO_FILL_ALPHA));
+    let hairline = css(p.accent_ring.with_alpha_scaled(HALO_RIM_ALPHA));
+    let shadow_ink = css(theme::Rgba8::BLACK.with_alpha(SHADOW_ALPHA));
 
     // Under every other library screen, as the pins are (`lib_pins`).
     let clip = {

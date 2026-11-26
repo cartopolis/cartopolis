@@ -477,12 +477,12 @@ fn bx(k: f32, r: Rect, rest: &str) -> String {
 
 /// Black at a percentage, for the shades over a picture.
 fn black(pct: f32) -> String {
-    alpha(egui::Color32::BLACK, pct)
+    alpha(theme::Rgba8::BLACK, pct)
 }
 
 /// White at a percentage, for the frosted plates over a picture.
 fn white(pct: f32) -> String {
-    alpha(egui::Color32::WHITE, pct)
+    alpha(theme::Rgba8::WHITE, pct)
 }
 
 /// A filled box, `radius` round, listening nowhere.

@@ -1125,23 +1125,27 @@ fn title_row(ui: &mut egui::Ui, icon: &str, title: &str, note: &str) {
         ui.painter().rect_filled(
             rect,
             egui::CornerRadius::same(8),
-            theme::p().accent.gamma_multiply(0.22),
+            theme::p32().accent.gamma_multiply(0.22),
         );
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
             icon,
             egui::FontId::proportional(15.0),
-            theme::p().accent_text,
+            theme::p32().accent_text,
         );
         ui.label(
             egui::RichText::new(title)
                 .size(theme::SIZE_TITLE)
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
         if !note.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(egui::RichText::new(note).small().color(theme::p().text_dim));
+                ui.label(
+                    egui::RichText::new(note)
+                        .small()
+                        .color(theme::p32().text_dim),
+                );
             });
         }
     });
@@ -1152,7 +1156,7 @@ fn title_row(ui: &mut egui::Ui, icon: &str, title: &str, note: &str) {
             egui::pos2(r.left(), r.top()),
             egui::pos2(r.right(), r.top()),
         ],
-        egui::Stroke::new(1.0, theme::p().overlay_line),
+        egui::Stroke::new(1.0, theme::p32().overlay_line),
     );
     ui.add_space(6.0);
 }
@@ -1251,7 +1255,7 @@ pub fn render_design_room_bar(
             if !signed_in {
                 ui.label(
                     egui::RichText::new("Sign in to build here and keep what you make.")
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 return;
             }
@@ -1277,15 +1281,15 @@ pub fn render_design_room_bar(
             if let Some((prim, tf, ..)) = chosen {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&prim.name).color(theme::p().cream));
-                    ui.label(egui::RichText::new(size_line(tf)).color(theme::p().accent_text));
+                    ui.label(egui::RichText::new(&prim.name).color(theme::p32().cream));
+                    ui.label(egui::RichText::new(size_line(tf)).color(theme::p32().accent_text));
                 });
             }
             if drafts > 0 {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    pill(ui, "draft", theme::p().warn);
-                    ui.label(egui::RichText::new(drafts_line(drafts)).color(theme::p().text_dim));
+                    pill(ui, "draft", theme::p32().warn);
+                    ui.label(egui::RichText::new(drafts_line(drafts)).color(theme::p32().text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_enabled_ui(!busy, |ui| {
@@ -1325,7 +1329,7 @@ pub fn render_design_room_bar(
                 ui.label(
                     egui::RichText::new("YOUR OBJECTS")
                         .size(theme::SIZE_TINY)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 egui::ScrollArea::vertical()
                     .max_height(120.0)
@@ -1334,13 +1338,13 @@ pub fn render_design_room_bar(
                             ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new(icons::CABINET)
-                                        .color(theme::p().accent_text),
+                                        .color(theme::p32().accent_text),
                                 );
-                                ui.label(egui::RichText::new(&d.name).color(theme::p().cream));
+                                ui.label(egui::RichText::new(&d.name).color(theme::p32().cream));
                                 ui.label(
                                     egui::RichText::new(kept_parts(d.parts))
                                         .small()
-                                        .color(theme::p().text_dim),
+                                        .color(theme::p32().text_dim),
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -1372,9 +1376,9 @@ pub fn render_design_room_bar(
                     });
             }
             if busy {
-                ui.label(egui::RichText::new("Working…").color(theme::p().text_dim));
+                ui.label(egui::RichText::new("Working…").color(theme::p32().text_dim));
             } else if !status.is_empty() {
-                ui.label(egui::RichText::new(&status).color(theme::p().text_dim));
+                ui.label(egui::RichText::new(&status).color(theme::p32().text_dim));
             }
         },
     );
@@ -1484,13 +1488,13 @@ pub fn render_design_room_outliner(
                                         ticks.push((members.clone(), all));
                                     }
                                     ui.label(
-                                        egui::RichText::new(icons::LAYERS).color(theme::p().warn),
+                                        egui::RichText::new(icons::LAYERS).color(theme::p32().warn),
                                     );
-                                    ui.label(egui::RichText::new(name).color(theme::p().cream));
+                                    ui.label(egui::RichText::new(name).color(theme::p32().cream));
                                     ui.label(
                                         egui::RichText::new(members.len().to_string())
                                             .small()
-                                            .color(theme::p().text_dim),
+                                            .color(theme::p32().text_dim),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -1519,7 +1523,7 @@ pub fn render_design_room_outliner(
                                 let on = picked.contains(id);
                                 // A ticked row is lit, as the sheet's selected one is.
                                 let fill = if on {
-                                    theme::p().accent.gamma_multiply(0.14)
+                                    theme::p32().accent.gamma_multiply(0.14)
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
@@ -1535,17 +1539,17 @@ pub fn render_design_room_outliner(
                                             }
                                             ui.label(
                                                 egui::RichText::new(icons::BUILD)
-                                                    .color(theme::p().text_dim),
+                                                    .color(theme::p32().text_dim),
                                             );
                                             ui.label(
-                                                egui::RichText::new(name).color(theme::p().text),
+                                                egui::RichText::new(name).color(theme::p32().text),
                                             );
                                             if *draft {
                                                 ui.with_layout(
                                                     egui::Layout::right_to_left(
                                                         egui::Align::Center,
                                                     ),
-                                                    |ui| pill(ui, "draft", theme::p().warn),
+                                                    |ui| pill(ui, "draft", theme::p32().warn),
                                                 );
                                             }
                                         });
@@ -1769,7 +1773,7 @@ pub fn render_design_room_scripts(
             if !signed_in {
                 ui.label(
                     egui::RichText::new("Scripts run on the server: sign in to write one.")
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 return;
             }
@@ -1779,17 +1783,17 @@ pub fn render_design_room_scripts(
                         "No scripts here yet. Select a part, and a New script button \
                          appears here.",
                     )
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
                 );
             }
             for row in &scripted {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p().accent_text));
-                    ui.label(egui::RichText::new(&row.name).color(theme::p().cream));
+                    ui.label(egui::RichText::new(icons::SCRIPT).color(theme::p32().accent_text));
+                    ui.label(egui::RichText::new(&row.name).color(theme::p32().cream));
                     let colour = match row.state {
-                        ScriptState::Error => theme::p().error,
-                        ScriptState::Working => theme::p().accent_bright,
-                        ScriptState::Running => theme::p().accent_text,
+                        ScriptState::Error => theme::p32().error,
+                        ScriptState::Working => theme::p32().accent_bright,
+                        ScriptState::Running => theme::p32().accent_text,
                     };
                     pill(ui, row.state.word(), colour);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1802,7 +1806,7 @@ pub fn render_design_room_scripts(
                     });
                 });
                 if let Some(why) = &row.why {
-                    ui.label(egui::RichText::new(why).small().color(theme::p().error));
+                    ui.label(egui::RichText::new(why).small().color(theme::p32().error));
                 }
             }
             if let Some(p) = chosen.filter(|p| !p.scripted) {
@@ -1824,19 +1828,19 @@ pub fn render_design_room_scripts(
                 ui.label(
                     egui::RichText::new("WHAT THEY DID")
                         .size(theme::SIZE_TINY)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 egui::Frame::NONE
-                    .fill(theme::p().ink.gamma_multiply(0.5))
+                    .fill(theme::p32().ink.gamma_multiply(0.5))
                     .corner_radius(egui::CornerRadius::same(8))
                     .inner_margin(egui::Margin::symmetric(8, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         for line in room.script_log.iter().rev().take(6) {
                             let colour = if line.error {
-                                theme::p().error
+                                theme::p32().error
                             } else {
-                                theme::p().text
+                                theme::p32().text
                             };
                             ui.label(
                                 egui::RichText::new(&line.text)
@@ -1900,14 +1904,14 @@ pub fn render_design_room_tools(
             ui.spacing_mut().item_spacing.y = 6.0;
             let tool = |ui: &mut egui::Ui, on: bool, key: &str, label: &str, tip: &str| {
                 let fill = if on {
-                    theme::p().accent
+                    theme::p32().accent
                 } else {
-                    theme::p().surface_raised
+                    theme::p32().surface_raised
                 };
                 let ink = if on {
-                    theme::p().on_accent
+                    theme::p32().on_accent
                 } else {
-                    theme::p().text
+                    theme::p32().text
                 };
                 let (rect, resp) =
                     ui.allocate_exact_size(egui::vec2(38.0, 44.0), egui::Sense::click());
@@ -1978,7 +1982,7 @@ pub fn render_design_room_views(
             let (rect, _) = ui.allocate_exact_size(egui::vec2(150.0, 104.0), egui::Sense::hover());
             let c = rect.center();
             let painter = ui.painter();
-            painter.circle_filled(c, 48.0, theme::p().surface_raised);
+            painter.circle_filled(c, 48.0, theme::p32().surface_raised);
             // The camera's basis, from the orbit angles (`free_camera`):
             // yaw 0 stands south of the spot looking north.
             let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());

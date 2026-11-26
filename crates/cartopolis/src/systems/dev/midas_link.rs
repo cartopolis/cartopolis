@@ -1641,7 +1641,7 @@ pub fn draw_link_button(
                 ui,
                 size,
                 false,
-                theme::p().accent_ring,
+                theme::p32().accent_ring,
                 egui::Sense::click(),
             );
             let resp = theme::named(ui, resp, "Midas");
@@ -1650,13 +1650,16 @@ pub fn draw_link_button(
                 p.circle_stroke(
                     face.center,
                     face.radius + 2.0 + 6.0 * (1.0 - g),
-                    egui::Stroke::new(3.0 * g, theme::midas_gold().gamma_multiply(g)),
+                    egui::Stroke::new(
+                        3.0 * g,
+                        egui::Color32::from(theme::midas_gold()).gamma_multiply(g),
+                    ),
                 );
             }
             theme::paint_midas_mark(p, face.center, face.radius);
             let dot = face.center + egui::vec2(1.0, -1.0) * face.radius * 0.74;
             p.circle_filled(dot, 5.0, theme::CALL_ACCEPT_GREEN);
-            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::p().ink));
+            p.circle_stroke(dot, 5.0, egui::Stroke::new(1.5, theme::p32().ink));
             toggle = resp.on_hover_text("Midas").clicked();
         });
     // The card and the bubble share the place left of the button; with both
@@ -1706,7 +1709,7 @@ fn draw_link_card(
                 ui.label(
                     egui::RichText::new("Midas linked")
                         .size(theme::SIZE_SUB)
-                        .color(theme::p().cream)
+                        .color(theme::p32().cream)
                         .strong(),
                 );
                 ui.label(
@@ -1717,7 +1720,7 @@ fn draw_link_card(
                 ui.label(
                     egui::RichText::new(card_acts(who))
                         .size(theme::SIZE_TINY)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
             });
         });
@@ -1758,7 +1761,7 @@ fn draw_told(
             theme::overlay_frame()
                 .stroke(egui::Stroke::new(
                     1.0,
-                    theme::midas_gold().gamma_multiply(0.6),
+                    egui::Color32::from(theme::midas_gold()).gamma_multiply(0.6),
                 ))
                 .show(ui, |ui| {
                     ui.set_width(CARD_WIDTH);
@@ -1773,7 +1776,7 @@ fn draw_told(
                         egui::Label::new(
                             egui::RichText::new(&told.text)
                                 .size(theme::SIZE_BODY)
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         )
                         .wrap(),
                     );
@@ -1791,7 +1794,7 @@ fn draw_told(
         ctx.layer_painter(bubble.response.layer_id)
             .add(egui::Shape::convex_polygon(
                 tail,
-                theme::p().overlay,
+                theme::p32().overlay,
                 egui::Stroke::NONE,
             ));
     }

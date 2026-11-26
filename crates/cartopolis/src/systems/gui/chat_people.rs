@@ -115,7 +115,7 @@ pub enum MarkerKind {
 }
 
 impl MarkerKind {
-    pub(crate) fn colour(self) -> egui::Color32 {
+    pub(crate) fn colour(self) -> theme::Rgba8 {
         match self {
             Self::Avatar => theme::BRAND,
             Self::Phone => theme::REAL_LOCATION,
@@ -185,7 +185,7 @@ pub fn marker(
                 p.circle_stroke(
                     centre,
                     disc_r + RING,
-                    egui::Stroke::new(1.5, theme::p().cream),
+                    egui::Stroke::new(1.5, theme::p32().cream),
                 );
             }
             // The name, in a dark chip just under the tip.
@@ -289,7 +289,7 @@ pub fn balloon(
     const TAIL_X: f32 = BALLOON_TAIL_X;
     const TAIL: f32 = BALLOON_TAIL;
     let fill = if mine {
-        theme::p().accent
+        theme::p32().accent
     } else {
         egui::Color32::WHITE
     };
@@ -319,7 +319,7 @@ pub fn balloon(
                         egui::Label::new(
                             egui::RichText::new(text)
                                 .size(BALLOON_TEXT)
-                                .color(theme::p().on_accent),
+                                .color(theme::p32().on_accent),
                         )
                         .wrap(),
                     );

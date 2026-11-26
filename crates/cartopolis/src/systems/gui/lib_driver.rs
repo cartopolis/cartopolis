@@ -324,7 +324,7 @@ fn card_view(c: &DriverCard, p: &DriverPlace, k: f32, acts: &Acts) -> View {
                  justify-content: center; border-radius: {}; background: {}; \
                  color: var(--m-text-strong)",
                 px(12.0, k),
-                hex(c.plate),
+                hex(c.plate.into()),
                 t = px(TILE, k),
             ),
         )
@@ -583,7 +583,7 @@ fn bar_view(b: &DriverBar, p: &DriverPlace, k: f32, acts: &Acts) -> View {
     };
     let driven = line_w * f32::from(b.driven.min(1000)) / 1000.0;
     let progress: View = if driven > 0.0 {
-        track(driven, hex(ROUTE_BLUE))
+        track(driven, hex(ROUTE_BLUE.into()))
     } else {
         View::Empty
     };
@@ -624,9 +624,9 @@ fn speed_view(s: &DriverSpeed, p: &DriverPlace, k: f32) -> View {
                      border-radius: var(--m-radius-full); border: {} solid {}; background: {}; \
                      color: {}; font-size: {}; line-height: 1",
                     px(SIGN_RING, k),
-                    hex(SIGN_RED),
-                    hex(SIGN_WHITE),
-                    hex(egui::Color32::BLACK),
+                    hex(SIGN_RED.into()),
+                    hex(SIGN_WHITE.into()),
+                    hex(theme::Rgba8::BLACK),
                     px(if limit >= 100 { 10.0 } else { 12.0 }, k),
                     d = px(SIGN_R * 2.0, k),
                 ),
@@ -636,7 +636,7 @@ fn speed_view(s: &DriverSpeed, p: &DriverPlace, k: f32) -> View {
         None => View::Empty,
     };
     let ink = if s.over {
-        hex(SIGN_RED)
+        hex(SIGN_RED.into())
     } else {
         "var(--m-text-strong)".to_owned()
     };
@@ -728,8 +728,8 @@ fn buttons_view(peeking: bool, overview: bool, p: &DriverPlace, k: f32, acts: &A
 
 /// `theme::LABEL_CHIP` as CSS: a translucent colour goes through `alpha`.
 fn chip_fill() -> String {
-    let [r, g, b, a] = theme::LABEL_CHIP.to_srgba_unmultiplied();
-    alpha(egui::Color32::from_rgb(r, g, b), f32::from(a) / 2.55)
+    let chip = theme::LABEL_CHIP;
+    alpha(chip, f32::from(chip.a()) / 2.55)
 }
 
 /// What the position is worth, centred above the bar in `theme::chip_frame`.

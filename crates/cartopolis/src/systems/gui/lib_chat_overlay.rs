@@ -51,7 +51,7 @@ const KEY: &str = "chat_overlay";
 
 /// The ring round someone talking (`chat_overlay::TALKING_RING`): what it
 /// means, not chrome.
-const TALKING_RING: egui::Color32 = egui::Color32::from_rgb(0x4F, 0xD1, 0x8F);
+const TALKING_RING: theme::Rgba8 = theme::Rgba8::from_rgb(0x4F, 0xD1, 0x8F);
 
 /// A bubble's look: everything but where it is and how strongly it shows.
 #[derive(Clone, PartialEq)]

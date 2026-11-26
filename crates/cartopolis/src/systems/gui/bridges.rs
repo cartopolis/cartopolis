@@ -571,8 +571,8 @@ fn share_sheet_egui(
         .show(ctx, |ui| {
             crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
             egui::Frame::NONE
-                .fill(theme::p().panel)
-                .stroke(egui::Stroke::new(1.0, theme::p().panel_rim))
+                .fill(theme::p32().panel)
+                .stroke(egui::Stroke::new(1.0, theme::p32().panel_rim))
                 .shadow(theme::card_shadow())
                 .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
                 .inner_margin(egui::Margin::same(14))
@@ -594,7 +594,7 @@ fn share_sheet_egui(
                                                     theme::SIZE_HEADING,
                                                     theme::brand_family(),
                                                 ))
-                                                .color(theme::p().cream),
+                                                .color(theme::p32().cream),
                                         )
                                         .truncate(),
                                     );
@@ -605,7 +605,7 @@ fn share_sheet_egui(
                     ui.label(
                         egui::RichText::new("Sends the place to a chat or community")
                             .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical()
@@ -628,7 +628,7 @@ fn share_sheet_egui(
                                             name,
                                             Some(if *topic { "Topic" } else { "Chat" }),
                                             theme::RowEnd::Chevron,
-                                            theme::p().accent,
+                                            theme::p32().accent,
                                         )
                                         .clicked()
                                         {
@@ -643,7 +643,7 @@ fn share_sheet_egui(
                                             name,
                                             Some("Community · as a post"),
                                             theme::RowEnd::Chevron,
-                                            theme::p().accent,
+                                            theme::p32().accent,
                                         )
                                         .clicked()
                                         {
@@ -679,15 +679,15 @@ pub(crate) fn back_chip(ui: &mut egui::Ui, width: f32, height: f32, label: &str)
     let p = ui.painter();
     p.add(theme::card_shadow().as_shape(rect, pill));
     let fill = if resp.hovered() {
-        theme::p().surface_hover
+        theme::p32().surface_hover
     } else {
-        theme::p().map_fill
+        theme::p32().map_fill
     };
     p.rect(
         rect,
         pill,
         fill,
-        egui::Stroke::new(1.5, theme::p().accent),
+        egui::Stroke::new(1.5, theme::p32().accent),
         egui::StrokeKind::Inside,
     );
     let y = rect.center().y;
@@ -696,12 +696,12 @@ pub(crate) fn back_chip(ui: &mut egui::Ui, width: f32, height: f32, label: &str)
         egui::Align2::CENTER_CENTER,
         icons::CHEVRON_LEFT,
         egui::FontId::proportional(20.0),
-        theme::p().map_ink,
+        theme::p32().map_ink,
     );
     let mut job = egui::text::LayoutJob::simple_singleline(
         format!("Back to {label}"),
         egui::FontId::new(theme::SIZE_VALUE, theme::brand_family()),
-        theme::p().map_ink,
+        theme::p32().map_ink,
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 52.0).max(20.0));
     let g = p.layout_job(job);
@@ -709,7 +709,7 @@ pub(crate) fn back_chip(ui: &mut egui::Ui, width: f32, height: f32, label: &str)
     p.galley(
         egui::pos2(rect.left() + 38.0, y - gh / 2.0),
         g,
-        theme::p().map_ink,
+        theme::p32().map_ink,
     );
     resp.on_hover_text("Back to where you were in Community")
         .clicked()

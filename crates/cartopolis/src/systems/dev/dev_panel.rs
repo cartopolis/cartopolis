@@ -750,9 +750,9 @@ fn draw_sections(ui: &mut egui::Ui, sections: &[DevSection]) {
 
 fn tone_color(tone: DevTone) -> egui::Color32 {
     match tone {
-        DevTone::Value => theme::p().cream,
-        DevTone::Dim => theme::p().text_dim,
-        DevTone::Error => theme::p().error,
+        DevTone::Value => theme::p32().cream,
+        DevTone::Dim => theme::p32().text_dim,
+        DevTone::Error => theme::p32().error,
     }
 }
 
@@ -1239,9 +1239,9 @@ fn walk_test(
         return;
     };
     let tone = match word {
-        HandWord::Following => theme::p().accent_bright,
-        HandWord::CameraBusy => theme::p().warn,
-        _ => theme::p().text_dim,
+        HandWord::Following => theme::p32().accent_bright,
+        HandWord::CameraBusy => theme::p32().warn,
+        _ => theme::p32().text_dim,
     };
     ui.label(
         egui::RichText::new(word.text())
@@ -1250,7 +1250,7 @@ fn walk_test(
             .color(tone),
     );
     if let Some(problem) = high.problem() {
-        ui.label(egui::RichText::new(problem).color(theme::p().warn));
+        ui.label(egui::RichText::new(problem).color(theme::p32().warn));
     }
     if let Some((ran, readings)) = high.running_for() {
         let s = ran.as_secs();
@@ -1292,7 +1292,7 @@ fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
         ui.label(
             egui::RichText::new(switches_on(on))
                 .small()
-                .color(theme::p().accent_text),
+                .color(theme::p32().accent_text),
         );
     }
     ui.add_space(4.0);
@@ -1303,7 +1303,11 @@ fn switches_tab(ui: &mut egui::Ui, prefs: &mut crate::resources::AppPrefs) {
             continue;
         };
         theme::checkbox(ui, value, label);
-        ui.label(egui::RichText::new(help).small().color(theme::p().text_dim));
+        ui.label(
+            egui::RichText::new(help)
+                .small()
+                .color(theme::p32().text_dim),
+        );
         ui.add_space(4.0);
     }
 }
@@ -1362,7 +1366,7 @@ fn stat_colored(ui: &mut egui::Ui, name: &str, value: &str, color: egui::Color32
             egui::Label::new(
                 egui::RichText::new(name)
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             ),
         );
         ui.label(

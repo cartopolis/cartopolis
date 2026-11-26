@@ -26,11 +26,11 @@
 //! Test-only on purpose: nothing at run time reads it, and a module compiled
 //! into the client binary to be called from one test is dead weight there.
 
-use egui::Color32;
 use mithril_style::Pair;
 
 use super::theme;
 use super::theme::tokens::{alpha, hex, WEB};
+use super::theme::Rgba8;
 
 /// Where the generated file lives, from this crate's manifest directory.
 const OUT: &str = "../atlas/web/src/css/theme.css";
@@ -53,7 +53,7 @@ impl From<&Pair> for Value {
     }
 }
 
-fn both(c: Color32) -> Value {
+fn both(c: Rgba8) -> Value {
     Value::Both(hex(c))
 }
 
@@ -69,7 +69,7 @@ fn tokens() -> Vec<(&'static str, Value)> {
     // solid on 2026-11-08 (`theme::GLASS`) at the person's word about the app;
     // the web page was not part of that ask, so it keeps its look until it is.
     let glass_pct = 92.0;
-    let l_surface = Color32::WHITE;
+    let l_surface = Rgba8::WHITE;
     vec![
         // Brand
         ("--c-brand", both(BRAND)),
@@ -123,19 +123,19 @@ fn tokens() -> Vec<(&'static str, Value)> {
         ),
         (
             "--c-rim",
-            Pair(alpha(Color32::WHITE, 85.0), alpha(WEB.cream, 9.0)),
+            Pair(alpha(Rgba8::WHITE, 85.0), alpha(WEB.cream, 9.0)),
         ),
         (
             "--c-rim-strong",
-            Pair(alpha(Color32::WHITE, 100.0), alpha(WEB.cream, 16.0)),
+            Pair(alpha(Rgba8::WHITE, 100.0), alpha(WEB.cream, 16.0)),
         ),
         (
             "--c-highlight",
-            Pair(alpha(Color32::WHITE, 90.0), alpha(WEB.cream, 8.0)),
+            Pair(alpha(Rgba8::WHITE, 90.0), alpha(WEB.cream, 8.0)),
         ),
         (
             "--c-shade",
-            Pair(alpha(WEB.ink, 7.0), alpha(Color32::BLACK, 35.0)),
+            Pair(alpha(WEB.ink, 7.0), alpha(Rgba8::BLACK, 35.0)),
         ),
         (
             "--c-glow",
@@ -204,7 +204,7 @@ mod tests {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
     }
 
-    fn luminance(c: Color32) -> f64 {
+    fn luminance(c: Rgba8) -> f64 {
         let ch = |v: u8| {
             let v = v as f64 / 255.0;
             if v <= 0.03928 {
@@ -216,7 +216,7 @@ mod tests {
         0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
     }
 
-    fn contrast(a: Color32, b: Color32) -> f64 {
+    fn contrast(a: Rgba8, b: Rgba8) -> f64 {
         let (x, y) = (luminance(a), luminance(b));
         let (hi, lo) = if x > y { (x, y) } else { (y, x) };
         (hi + 0.05) / (lo + 0.05)

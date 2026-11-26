@@ -473,7 +473,7 @@ impl ScenarioView {
         let o = self.open.as_ref()?;
         let set = o.play.layer_areas(o.layer);
         let active = set.and_then(|s| o.play.areas.iter().position(|a| std::ptr::eq(&**a, s)));
-        let [r, g, b, a] = ink::AREA_EDGE.to_srgba_unmultiplied();
+        let [r, g, b, a] = ink::AREA_EDGE.to_array();
         Some(crate::systems::lens_areas::LensPaint {
             lens: file_of(o),
             sets: &o.play.areas,
@@ -821,7 +821,7 @@ pub fn render_scenario_map(
                     ));
                     painter.add(egui::Shape::line(
                         run,
-                        egui::Stroke::new(2.0, theme::p().cream),
+                        egui::Stroke::new(2.0, theme::p32().cream),
                     ));
                 }
             }
@@ -859,7 +859,7 @@ pub fn render_scenario_map(
             if let [Some(a), Some(b), Some(c), Some(d)] = q {
                 let base = cone.vertices.len() as u32;
                 for p in [a, b, c, d] {
-                    cone.colored_vertex(p, ink::CONE);
+                    cone.colored_vertex(p, ink::CONE.into());
                 }
                 cone.add_triangle(base, base + 1, base + 2);
                 cone.add_triangle(base, base + 2, base + 3);
@@ -904,7 +904,7 @@ pub fn render_scenario_map(
                 egui::Align2::CENTER_BOTTOM,
                 clock.label(a.t),
                 egui::FontId::proportional(theme::SIZE_TINY),
-                ink::TRACK,
+                ink::TRACK.into(),
             );
         }
         for &(when, _) in tr.down.iter().filter(|d| d.0 <= o.t && d.0 >= tr.t0) {
@@ -934,7 +934,7 @@ pub fn render_scenario_map(
         let galley = painter.layout_no_wrap(
             label,
             egui::FontId::proportional(theme::SIZE_CHIP),
-            ink::TRACK,
+            ink::TRACK.into(),
         );
         let chip = egui::Rect::from_min_size(
             h + egui::vec2(14.0, 10.0),
@@ -948,7 +948,7 @@ pub fn render_scenario_map(
             egui::Stroke::new(if selected { 2.0 } else { 1.0 }, ink::HEAD_RIM),
             egui::StrokeKind::Inside,
         );
-        painter.galley(chip.min + theme::CHIP_PADDING, galley, ink::TRACK);
+        painter.galley(chip.min + theme::CHIP_PADDING, galley, ink::TRACK.into());
     }
 }
 
@@ -978,13 +978,13 @@ fn area_tooltip(
                 ui.label(
                     egui::RichText::new(name)
                         .size(theme::SIZE_BODY)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 ui.label(
                     egui::RichText::new(value.unwrap_or_else(|| "not published".to_owned()))
                         .size(theme::SIZE_HEADING)
                         .strong()
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 ui.horizontal(|ui| {
                     let (r, _) =
@@ -998,7 +998,7 @@ fn area_tooltip(
 }
 
 /// The colour and words of a mode's frame.
-fn mode_frame(mode: Mode) -> (egui::Color32, &'static str) {
+fn mode_frame(mode: Mode) -> (theme::Rgba8, &'static str) {
     match mode {
         Mode::Live => (ink::LIVE, "Live"),
         Mode::Replay => (ink::REPLAY, "Replay"),
@@ -1344,7 +1344,7 @@ pub fn render_scenario_chrome(
 /// A line round the whole map in the mode's colour, striped for an exercise,
 /// on every screen: the one part of a lens that never folds away.
 fn paint_frame(ctx: &egui::Context, mode: Mode) {
-    let (colour, _) = mode_frame(mode);
+    let colour = mode_frame(mode).0.to_egui();
     let screen = ctx.viewport_rect();
     let edge = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
@@ -1358,7 +1358,7 @@ fn paint_frame(ctx: &egui::Context, mode: Mode) {
         egui::Rect::from_min_max(egui::pos2(screen.max.x - band, screen.min.y), screen.max),
     ] {
         if mode == Mode::Exercise {
-            edge.rect_filled(r, 0.0, theme::p().ink);
+            edge.rect_filled(r, 0.0, theme::p32().ink);
             stripes(&edge, r, colour);
         } else {
             edge.rect_filled(r, 0.0, colour);
@@ -1380,17 +1380,18 @@ fn grabber(ui: &mut egui::Ui, drag: &mut motion::SheetDrag) -> Option<Sheet> {
 /// The mode as a chip: what kind of truth the colours are.
 fn mode_chip(ui: &mut egui::Ui, mode: Mode) {
     let (colour, word) = mode_frame(mode);
+    let colour = colour.to_egui();
     // As wide as its word, a pill like every other chip.
     let font = egui::FontId::proportional(theme::SIZE_CHIP);
     let w = ui
         .painter()
-        .layout_no_wrap(word.to_owned(), font, theme::p().ink)
+        .layout_no_wrap(word.to_owned(), font, theme::p32().ink)
         .size()
         .x;
     let (r, _) = ui.allocate_exact_size(egui::vec2(w + 18.0, 20.0), egui::Sense::hover());
     if mode == Mode::Exercise {
         ui.painter()
-            .rect_filled(r, theme::RADIUS_SM, theme::p().ink);
+            .rect_filled(r, theme::RADIUS_SM, theme::p32().ink);
         stripes(ui.painter(), r, colour.gamma_multiply(0.55));
     } else {
         ui.painter().rect_filled(r, theme::RADIUS_PILL, colour);
@@ -1400,7 +1401,7 @@ fn mode_chip(ui: &mut egui::Ui, mode: Mode) {
         egui::Align2::CENTER_CENTER,
         word,
         egui::FontId::proportional(theme::SIZE_CHIP),
-        theme::p().ink,
+        theme::p32().ink,
     );
 }
 
@@ -1482,7 +1483,7 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
             ui.painter().rect_stroke(
                 seg,
                 corners,
-                egui::Stroke::new(1.5 * up, theme::p().cream),
+                egui::Stroke::new(1.5 * up, theme::p32().cream),
                 egui::StrokeKind::Outside,
             );
         }
@@ -1498,18 +1499,18 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
                 egui::pos2(x + 5.0, tip - 6.0),
                 egui::pos2(x, tip),
             ],
-            theme::p().cream,
-            egui::Stroke::new(1.0, theme::p().ink),
+            theme::p32().cream,
+            egui::Stroke::new(1.0, theme::p32().ink),
         ));
     }
     let tiny = |t: &str, c| egui::RichText::new(t).size(theme::SIZE_TINY).color(c);
     ui.horizontal(|ui| match singled {
         Some(b) => {
-            ui.label(tiny(&states[b].label, theme::p().cream));
+            ui.label(tiny(&states[b].label, theme::p32().cream));
             if o.focus.is_some() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let all = ui.add(
-                        egui::Label::new(tiny("Show all", theme::p().accent))
+                        egui::Label::new(tiny("Show all", theme::p32().accent))
                             .sense(egui::Sense::click()),
                     );
                     if all.clicked() {
@@ -1519,9 +1520,9 @@ fn legend(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) {
             }
         }
         None => {
-            ui.label(tiny(&states[0].label, theme::p().text_dim));
+            ui.label(tiny(&states[0].label, theme::p32().text_dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(tiny(&states[n - 1].label, theme::p().text_dim));
+                ui.label(tiny(&states[n - 1].label, theme::p32().text_dim));
             });
         }
     });
@@ -1718,20 +1719,20 @@ fn key_strip(ui: &mut egui::Ui, o: &mut Open, here: Option<LonLat>) -> bool {
     let g = p.layout_no_wrap(
         title,
         egui::FontId::proportional(theme::SIZE_SUB),
-        theme::p().cream,
+        theme::p32().cream,
     );
     p.with_clip_rect(r.with_max_x(r.right() - chevron_w))
         .galley(
             egui::pos2(r.left(), r.center().y - g.size().y * 0.5),
             g,
-            theme::p().cream,
+            theme::p32().cream,
         );
     p.text(
         egui::pos2(r.right() - 2.0 + 2.0 * hot, r.center().y),
         egui::Align2::RIGHT_CENTER,
         crate::systems::icons::CHEVRON_RIGHT,
         egui::FontId::proportional(theme::SIZE_TITLE),
-        lerp_colour(theme::p().text_dim, theme::p().cream, hot),
+        lerp_colour(theme::p32().text_dim, theme::p32().cream, hot),
     );
     legend(ui, o, here);
     resp.on_hover_text("Figures, this place and other lenses")
@@ -1775,10 +1776,10 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
     p.rect(
         r,
         theme::RADIUS,
-        lerp_colour(theme::p().surface_raised, theme::p().surface_hover, hot),
+        lerp_colour(theme::p32().surface_raised, theme::p32().surface_hover, hot),
         egui::Stroke::new(
             1.0,
-            lerp_colour(theme::p().surface_raised, theme::p().accent, hot),
+            lerp_colour(theme::p32().surface_raised, theme::p32().accent, hot),
         ),
         egui::StrokeKind::Inside,
     );
@@ -1798,7 +1799,7 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
         egui::Align2::LEFT_TOP,
         name,
         egui::FontId::proportional(theme::SIZE_BODY),
-        theme::p().cream,
+        theme::p32().cream,
     );
     let below = match here.and_then(|p| range_at(o, o.layer, p)) {
         Some(r) => format!("{rung} · {r}"),
@@ -1809,7 +1810,7 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
         egui::Align2::LEFT_BOTTOM,
         below,
         egui::FontId::proportional(theme::SIZE_TINY),
-        theme::p().text_dim,
+        theme::p32().text_dim,
     );
     // A chevron that leans in on hover: the row opens something.
     p.text(
@@ -1817,14 +1818,14 @@ fn here_row(ui: &mut egui::Ui, o: &Open, here: Option<LonLat>) -> Option<egui::R
         egui::Align2::RIGHT_CENTER,
         crate::systems::icons::CHEVRON_RIGHT,
         egui::FontId::proportional(theme::SIZE_TITLE),
-        lerp_colour(theme::p().text_dim, theme::p().cream, hot),
+        lerp_colour(theme::p32().text_dim, theme::p32().cream, hot),
     );
     p.text(
         egui::pos2(r.right() - 30.0, r.center().y),
         egui::Align2::RIGHT_CENTER,
         value.unwrap_or_else(|| "not published".to_owned()),
         egui::FontId::proportional(theme::SIZE_TITLE),
-        theme::p().cream,
+        theme::p32().cream,
     );
     Some(resp.on_hover_text("Every figure for this place"))
 }
@@ -1851,15 +1852,15 @@ fn figure_row(
     let lit = motion::toggle(ctx, resp.id.with("on"), on, 0.18);
     let p = ui.painter();
     let fill = lerp_colour(
-        lerp_colour(egui::Color32::TRANSPARENT, theme::p().surface_hover, hot),
-        theme::p().accent_muted,
+        lerp_colour(egui::Color32::TRANSPARENT, theme::p32().surface_hover, hot),
+        theme::p32().accent_muted,
         lit,
     );
     p.rect(
         r,
         theme::RADIUS,
         fill,
-        egui::Stroke::new(1.5 * lit, theme::p().accent),
+        egui::Stroke::new(1.5 * lit, theme::p32().accent),
         egui::StrokeKind::Inside,
     );
     // The radio: its dot grows in as it is picked.
@@ -1869,25 +1870,25 @@ fn figure_row(
         7.0,
         egui::Stroke::new(
             2.0,
-            lerp_colour(theme::p().line, theme::p().accent, lit.max(hot * 0.5)),
+            lerp_colour(theme::p32().line, theme::p32().accent, lit.max(hot * 0.5)),
         ),
     );
     if lit > 0.01 {
-        p.circle_filled(dot, 3.5 * lit, theme::p().accent);
+        p.circle_filled(dot, 3.5 * lit, theme::p32().accent);
     }
     let value_left = match value {
         Some(v) => {
             let g = p.layout_no_wrap(
                 v.to_owned(),
                 egui::FontId::proportional(theme::SIZE_BODY),
-                theme::p().cream,
+                theme::p32().cream,
             );
             let at = egui::pos2(
                 r.right() - 10.0 - g.size().x,
                 r.center().y - g.size().y * 0.5,
             );
             let left = at.x;
-            p.galley(at, g, theme::p().cream);
+            p.galley(at, g, theme::p32().cream);
             left
         }
         None => r.right() - 10.0,
@@ -1910,8 +1911,8 @@ fn figure_row(
                 egui::vec2(3.0, mini.height() + 6.0),
             ),
             1.0,
-            theme::p().cream,
-            egui::Stroke::new(1.0, theme::p().ink),
+            theme::p32().cream,
+            egui::Stroke::new(1.0, theme::p32().ink),
             egui::StrokeKind::Outside,
         );
     }
@@ -1920,16 +1921,16 @@ fn figure_row(
         label.to_owned(),
         egui::FontId::proportional(theme::SIZE_BODY),
         if on {
-            theme::p().cream
+            theme::p32().cream
         } else {
-            theme::p().text
+            theme::p32().text
         },
         (mini.left() - 8.0 - text_left).max(40.0),
     );
     p.galley(
         egui::pos2(text_left, r.center().y - g.size().y * 0.5),
         g,
-        theme::p().text,
+        theme::p32().text,
     );
     resp
 }
@@ -1940,7 +1941,7 @@ fn group_label(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text.to_uppercase())
             .size(theme::SIZE_TINY)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
 }
 
@@ -1956,7 +1957,7 @@ fn lens_header(ui: &mut egui::Ui, o: &Open, asked: &mut Asked) {
             egui::Label::new(
                 egui::RichText::new(&meta.name)
                     .size(theme::SIZE_BODY)
-                    .color(theme::p().text),
+                    .color(theme::p32().text),
             )
             .truncate(),
         );
@@ -2054,7 +2055,7 @@ fn place_body(
             egui::Label::new(
                 egui::RichText::new(name)
                     .size(theme::SIZE_TITLE)
-                    .color(theme::p().cream),
+                    .color(theme::p32().cream),
             )
             .truncate(),
         );
@@ -2148,17 +2149,17 @@ fn place_row(
         p.rect(
             r,
             theme::RADIUS,
-            theme::p().accent_muted,
-            egui::Stroke::new(1.5, theme::p().accent),
+            theme::p32().accent_muted,
+            egui::Stroke::new(1.5, theme::p32().accent),
             egui::StrokeKind::Inside,
         );
     } else if resp.hovered() && !head {
-        p.rect_filled(r, theme::RADIUS, theme::p().surface_hover);
+        p.rect_filled(r, theme::RADIUS, theme::p32().surface_hover);
     }
     let (size, ink) = if head {
-        (theme::SIZE_TINY, theme::p().text_dim)
+        (theme::SIZE_TINY, theme::p32().text_dim)
     } else {
-        (theme::SIZE_BODY, theme::p().cream)
+        (theme::SIZE_BODY, theme::p32().cream)
     };
     let context_w = 84.0;
     let value_right = r.right() - 10.0 - context_w - 8.0;
@@ -2171,7 +2172,7 @@ fn place_row(
         } else {
             theme::SIZE_SUB
         }),
-        theme::p().text_dim,
+        theme::p32().text_dim,
     );
     p.text(
         egui::pos2(value_right, r.center().y),
@@ -2184,16 +2185,16 @@ fn place_row(
         label.to_owned(),
         egui::FontId::proportional(theme::SIZE_SUB),
         if on {
-            theme::p().cream
+            theme::p32().cream
         } else {
-            theme::p().text
+            theme::p32().text
         },
         (value_right - 64.0 - r.left() - 10.0).max(40.0),
     );
     p.galley(
         egui::pos2(r.left() + 10.0, r.center().y - g.size().y * 0.5),
         g,
-        theme::p().text,
+        theme::p32().text,
     );
     resp
 }
@@ -2209,7 +2210,7 @@ fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mu
             egui::Label::new(
                 egui::RichText::new("Lenses")
                     .size(theme::SIZE_HEADING)
-                    .color(theme::p().cream),
+                    .color(theme::p32().cream),
             ),
         );
         if theme::close_button(ui).clicked() {
@@ -2239,7 +2240,7 @@ fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mu
                 ui.label(
                     egui::RichText::new(q.unwrap_or("More"))
                         .size(theme::SIZE_BODY)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                 );
                 ui.add_space(2.0);
                 for s in shelf().iter().filter(|s| s.question.as_deref() == q) {
@@ -2255,9 +2256,9 @@ fn shelf_body(ui: &mut egui::Ui, open_key: Option<&str>, body_h: f32, asked: &mu
 
 /// One lens on the shelf: its name, what it holds, and how real it is.
 fn shelf_card(ui: &mut egui::Ui, s: &Shelved, is_open: bool) -> egui::Response {
-    let (colour, _) = mode_frame(s.mode);
+    let colour = mode_frame(s.mode).0.to_egui();
     let inner = egui::Frame::NONE
-        .fill(theme::p().surface_raised)
+        .fill(theme::p32().surface_raised)
         .stroke(if is_open {
             egui::Stroke::new(1.5, colour)
         } else {
@@ -2270,7 +2271,7 @@ fn shelf_card(ui: &mut egui::Ui, s: &Shelved, is_open: bool) -> egui::Response {
             ui.label(
                 egui::RichText::new(&s.name)
                     .size(theme::SIZE_BODY)
-                    .color(theme::p().cream),
+                    .color(theme::p32().cream),
             );
             dim(ui, &s.summary);
             ui.horizontal(|ui| {
@@ -2325,7 +2326,7 @@ fn dim(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(
         egui::RichText::new(text.into())
             .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
     );
 }
 
@@ -2359,7 +2360,7 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
                 ui.painter().rect_stroke(
                     r,
                     2.0,
-                    egui::Stroke::new(1.5, theme::p().cream),
+                    egui::Stroke::new(1.5, theme::p32().cream),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -2367,9 +2368,9 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
                 egui::RichText::new(&s.label)
                     .size(theme::SIZE_SUB)
                     .color(if on {
-                        theme::p().cream
+                        theme::p32().cream
                     } else {
-                        theme::p().text
+                        theme::p32().text
                     }),
             );
             // How many regions are under threat: a derived state's count.
@@ -2392,7 +2393,7 @@ fn scale_card(ui: &mut egui::Ui, o: &mut Open) {
         ui.label(
             egui::RichText::new(&set.attribution)
                 .size(theme::SIZE_TINY)
-                .color(theme::p().text_dim),
+                .color(theme::p32().text_dim),
         );
     }
     // Soonest first, where a state says how long a region has.
@@ -2506,7 +2507,7 @@ fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
     p.circle_filled(
         c,
         d * 0.5,
-        lerp_colour(theme::p().accent, theme::p().accent_ring, hot),
+        lerp_colour(theme::p32().accent, theme::p32().accent_ring, hot),
     );
     let s = d * 0.2;
     if playing {
@@ -2517,7 +2518,7 @@ fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
                     egui::vec2(s * 0.5, s * 1.7),
                 ),
                 1.0,
-                theme::p().ink,
+                theme::p32().ink,
             );
         }
     } else {
@@ -2527,7 +2528,7 @@ fn play_button(ui: &mut egui::Ui, playing: bool) -> egui::Response {
                 c + egui::vec2(1.0 * s, 0.0),
                 c + egui::vec2(-0.6 * s, s),
             ],
-            theme::p().ink,
+            theme::p32().ink,
             egui::Stroke::NONE,
         ));
     }
@@ -2549,7 +2550,7 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
             egui::RichText::new(clock.label(o.t))
                 .size(theme::SIZE_HEADING)
                 .strong()
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             for &(speed, word) in speeds(o).iter().rev() {
@@ -2587,15 +2588,15 @@ fn clock_bar(ui: &mut egui::Ui, o: &mut Open) {
         p.rect_filled(
             measured,
             egui::CornerRadius::same(theme::RADIUS_SM),
-            theme::p().line,
+            theme::p32().line,
         );
         let model = egui::Rect::from_min_max(egui::pos2(split, r.min.y), r.max);
         p.rect_filled(
             model,
             egui::CornerRadius::same(theme::RADIUS_SM),
-            theme::p().surface_raised,
+            theme::p32().surface_raised,
         );
-        stripes(p, model, theme::p().line);
+        stripes(p, model, theme::p32().line);
     }
     ui.horizontal(|ui| {
         dim(ui, clock.label(Clock::ZERO));
@@ -2693,7 +2694,7 @@ pub enum LensPart {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModeChip {
     pub word: &'static str,
-    pub colour: egui::Color32,
+    pub colour: theme::Rgba8,
     /// An exercise: striped in egui's, outlined in the library's.
     pub striped: bool,
 }

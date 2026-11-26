@@ -193,10 +193,10 @@ pub(crate) fn circle_button(
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, hint));
     let (fill, ink) = match (hot, enabled) {
-        (true, true) => (theme::p().accent, theme::p().on_accent),
-        (true, false) => (theme::p().accent_muted, theme::p().text_dim),
-        (false, _) if resp.hovered() => (theme::p().surface_hover, theme::p().text),
-        (false, _) => (theme::p().surface_raised, theme::p().text),
+        (true, true) => (theme::p32().accent, theme::p32().on_accent),
+        (true, false) => (theme::p32().accent_muted, theme::p32().text_dim),
+        (false, _) if resp.hovered() => (theme::p32().surface_hover, theme::p32().text),
+        (false, _) => (theme::p32().surface_raised, theme::p32().text),
     };
     let p = ui.painter();
     p.circle_filled(rect.center(), 19.0, fill);

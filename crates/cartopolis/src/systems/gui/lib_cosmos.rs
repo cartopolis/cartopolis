@@ -325,7 +325,7 @@ fn view_of(l: &Live) -> View {
 /// `RING` carry one), which goes into the box's opacity.
 fn solid(c: Color32) -> (String, f32) {
     let [r, g, b, a] = c.to_srgba_unmultiplied();
-    (hex(Color32::from_rgb(r, g, b)), f32::from(a) / 255.0)
+    (hex(theme::Rgba8::from_rgb(r, g, b)), f32::from(a) / 255.0)
 }
 
 fn finite(v: &[f32]) -> bool {

@@ -34,7 +34,7 @@ const NEAR_GROUND: &str = "Shown near the ground: zoom in";
 const FROM_SPACE: &str = "Seen from space: zoom out to see it";
 
 /// A colour as CSS, from the client's palette.
-fn css(c: egui::Color32) -> String {
+fn css(c: theme::Rgba8) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
@@ -890,7 +890,7 @@ fn places(l: &Live) -> View {
                 <div style="display: flex; flex-wrap: wrap; gap: 6px">
                     {kinds}
                     <Chip model={l.plans_council.clone()} color={css(theme::COUNCIL_LIGHT)}>"Council"</Chip>
-                    <Chip model={l.plans_works.clone()} color={css(crate::systems::plans::WORK)}>"Works"</Chip>
+                    <Chip model={l.plans_works.clone()} color={css(crate::systems::plans::WORK.into())}>"Works"</Chip>
                 </div>
                 <FieldSegmented model={l.plans_period.clone()} options={periods} size=Some(Size::Sm) id="ly-period" disabled={off} />
                 {small("Orange: you can still respond. Yellow: works the city plans this year. Gemeente Groningen's official notices, council agendas and maintenance programme; council items are placed by the street names in their titles.")}

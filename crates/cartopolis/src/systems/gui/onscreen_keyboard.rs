@@ -1381,13 +1381,13 @@ fn draw(ctx: &egui::Context, slab: &Slab, layer: KeyLayer, shift: ShiftState, fi
             }
             .as_shape(bubble, radius),
         );
-        preview.rect_filled(bubble, radius, theme::p().cream);
+        preview.rect_filled(bubble, radius, theme::p32().cream);
         preview.text(
             bubble.center(),
             egui::Align2::CENTER_CENTER,
             ch,
             egui::FontId::proportional(size.y * 0.55),
-            theme::p().ink,
+            theme::p32().ink,
         );
     }
 
@@ -1461,35 +1461,39 @@ fn paint_key(
         (
             active.weak_bg_fill,
             active.bg_stroke.color,
-            theme::p().cream,
+            theme::p32().cream,
         )
     } else {
         match cap {
             Cap::Enter => (
-                theme::p().accent_muted,
-                theme::p().accent_bright,
-                theme::p().cream,
+                theme::p32().accent_muted,
+                theme::p32().accent_bright,
+                theme::p32().cream,
             ),
             // A held state, drawn the way every held state in the app is: the
             // engaged plate, plus the brightest rim. Caps lock then reads as the
             // same kind of thing as a north-up lock, and as a clear step past
             // `ShiftState::Once` below, which only gets the pressed fill.
             Cap::Shift if shift == ShiftState::Lock => (
-                theme::p().accent,
-                theme::p().accent_bright,
-                theme::p().on_accent,
+                theme::p32().accent,
+                theme::p32().accent_bright,
+                theme::p32().on_accent,
             ),
             Cap::Shift if shift == ShiftState::Once => (
-                theme::p().accent_muted,
-                theme::p().accent_bright,
-                theme::p().cream,
+                theme::p32().accent_muted,
+                theme::p32().accent_bright,
+                theme::p32().cream,
             ),
             Cap::Char { .. } => (
                 visuals.widgets.inactive.bg_fill,
                 visuals.widgets.inactive.bg_stroke.color,
                 visuals.widgets.inactive.fg_stroke.color,
             ),
-            _ => (theme::p().surface, theme::p().line, theme::p().text_dim),
+            _ => (
+                theme::p32().surface,
+                theme::p32().line,
+                theme::p32().text_dim,
+            ),
         }
     };
 
@@ -1521,7 +1525,7 @@ fn paint_key(
         // band across a line of text is what the key *does*, at any size.
         Cap::SelectAll => {
             let band = rect.shrink2(egui::vec2(rect.width() * 0.22, rect.height() * 0.34));
-            p.rect_filled(band, egui::CornerRadius::same(2), theme::p().accent_muted);
+            p.rect_filled(band, egui::CornerRadius::same(2), theme::p32().accent_muted);
             let line = band.shrink2(egui::vec2(band.width() * 0.12, band.height() * 0.36));
             p.rect_filled(line, egui::CornerRadius::same(1), ink);
             return;

@@ -377,9 +377,9 @@ pub fn grabber(
         egui::Rect::from_center_size(rect.center(), egui::vec2(GRABBER_WIDTH, GRABBER_THICKNESS)),
         egui::CornerRadius::same(super::theme::RADIUS_PILL),
         if live {
-            super::theme::p().accent
+            super::theme::p32().accent
         } else {
-            super::theme::p().line
+            super::theme::p32().line
         },
     );
     let at = rests.iter().position(|r| *r == rest).unwrap_or(0);
@@ -539,7 +539,7 @@ pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
         let shifted = rect.translate(egui::vec2(dx * rect.width(), 0.0));
         if on_top {
             ui.painter()
-                .rect_filled(shifted.intersect(clip), 0, super::theme::p().panel);
+                .rect_filled(shifted.intersect(clip), 0, super::theme::p32().panel);
         }
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(shifted).id_salt(salt),
@@ -559,7 +559,7 @@ pub fn page_turn<K: Clone + PartialEq + Send + Sync + 'static>(
             },
         );
         if dim > 0.0 {
-            let ink = super::theme::p().ink.gamma_multiply(dim);
+            let ink = super::theme::p32().ink.gamma_multiply(dim);
             ui.painter().rect_filled(shifted.intersect(clip), 0, ink);
         }
     };

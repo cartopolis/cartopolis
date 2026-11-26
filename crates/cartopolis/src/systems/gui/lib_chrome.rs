@@ -390,7 +390,7 @@ fn face(f: &FaceView, size: f32, k: f32, acts: &Acts) -> View {
         Some(name) => {
             let look = disc_look(name, ChatKind::Private);
             (
-                hex(look.tone),
+                hex(look.tone.into()),
                 "#ffffff".to_string(),
                 look.text,
                 size * look.scale,

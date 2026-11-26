@@ -139,26 +139,26 @@ pub fn render_mcp_activity(
                         ui.add(
                             egui::Spinner::new()
                                 .size(theme::SIZE_SUB)
-                                .color(theme::p().accent),
+                                .color(theme::p32().accent),
                         );
                     }
                     ui.label(
                         egui::RichText::new("Editor")
                             .size(theme::SIZE_CHIP)
-                            .color(theme::p().cream)
+                            .color(theme::p32().cream)
                             .strong(),
                     );
                     ui.label(
                         egui::RichText::new(bridge.listen.display().to_string())
                             .size(theme::SIZE_TINY)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                 });
                 for entry in live {
                     let colour = match entry.outcome {
-                        Outcome::Working => theme::p().accent,
-                        Outcome::Done => theme::p().text_dim,
-                        Outcome::Failed => theme::p().error,
+                        Outcome::Working => theme::p32().accent,
+                        Outcome::Done => theme::p32().text_dim,
+                        Outcome::Failed => theme::p32().error,
                     };
                     ui.horizontal_top(|ui| {
                         ui.label(
@@ -171,7 +171,7 @@ pub fn render_mcp_activity(
                             egui::Label::new(
                                 egui::RichText::new(&entry.detail)
                                     .size(theme::SIZE_TINY)
-                                    .color(theme::p().text_dim),
+                                    .color(theme::p32().text_dim),
                             )
                             .wrap(),
                         );
@@ -231,9 +231,9 @@ pub fn render_design_room_ai(
                 // A live dot: the agent at work, still when paused.
                 let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                 let colour = if paused {
-                    theme::p().warn
+                    theme::p32().warn
                 } else {
-                    theme::p().accent_bright
+                    theme::p32().accent_bright
                 };
                 ui.painter()
                     .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
@@ -250,9 +250,9 @@ pub fn render_design_room_ai(
                         None => (String::new(), String::new()),
                     }
                 };
-                ui.label(egui::RichText::new(head).color(theme::p().cream));
+                ui.label(egui::RichText::new(head).color(theme::p32().cream));
                 let rest: String = rest.chars().take(56).collect();
-                ui.label(egui::RichText::new(rest).color(theme::p().text_dim));
+                ui.label(egui::RichText::new(rest).color(theme::p32().text_dim));
                 ui.add_space(8.0);
                 let (icon, label, tip) = if paused {
                     (

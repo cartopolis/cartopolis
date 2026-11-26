@@ -97,12 +97,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::systems::icons;
 
 mod brand;
+mod color;
 mod controls;
 mod frames;
 mod header;
 mod map_controls;
 mod metrics;
 mod palette;
+mod palette32;
 mod states;
 mod style;
 // Read by the web theme's test and by the library's backends (`ui-lib`);
@@ -111,12 +113,14 @@ mod style;
 pub mod tokens;
 
 pub use brand::*;
+pub use color::Rgba8;
 pub use controls::*;
 pub use frames::*;
 pub use header::*;
 pub use map_controls::*;
 pub use metrics::*;
 pub use palette::*;
+pub use palette32::*;
 pub use states::*;
 pub use style::*;
 // The site's tokens (`theme.css`, written by the web theme test) and the
@@ -126,6 +130,8 @@ pub use tokens::tokens;
 #[cfg(feature = "ui-lib")]
 pub use tokens::{app_tokens, map_vars};
 
+#[cfg(test)]
+mod golden;
 #[cfg(test)]
 mod tests;
 

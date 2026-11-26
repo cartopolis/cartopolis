@@ -974,8 +974,8 @@ pub fn render_person_card(
             )
             .show(&ctx, |ui| {
                 egui::Frame::NONE
-                    .fill(theme::p().surface)
-                    .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
+                    .fill(theme::p32().surface)
+                    .stroke(egui::Stroke::new(1.0, theme::p32().overlay_line))
                     .corner_radius(egui::CornerRadius::same(22))
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
@@ -989,12 +989,12 @@ pub fn render_person_card(
                                         compose.username
                                     ))
                                     .size(17.0)
-                                    .color(theme::p().cream),
+                                    .color(theme::p32().cream),
                                 );
                                 ui.label(
                                     egui::RichText::new("Goes to their requests")
                                         .size(12.5)
-                                        .color(theme::p().text_dim),
+                                        .color(theme::p32().text_dim),
                                 );
                             });
                         });
@@ -1025,13 +1025,13 @@ pub fn render_person_card(
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     egui::RichText::new(icons::LOCK)
-                                        .color(theme::p().text_dim)
+                                        .color(theme::p32().text_dim)
                                         .size(14.0),
                                 );
                                 ui.label(
                                     egui::RichText::new(hello_fine_print(&compose.username))
                                         .size(12.5)
-                                        .color(theme::p().text_dim),
+                                        .color(theme::p32().text_dim),
                                 );
                             });
                         });
@@ -1109,13 +1109,13 @@ pub fn render_person_card(
                     ui.horizontal(|ui| {
                         if card.looking {
                             ui.spinner();
-                            ui.label(egui::RichText::new("Looking…").color(theme::p().text_dim));
+                            ui.label(egui::RichText::new("Looking…").color(theme::p32().text_dim));
                         } else {
                             ui.label(
                                 egui::RichText::new(
                                     error.as_deref().unwrap_or("Nobody to show here."),
                                 )
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                             );
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1139,12 +1139,12 @@ pub fn render_person_card(
                             ui.label(
                                 egui::RichText::new(&p.username)
                                     .size(18.0)
-                                    .color(theme::p().cream),
+                                    .color(theme::p32().cream),
                             );
                             ui.label(
                                 egui::RichText::new(relation_word(p.relation))
                                     .size(12.5)
-                                    .color(theme::p().text_dim),
+                                    .color(theme::p32().text_dim),
                             );
                         });
                     });
@@ -1391,17 +1391,17 @@ fn fact(ui: &mut egui::Ui, text: &str, new: bool) {
     let (fill, ink) = if new {
         // A pale gold on the dark theme; the warning tone on the light one,
         // where the pale gold is unreadable on white.
-        let gold = if theme::p().dark {
+        let gold = if theme::p32().dark {
             egui::Color32::from_rgb(0xFF, 0xD2, 0x7A)
         } else {
-            theme::p().warn
+            theme::p32().warn
         };
         (
             egui::Color32::from_rgba_unmultiplied(gold.r(), gold.g(), gold.b(), 36),
             gold,
         )
     } else {
-        (theme::p().accent_muted, theme::p().accent_word)
+        (theme::p32().accent_muted, theme::p32().accent_word)
     };
     let text_w = ui
         .painter()
@@ -1536,7 +1536,7 @@ pub fn requests_row(ui: &mut egui::Ui, contacts: &Contacts) -> bool {
                             format!("{n} message requests")
                         })
                         .size(15.0)
-                        .color(theme::p().cream),
+                        .color(theme::p32().cream),
                     );
                     let first = &contacts.incoming[0];
                     let more = if n > 1 {
@@ -1547,7 +1547,7 @@ pub fn requests_row(ui: &mut egui::Ui, contacts: &Contacts) -> bool {
                     ui.label(
                         egui::RichText::new(format!("{}{more}", first.username))
                             .size(12.5)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                 });
             });
@@ -1756,7 +1756,7 @@ fn title_row(
             egui::Label::new(
                 egui::RichText::new(icons::CHEVRON_LEFT)
                     .size(26.0)
-                    .color(theme::p().text),
+                    .color(theme::p32().text),
             )
             .sense(egui::Sense::click()),
         );
@@ -1774,7 +1774,7 @@ fn title_row(
                     theme::SIZE_PANEL_TITLE,
                     theme::brand_family(),
                 ))
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // The panel's close, as every page title carries (`theme::back_title`):
@@ -1795,14 +1795,14 @@ fn section_label(ui: &mut egui::Ui, text: &str, count: Option<usize>) {
         ui.label(
             egui::RichText::new(text)
                 .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                .color(theme::p().text_dim),
+                .color(theme::p32().text_dim),
         );
         if let Some(n) = count {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(n.to_string())
                         .size(12.0)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
             });
         }
@@ -1828,7 +1828,7 @@ fn person_row(
     let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
     let inner = egui::Frame::NONE
         .fill(if hovered {
-            theme::p().surface_hover
+            theme::p32().surface_hover
         } else {
             crate::systems::chats::row_card()
         })
@@ -1858,14 +1858,18 @@ fn person_row_body(
         avatar(&mut child, name, ChatKind::Private, 44.0);
         if online {
             let c = rect.right_bottom() - egui::vec2(6.0, 6.0);
-            ui.painter().circle_filled(c, 7.0, theme::p().ink);
+            ui.painter().circle_filled(c, 7.0, theme::p32().ink);
             ui.painter()
                 .circle_filled(c, 5.0, egui::Color32::from_rgb(0x5F, 0xD3, 0x8D));
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             right(ui);
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.label(egui::RichText::new(name).size(15.0).color(theme::p().cream));
+                ui.label(
+                    egui::RichText::new(name)
+                        .size(15.0)
+                        .color(theme::p32().cream),
+                );
                 ui.label(egui::RichText::new(sub).size(12.5).color(sub_color));
             });
         });
@@ -1900,7 +1904,7 @@ fn requests_screen(ui: &mut egui::Ui, contacts: &Contacts, act: &mut Act, now: u
                 section_label(ui, title, Some(list.len()));
                 for r in list.iter() {
                     let line = request_line(r, now);
-                    if person_row(ui, &r.username, &line, theme::p().text_dim, false, |_| {})
+                    if person_row(ui, &r.username, &line, theme::p32().text_dim, false, |_| {})
                         .clicked()
                     {
                         act.to = Some(Sub::Request(r.username.clone()));
@@ -1928,7 +1932,7 @@ fn request_screen(
         ui.label(
             egui::RichText::new(&r.username)
                 .size(20.0)
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
     });
     ui.add_space(6.0);
@@ -1963,12 +1967,12 @@ fn request_screen(
                                 icons::PIN
                             ))
                             .size(12.5)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                         );
                     });
                 } else {
                     let resp = egui::Frame::NONE
-                        .fill(theme::p().surface_raised)
+                        .fill(theme::p32().surface_raised)
                         .corner_radius(egui::CornerRadius {
                             nw: 18,
                             ne: 18,
@@ -1981,7 +1985,7 @@ fn request_screen(
                             ui.label(
                                 egui::RichText::new(&l.body)
                                     .size(14.5)
-                                    .color(theme::p().text),
+                                    .color(theme::p32().text),
                             );
                         })
                         .response;
@@ -2061,8 +2065,8 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                 section_label(ui, "Online now", Some(online.len()));
                 for c in online {
                     let line = online_line(c);
-                    if person_row(ui, &c.username, &line, theme::p().text_dim, true, |ui| {
-                        ui.label(egui::RichText::new(icons::CHAT).color(theme::p().text_dim));
+                    if person_row(ui, &c.username, &line, theme::p32().text_dim, true, |ui| {
+                        ui.label(egui::RichText::new(icons::CHAT).color(theme::p32().text_dim));
                     })
                     .clicked()
                     {
@@ -2078,10 +2082,10 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                         ui,
                         &c.username,
                         &line,
-                        theme::p().text_dim,
+                        theme::p32().text_dim,
                         c.online == Some(true),
                         |ui| {
-                            ui.label(egui::RichText::new(icons::CHAT).color(theme::p().text_dim));
+                            ui.label(egui::RichText::new(icons::CHAT).color(theme::p32().text_dim));
                         },
                     );
                     if resp.clicked() {
@@ -2109,7 +2113,7 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                         ui,
                         &r.username,
                         &format!("waiting · sent {}", ago(r.sent_at_ms, now)),
-                        theme::p().line,
+                        theme::p32().line,
                         false,
                         |ui| {
                             withdraw = theme::action_button(ui, "Withdraw").clicked();
@@ -2133,7 +2137,7 @@ fn contacts_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act, no
                         ui,
                         &p.username,
                         &format!("{:.0} m", p.distance_m),
-                        theme::p().text_dim,
+                        theme::p32().text_dim,
                         false,
                         |ui| {
                             hi = theme::action_button(ui, "Say hi").clicked();
@@ -2177,7 +2181,7 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
             ui.vertical_centered(|ui| {
                 paint_qr(ui, &link, 190.0);
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(me).size(20.0).color(theme::p().cream));
+                ui.label(egui::RichText::new(me).size(20.0).color(theme::p32().cream));
             });
             ui.add_space(8.0);
             raised_frame().show(ui, |ui| {
@@ -2185,7 +2189,9 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(&link).size(13.0).color(theme::p().text),
+                            egui::RichText::new(&link)
+                                .size(13.0)
+                                .color(theme::p32().text),
                         )
                         .truncate(),
                     );
@@ -2214,7 +2220,7 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
                  your privacy setting. Reset link stops old copies working.",
             );
             ui.add_space(12.0);
-            ui.label(egui::RichText::new("Or find a username").color(theme::p().cream));
+            ui.label(egui::RichText::new("Or find a username").color(theme::p32().cream));
             ui.horizontal(|ui| {
                 let field = crate::systems::theme::text_field(
                     ui,
@@ -2243,7 +2249,7 @@ fn add_screen(ui: &mut egui::Ui, contacts: &mut Contacts, me: &str, act: &mut Ac
                     let line = found_line(p);
                     let p = p.clone();
                     let mut request = false;
-                    person_row(ui, &p.username, line, theme::p().text_dim, false, |ui| {
+                    person_row(ui, &p.username, line, theme::p32().text_dim, false, |ui| {
                         if p.relation == Relation::Nobody && p.may_request {
                             request = theme::action_button(ui, "Request").clicked();
                         }
@@ -2291,7 +2297,7 @@ fn privacy_screen(ui: &mut egui::Ui, contacts: &mut Contacts, act: &mut Act) {
 /// Answers whether a setting changed, for [`Contacts::push_settings`].
 pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
     let mut act = Act::default();
-    ui.label(egui::RichText::new("Who can send you a request").color(theme::p().cream));
+    ui.label(egui::RichText::new("Who can send you a request").color(theme::p32().cream));
     theme::note(
         ui,
         "Your contacts can always message you. Anyone with your link can always send \
@@ -2315,16 +2321,16 @@ pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
         let on = s.policy == policy;
         let resp = egui::Frame::NONE
             .fill(if on {
-                theme::BRAND.gamma_multiply(0.12)
+                theme::BRAND.to_egui().gamma_multiply(0.12)
             } else {
-                theme::p().surface
+                theme::p32().surface
             })
             .stroke(egui::Stroke::new(
                 1.0,
                 if on {
-                    theme::BRAND
+                    theme::BRAND.to_egui()
                 } else {
-                    theme::p().overlay_line
+                    theme::p32().overlay_line
                 },
             ))
             .corner_radius(egui::CornerRadius::same(12))
@@ -2338,17 +2344,28 @@ pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
                     ui.painter().circle_stroke(
                         c,
                         8.0,
-                        egui::Stroke::new(2.0, if on { theme::BRAND } else { theme::p().line }),
+                        egui::Stroke::new(
+                            2.0,
+                            if on {
+                                theme::BRAND.to_egui()
+                            } else {
+                                theme::p32().line
+                            },
+                        ),
                     );
                     if on {
-                        ui.painter().circle_filled(c, 4.5, theme::BRAND);
+                        ui.painter().circle_filled(c, 4.5, theme::BRAND.to_egui());
                     }
                     ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(title).size(14.0).color(theme::p().text));
+                        ui.label(
+                            egui::RichText::new(title)
+                                .size(14.0)
+                                .color(theme::p32().text),
+                        );
                         ui.label(
                             egui::RichText::new(sub)
                                 .size(12.0)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                     });
                 });
@@ -2365,7 +2382,7 @@ pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
         ui.add_space(4.0);
     }
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Requests").color(theme::p().cream));
+    ui.label(egui::RichText::new("Requests").color(theme::p32().cream));
     if theme::checkbox(
         ui,
         &mut s.separate_new_accounts,
@@ -2385,7 +2402,7 @@ pub fn privacy_body(ui: &mut egui::Ui, contacts: &mut Contacts) -> bool {
         act.settings = true;
     }
     ui.add_space(8.0);
-    ui.label(egui::RichText::new("Contacts can see").color(theme::p().cream));
+    ui.label(egui::RichText::new("Contacts can see").color(theme::p32().cream));
     if theme::checkbox(ui, &mut s.show_online, "That I'm online").changed() {
         act.settings = true;
     }

@@ -29,7 +29,7 @@ use super::*;
 /// ("ONLINE NOW"): a section title is a signpost, and drawn bold in the brightest
 /// tone it competed with the controls under it for the eye.
 pub fn section(ui: &mut egui::Ui, title: &str) {
-    section_tinted(ui, title, p().text_dim);
+    section_tinted(ui, title, p32().text_dim);
 }
 
 /// [`section`] in a colour of its own: the admin pages' headings are
@@ -53,7 +53,7 @@ pub fn section_tinted(ui: &mut egui::Ui, title: &str, tone: Color32) {
             ui.label(
                 egui::RichText::new(n)
                     .font(FontId::new(SIZE_SUB, brand_family()))
-                    .color(p().line),
+                    .color(p32().line),
             );
         }
     });
@@ -106,8 +106,8 @@ pub enum RowEnd<'a> {
 /// reads as a few blocks of related things rather than one long column.
 pub fn list_group<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let out = egui::Frame::NONE
-        .fill(p().card)
-        .stroke(egui::Stroke::new(1.0, p().list_line))
+        .fill(p32().card)
+        .stroke(egui::Stroke::new(1.0, p32().list_line))
         .shadow(card_shadow())
         .corner_radius(egui::CornerRadius::same(16))
         .show(ui, |ui| {
@@ -138,8 +138,8 @@ pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<u
     ui.painter().rect(
         card,
         corner,
-        p().card,
-        Stroke::new(1.0, p().list_line),
+        p32().card,
+        Stroke::new(1.0, p32().list_line),
         egui::StrokeKind::Inside,
     );
     let cell_w = w / cells.len() as f32;
@@ -164,9 +164,9 @@ pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<u
                 rect.shrink(3.0),
                 CornerRadius::same(12),
                 if *on {
-                    p().accent_muted
+                    p32().accent_muted
                 } else {
-                    p().surface_raised
+                    p32().surface_raised
                 },
             );
         }
@@ -174,7 +174,7 @@ pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<u
             painter.vline(
                 rect.left(),
                 (rect.top() + 12.0)..=(rect.bottom() - 12.0),
-                Stroke::new(1.0, p().list_line),
+                Stroke::new(1.0, p32().list_line),
             );
         }
         painter.text(
@@ -182,14 +182,14 @@ pub fn action_strip(ui: &mut egui::Ui, cells: &[(&str, &str, bool)]) -> Option<u
             egui::Align2::CENTER_CENTER,
             *icon,
             FontId::proportional(18.0),
-            p().accent_word,
+            p32().accent_word,
         );
         painter.text(
             egui::pos2(rect.center().x, rect.bottom() - 15.0),
             egui::Align2::CENTER_CENTER,
             *label,
             FontId::proportional(SIZE_SUB),
-            p().text,
+            p32().text,
         );
         paint_focus_ring(ui, &resp, rect, false);
     }
@@ -230,23 +230,23 @@ pub fn list_row_sized(
     let resp = named(ui, resp, title);
     let p = ui.painter();
     if resp.hovered() || resp.is_pointer_button_down_on() {
-        p.rect_filled(rect, egui::CornerRadius::same(8), self::p().surface_hover);
+        p.rect_filled(rect, egui::CornerRadius::same(8), self::p32().surface_hover);
     }
     p.line_segment(
         [
             egui::pos2(rect.left() + 58.0, rect.bottom() - 0.5),
             egui::pos2(rect.right(), rect.bottom() - 0.5),
         ],
-        egui::Stroke::new(1.0, self::p().list_line),
+        egui::Stroke::new(1.0, self::p32().list_line),
     );
     let chip = egui::Rect::from_center_size(
         egui::pos2(rect.left() + 12.0 + 16.0, rect.center().y),
         egui::Vec2::splat(32.0),
     );
-    let chip_fill = if tone == self::p().warn {
-        self::p().warn.gamma_multiply(0.14)
+    let chip_fill = if tone == self::p32().warn {
+        self::p32().warn.gamma_multiply(0.14)
     } else {
-        self::p().surface_raised
+        self::p32().surface_raised
     };
     p.rect_filled(chip, egui::CornerRadius::same(10), chip_fill);
     p.text(
@@ -265,7 +265,7 @@ pub fn list_row_sized(
             egui::Align2::RIGHT_CENTER,
             crate::systems::icons::CHEVRON_RIGHT,
             egui::FontId::proportional(18.0),
-            self::p().line,
+            self::p32().line,
         );
         *right -= 24.0;
     };
@@ -278,7 +278,7 @@ pub fn list_row_sized(
                 egui::Align2::RIGHT_CENTER,
                 n.to_string(),
                 egui::FontId::proportional(13.0),
-                self::p().text_dim,
+                self::p32().text_dim,
             );
             right = r.left() - 8.0;
         }
@@ -306,7 +306,7 @@ pub fn list_row_sized(
                 egui::Align2::RIGHT_CENTER,
                 word,
                 egui::FontId::proportional(12.5),
-                self::p().text_dim,
+                self::p32().text_dim,
             );
             right = r.left() - 8.0;
         }
@@ -326,15 +326,15 @@ pub fn list_row_sized(
         let gy = y - g.size().y / 2.0;
         p.galley(egui::pos2(x, gy), g, color);
     };
-    let title_tone = if tone == self::p().error {
-        self::p().error
+    let title_tone = if tone == self::p32().error {
+        self::p32().error
     } else {
-        self::p().text
+        self::p32().text
     };
     match sub {
         Some(sub) => {
             line(title, 14.5, title_tone, rect.center().y - 9.0);
-            line(sub, 12.0, self::p().text_dim, rect.center().y + 10.0);
+            line(sub, 12.0, self::p32().text_dim, rect.center().y + 10.0);
         }
         None => line(title, 14.5, title_tone, rect.center().y),
     }
@@ -379,7 +379,7 @@ pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut e
                         egui::Button::new(
                             egui::RichText::new(crate::systems::icons::BACK)
                                 .size(22.0)
-                                .color(p().cream),
+                                .color(p32().cream),
                         )
                         .frame(false)
                         .min_size(egui::vec2(row_h, row_h)),
@@ -387,7 +387,7 @@ pub fn back_title_with(ui: &mut egui::Ui, title: &str, extra: impl FnOnce(&mut e
                     .on_hover_text("Back");
                 back = page_back(ui.ctx(), resp.clicked());
                 ui.add(
-                    egui::Label::new(egui::RichText::new(title).size(18.0).color(p().cream))
+                    egui::Label::new(egui::RichText::new(title).size(18.0).color(p32().cream))
                         .truncate()
                         .selectable(false),
                 );
@@ -511,7 +511,7 @@ pub fn segmented<T: PartialEq + Copy>(
             f.layout_no_wrap(
                 label.to_string(),
                 FontId::new(size, brand_family()),
-                p().text,
+                p32().text,
             )
             .size()
             .x
@@ -547,11 +547,11 @@ pub fn segmented<T: PartialEq + Copy>(
     // (2026-11-10: the hub's deep well with a raised card on it was "ugly", of
     // the Clouds switch).
     let p = ui.painter().clone();
-    p.rect_filled(rect, CornerRadius::same(RADIUS_LG), self::p().card);
+    p.rect_filled(rect, CornerRadius::same(RADIUS_LG), self::p32().card);
     p.rect_stroke(
         rect,
         CornerRadius::same(RADIUS_LG),
-        Stroke::new(1.0, self::p().list_line),
+        Stroke::new(1.0, self::p32().list_line),
         egui::StrokeKind::Inside,
     );
     let mut changed = false;
@@ -572,13 +572,13 @@ pub fn segmented<T: PartialEq + Copy>(
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, *label)
         });
         let (fill, ink) = if on {
-            (self::p().accent, self::p().on_accent)
+            (self::p32().accent, self::p32().on_accent)
         } else if resp.is_pointer_button_down_on() {
-            (self::p().surface_hover, self::p().cream)
+            (self::p32().surface_hover, self::p32().cream)
         } else if resp.hovered() {
-            (self::p().surface_raised, self::p().cream)
+            (self::p32().surface_raised, self::p32().cream)
         } else {
-            (Color32::TRANSPARENT, self::p().text_dim)
+            (Color32::TRANSPARENT, self::p32().text_dim)
         };
         p.rect_filled(r, CornerRadius::same(RADIUS_LG - 3), fill);
         let font = FontId::new(
@@ -606,7 +606,7 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
     ui.label(
         egui::RichText::new(text)
             .size(SIZE_CHIP)
-            .color(p().text_dim)
+            .color(p32().text_dim)
             .italics(),
     );
 }
@@ -625,11 +625,16 @@ pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
         ui.label(
             egui::RichText::new(headline)
                 .size(SIZE_BODY)
-                .color(p().text_dim),
+                .color(p32().text_dim),
         );
         ui.add_space(4.0);
         ui.add(
-            egui::Label::new(egui::RichText::new(hint).size(SIZE_SUB).color(p().text_dim)).wrap(),
+            egui::Label::new(
+                egui::RichText::new(hint)
+                    .size(SIZE_SUB)
+                    .color(p32().text_dim),
+            )
+            .wrap(),
         );
     });
     ui.add_space(12.0);
@@ -643,11 +648,11 @@ pub fn empty_state(ui: &mut egui::Ui, headline: &str, hint: &str) {
 /// spinners, in one app, for one meaning.
 pub fn busy(ui: &mut egui::Ui, label: &str) {
     ui.horizontal(|ui| {
-        ui.add(egui::Spinner::new().size(SIZE_BODY).color(p().accent));
+        ui.add(egui::Spinner::new().size(SIZE_BODY).color(p32().accent));
         ui.label(
             egui::RichText::new(label)
                 .size(SIZE_SUB)
-                .color(p().text_dim),
+                .color(p32().text_dim),
         );
     });
 }
@@ -670,15 +675,19 @@ pub fn busy_progress(ui: &mut egui::Ui, label: &str, done: usize, total: usize) 
 pub fn inline_error(ui: &mut egui::Ui, message: &str) -> bool {
     let mut dismissed = false;
     egui::Frame::NONE
-        .fill(p().error.gamma_multiply(0.16))
-        .stroke(Stroke::new(1.0, p().error.gamma_multiply(0.5)))
+        .fill(p32().error.gamma_multiply(0.16))
+        .stroke(Stroke::new(1.0, p32().error.gamma_multiply(0.5)))
         .corner_radius(CornerRadius::same(RADIUS_SM))
         .inner_margin(Margin::symmetric(8, 6))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(message).size(SIZE_SUB).color(p().error))
-                        .wrap(),
+                    egui::Label::new(
+                        egui::RichText::new(message)
+                            .size(SIZE_SUB)
+                            .color(p32().error),
+                    )
+                    .wrap(),
                 );
             });
             // One row's height, not `with_layout`: in a vertical parent that
@@ -801,8 +810,8 @@ pub fn checkbox(
         ] {
             v.corner_radius = square;
             if was {
-                v.bg_fill = p().accent;
-                v.bg_stroke = Stroke::new(1.0, p().accent_ring);
+                v.bg_fill = p32().accent;
+                v.bg_stroke = Stroke::new(1.0, p32().accent_ring);
             }
         }
         let resp = ui.checkbox(checked, text);
@@ -819,7 +828,7 @@ pub fn checkbox(
                     egui::pos2(r.center().x, r.bottom()),
                     egui::pos2(r.right(), r.top()),
                 ],
-                Stroke::new(2.0, p().on_accent),
+                Stroke::new(2.0, p32().on_accent),
             ));
         }
         resp
@@ -887,9 +896,9 @@ pub fn password_field(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
             )
         });
         let ink = if resp.is_pointer_button_down_on() || shown {
-            p().accent
+            p32().accent
         } else {
-            p().text_dim
+            p32().text_dim
         };
         paint_eye(ui.painter(), rect, shown, ink);
         paint_focus_ring(ui, &resp, rect, false);

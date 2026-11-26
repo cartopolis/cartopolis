@@ -186,7 +186,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("On the map")
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
             ui.add_space(4.0);
             tile_grid(
@@ -216,13 +216,13 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("From above")
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new("Clouds")
                     .size(theme::SIZE_TINY)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
             {
                 use crate::resources::GlobeCloudMode;
@@ -267,12 +267,12 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                 ui.label(
                     egui::RichText::new(format!("{}  Lens open: {}", icons::POLL, open.label))
                         .size(theme::SIZE_SUB)
-                        .color(theme::p().text),
+                        .color(theme::p32().text),
                 );
                 ui.label(
                     egui::RichText::new("Change it with the lens button, under this panel's")
                         .size(theme::SIZE_TINY)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
             }
         }
@@ -389,7 +389,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
                     "Traffic, people, cyclists and birds are made up; buses and trains are real.",
                 )
                 .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
+                .color(theme::p32().text_dim),
             );
             ui.add_space(4.0);
             tile_grid(
@@ -474,7 +474,7 @@ fn category_body(ui: &mut egui::Ui, dl: &mut DataLayers, in_space: bool, tdbag_a
             ui.label(
                 egui::RichText::new("Tap a satellite to follow it or see its path.")
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
         }
     }
@@ -492,12 +492,12 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
         ui.add_enabled_ui(enabled, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for ((_, label, _), on) in KINDS.iter().zip(dl.plans_kinds.iter_mut()) {
-                    crate::systems::layer_tiles::swatch_chip(ui, on, theme::p().accent, label);
+                    crate::systems::layer_tiles::swatch_chip(ui, on, theme::p32().accent, label);
                 }
                 crate::systems::layer_tiles::swatch_chip(
                     ui,
                     &mut dl.plans_council,
-                    theme::COUNCIL_LIGHT,
+                    theme::COUNCIL_LIGHT.into(),
                     "Council",
                 );
                 crate::systems::layer_tiles::swatch_chip(
@@ -521,7 +521,7 @@ fn plans_options(ui: &mut egui::Ui, dl: &mut DataLayers) {
                  names in their titles.",
             )
             .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
         );
     });
 }
@@ -541,8 +541,8 @@ fn toggle_open(dl: &mut DataLayers, tapped: Option<&'static str>) {
 /// The raised box a tile's options open in, under the grid.
 fn options_box(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(theme::p().surface_raised)
-        .stroke(egui::Stroke::new(1.0, theme::p().overlay_line))
+        .fill(theme::p32().surface_raised)
+        .stroke(egui::Stroke::new(1.0, theme::p32().overlay_line))
         .corner_radius(12)
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
@@ -631,7 +631,7 @@ pub fn render_data_layers_panel(
                 ui.label(
                     egui::RichText::new(dl.category.subtitle())
                         .size(theme::SIZE_SUB)
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 ui.add_space(6.0);
                 category_body(ui, dl, in_space, tdbag_available);

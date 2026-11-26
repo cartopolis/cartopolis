@@ -249,7 +249,7 @@ fn turn_view(v: &WalkView, p: &Placement) -> View {
          justify-content: center; border-radius: 9px; background: {}; color: {}; \
          font-family: 'Material Symbols Rounded'; font-size: 24px; line-height: 1",
         hex(theme::BRAND),
-        hex(egui::Color32::WHITE)
+        hex(theme::Rgba8::WHITE)
     );
     let count = format!(
         "font-size: {}px; font-weight: 600; color: var(--m-text-strong); line-height: 1.2",

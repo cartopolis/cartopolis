@@ -263,20 +263,20 @@ const HALO: [f32; 3] = srgb_of(theme::LABEL_HALO);
 const HALO_ALPHA: f32 = 0.85;
 
 /// A palette colour as sRGB fractions for the CPU rasteriser — which writes
-/// straight into an `Rgba8UnormSrgb` texture, so the bytes are the same encoding
-/// egui hands out. Two things have to be undone: `Color32` stores its channels
-/// *premultiplied*, and the alpha itself is dropped here — coverage supplies it
-/// per pixel, scaled by [`HALO_ALPHA`]. Take the raw channels and a translucent
-/// palette entry arrives pre-dimmed and composites twice.
-const fn srgb_of(c: egui::Color32) -> [f32; 3] {
-    let a = c.a() as f32 / 255.0;
-    if a <= 0.0 {
+/// straight into an `Rgba8UnormSrgb` texture, so the bytes are the palette's
+/// own encoding. The alpha is dropped here — coverage supplies it per pixel,
+/// scaled by [`HALO_ALPHA`]. [`theme::Rgba8`] is straight alpha, so the colour
+/// bytes are the colour; while the palette was egui's premultiplied `Color32`
+/// this had to divide the alpha back out, or a translucent entry arrived
+/// pre-dimmed and composited twice.
+const fn srgb_of(c: theme::Rgba8) -> [f32; 3] {
+    if c.a() == 0 {
         return [0.0; 3];
     }
     [
-        c.r() as f32 / 255.0 / a,
-        c.g() as f32 / 255.0 / a,
-        c.b() as f32 / 255.0 / a,
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
     ]
 }
 

@@ -26,28 +26,28 @@ pub struct Palette {
     /// segmented control's track. In the light theme it is the hub's sunken
     /// tone. **Not the ink on an accent plate** — that is [`Palette::on_accent`],
     /// which shared this value until the light theme split them (2026-11-10).
-    pub ink: Color32,
+    pub ink: Rgba8,
     /// The ink on an [`Palette::accent`] plate (an engaged disc, a ticked box,
     /// the primary button's label): white in both themes, on a deep teal
     /// (`#2B837E`, 4.5:1). Until 2026-11-10 the plate was the bright
     /// `#5CC6C0` with `#0F1416` on it, and the person found "a teal button
     /// with black text" not nice.
-    pub on_accent: Color32,
+    pub on_accent: Rgba8,
     /// The ink on a status-coloured plate ([`Palette::error`], [`Palette::warn`]
     /// as a fill — an armed confirm, a raised hand): [`Palette::ink`] in the
     /// dark theme, where the status tones are light; white in the light theme,
     /// where they are dark.
-    pub on_status: Color32,
+    pub on_status: Rgba8,
     /// The surface ramp's bottom above [`Palette::ink`]: control plates (a
     /// button at rest) and the widget table's noninteractive fill. A card in a
     /// panel is [`Palette::card`].
-    pub surface: Color32,
+    pub surface: Rgba8,
     /// One step up from [`Palette::surface`] (in the light theme, a step
     /// toward the page): a button under the pointer, striped rows, a
     /// segmented control's chosen card.
-    pub surface_raised: Color32,
+    pub surface_raised: Rgba8,
     /// The ramp's far end: hover in a list, open menus over a panel.
-    pub surface_hover: Color32,
+    pub surface_hover: Rgba8,
     /// Hairlines that identify a control: widget frames, separators, indent
     /// guides.
     ///
@@ -62,43 +62,43 @@ pub struct Palette {
     /// It is **solid, not white-at-an-alpha**: a hairline that has to clear a
     /// fixed ratio cannot be a translucent one, because what it composites over
     /// changes with the surface under it.
-    pub line: Color32,
+    pub line: Rgba8,
     /// The live tone — **teal**, `#2B837E` in both themes (since 2026-11-10;
     /// it was the bright `#5CC6C0` with dark ink on it). Selected segments,
     /// ticked boxes, sliders, the primary button and the plate an engaged
     /// control wears: the one saturated colour in the chrome, so it always
     /// means "this is the live thing". It carries [`Palette::on_accent`]
     /// (white) at 4.5:1, so anything filled with it is labelled in that.
-    pub accent: Color32,
+    pub accent: Rgba8,
     /// The accent at the top of its ladder, as a **stroke**: the text cursor,
     /// a text-selection handle, the rim on a *held* control (north-up lock,
     /// caps lock). White in the dark theme, the hub's deep accent text in the
     /// light one.
-    pub accent_bright: Color32,
+    pub accent_bright: Rgba8,
     /// The fill an accent plate changes to under the pointer
     /// ([`primary_button_sized`]): a step deeper, so the white label still
     /// reads (5.1:1).
-    pub accent_lift: Color32,
+    pub accent_lift: Rgba8,
     /// The rim of an *accent-filled* plate: an engaged disc, a dock disc whose
     /// panel is open. A deeper teal than the plate, so the white glyph inside
     /// would read on it too (5.8:1). The rim of a pressed or hovered *button*
     /// is [`Palette::accent_word`] instead, which clears 3:1 on those fills.
-    pub accent_ring: Color32,
+    pub accent_ring: Rgba8,
     /// The accent, pushed *down* — the fill of an accent-filled button while
     /// the pointer is held on it. A press moves the opposite way from a hover,
     /// or the two states are one state. Its label is still
     /// [`Palette::on_accent`], at 5.8:1.
-    pub accent_pressed: Color32,
+    pub accent_pressed: Rgba8,
     /// The top of the *text* ladder — [`Palette::text`] → [`Palette::cream`]
     /// → this. Links, speaker names, emphasised values, the open menu entry.
     /// White in the dark theme (emphasis is lightness there); the hub's deep
     /// teal link colour in the light one.
-    pub accent_text: Color32,
+    pub accent_text: Rgba8,
     /// Words in the accent on a soft accent tag ([`Palette::accent_muted`]),
     /// the web's `--m-accent-text`: the pale [`Palette::accent_ring`] in the
     /// dark theme, the hub's deep teal in the light one (where the ring is too
     /// light to be read as type on the tag).
-    pub accent_word: Color32,
+    pub accent_word: Rgba8,
     /// The soft half of the accent: a pressed button, a selected row, a text
     /// selection, an "on" tag. Dark, a deep teal that carries
     /// [`Palette::cream`] at 10.5:1; light, the hub's accent-soft.
@@ -107,12 +107,12 @@ pub struct Palette {
     /// label drawn in egui's `strong_text_color`, which is
     /// [`Palette::cream`]; filling it with [`Palette::accent`] instead would
     /// put a light label on a light plate.
-    pub accent_muted: Color32,
+    pub accent_muted: Rgba8,
     /// The strongest text: headings and the one or two things that must read
     /// brightest (dark) or darkest (light). egui's `strong_text_color`.
-    pub cream: Color32,
+    pub cream: Rgba8,
     /// Body text.
-    pub text: Color32,
+    pub text: Rgba8,
     /// Secondary text: units, coordinates, hints. Also `index.html`'s muted
     /// tone in the dark theme, so the pre-wasm splash and this one agree —
     /// **change it in both**.
@@ -121,16 +121,16 @@ pub struct Palette {
     /// `weak_text_color`, i.e. the one that lands on every surface in the ramp,
     /// and it measured 4.40:1 on the hover step and 4.12:1 inside an overlay box
     /// over bright map imagery. Both now clear 4.5.
-    pub text_dim: Color32,
+    pub text_dim: Rgba8,
     /// Warnings. **One of the two colours the chrome keeps** besides the
     /// accent, for the reason road signs are not brand-coloured: caution and
     /// fault are statements about the world, not decoration. A desaturated gold
     /// on the dark theme, the hub's amber-brown on the light.
-    pub warn: Color32,
+    pub warn: Rgba8,
     /// Errors. Warm rather than pure red so it belongs to the same palette;
     /// lifted from `#E88B7D` on 2026-08-14 (dark), because an error is the one
     /// string that must be readable wherever it lands.
-    pub error: Color32,
+    pub error: Rgba8,
     /// The fill of the boxes that float *over* the map (status HUD, stats,
     /// driver chrome, the dock, the round map buttons): [`Palette::panel`],
     /// solid.
@@ -142,10 +142,10 @@ pub struct Palette {
     /// panel**, also asked that day: "some panels are lighter than others; they
     /// must be dark". One tone for every surface a person reads as a panel;
     /// only a card *inside* one stands off it.
-    pub overlay: Color32,
+    pub overlay: Rgba8,
     /// The window and popup fill: [`Palette::overlay`]'s tone. The name stays
     /// for the call sites that paint "the card a window is".
-    pub glass: Color32,
+    pub glass: Rgba8,
     /// Every panel's surface — docked, full-screen on a phone, floating over
     /// the map.
     ///
@@ -157,66 +157,66 @@ pub struct Palette {
     /// is the hub's teal a step down, and the cards inside are
     /// [`Palette::card`], close to it. **Light:** the hub's page, with white
     /// cards on it.
-    pub panel: Color32,
+    pub panel: Rgba8,
     /// A card inside a panel ([`list_group`], a chat or contact row). Dark:
     /// just off [`Palette::panel`], so a group of rows reads as one block by
     /// its hairline and shadow rather than by a jump in tone. Light: white.
-    pub card: Color32,
+    pub card: Rgba8,
     /// The hairline round a panel, a window or a box over the map: the midas
     /// hub's `--m-border`, solid. The shadow does the lifting; this only keeps
     /// a card's edge.
-    pub panel_rim: Color32,
+    pub panel_rim: Rgba8,
     /// The rim around a box or a round button over the map:
     /// [`Palette::panel_rim`]. It never identifies a *control* — that is
     /// [`Palette::line`]'s job.
-    pub overlay_line: Color32,
+    pub overlay_line: Rgba8,
     /// The fill of a control that is a *guide* rather than a plate — the
     /// thumbstick's well, which at [`Palette::overlay`]'s opacity read as a hole
     /// punched in the map rather than as something to put a thumb on. Half the
     /// coverage; nothing legible sits on it. The floor is the other direction:
     /// at alpha 90 the well vanished into pale beige map.
-    pub overlay_soft: Color32,
+    pub overlay_soft: Rgba8,
     /// The rule between the rows of a [`list_group`]: the text tone at a low
     /// alpha, so it is a hairline on any card.
-    pub list_line: Color32,
+    pub list_line: Rgba8,
     /// How dark the shadows are, as a factor on their alpha: a light page
     /// takes the hub's faint lift, not the dark theme's deep one.
     pub shadow: f32,
     /// The fill of a tile or card that is *on* (a layer tile): the soft teal
     /// in the dark theme; white in the light one, where the soft teal read
     /// as washed out (2026-11-10) and the accent rim and icon say "on".
-    pub tile_on: Color32,
+    pub tile_on: Rgba8,
     /// The knob of a switch that is on, over its accent track: dark ink in
     /// the dark theme, white in the light one, as a light UI draws a switch.
-    pub knob_on: Color32,
+    pub knob_on: Rgba8,
     /// A count on a round button (the layer categories): the midas hub's gold,
     /// its one accent besides the teal, with [`Palette::on_gold`] on it. It was
     /// a cream or near-black disc, which read as a black dot (2026-11-10).
-    pub gold: Color32,
+    pub gold: Rgba8,
     /// The ink on [`Palette::gold`].
-    pub on_gold: Color32,
+    pub on_gold: Rgba8,
     /// The hairline round a button or a field at rest: the midas hub's soft
     /// border, a step firmer. It was [`Palette::line`], a 3:1 grey, and a page
     /// of buttons in it read as "cheap" boxes (2026-11-10); a control is now
     /// told by its plate, its shape and its word, as in the hub, with
     /// [`Palette::line`] kept for what must be found by its edge alone.
-    pub control_edge: Color32,
+    pub control_edge: Rgba8,
     /// The plate of a round button over the map at rest ([`map_disc`],
     /// [`round_button`]), the search pill and the World | Community track.
     /// Dark: [`Palette::overlay`], as it was. Light: white, as the midas hub's
     /// light buttons are.
-    pub map_fill: Color32,
+    pub map_fill: Rgba8,
     /// The glyph on that plate. Dark: [`Palette::text`]. Light: the deep
     /// accent teal (2026-11-10, "the light buttons have no teal theme at
     /// all": they were black glyphs on white discs, and teal was left only on
     /// the one plate that was on).
-    pub map_ink: Color32,
+    pub map_ink: Rgba8,
     /// The rim round that plate. Dark: [`Palette::overlay_line`]. Light: a
     /// faint teal, the brand's edge rather than a grey one.
-    pub map_rim: Color32,
+    pub map_rim: Rgba8,
     /// A strong mark on the map's chrome that is not a glyph — the zoom
     /// rail's thumb. Dark: [`Palette::cream`]. Light: the accent.
-    pub map_mark: Color32,
+    pub map_mark: Rgba8,
     /// Whether egui's dark visuals are the base ([`visuals`]).
     pub dark: bool,
 }
@@ -224,44 +224,44 @@ pub struct Palette {
 /// Today's look: the deep teal, read off Android's keyboard in its teal dark
 /// theme (2026-10-10) and laid out as the midas hub lays out its dark mode.
 pub const DARK: Palette = Palette {
-    ink: Color32::from_rgb(0x0F, 0x14, 0x16),
-    on_accent: Color32::WHITE,
-    on_status: Color32::from_rgb(0x0F, 0x14, 0x16),
-    surface: Color32::from_rgb(0x14, 0x1A, 0x1C),
-    surface_raised: Color32::from_rgb(0x1F, 0x28, 0x29),
-    surface_hover: Color32::from_rgb(0x2A, 0x35, 0x36),
-    line: Color32::from_rgb(0x63, 0x79, 0x7C),
-    accent: Color32::from_rgb(0x2B, 0x83, 0x7E),
-    accent_bright: Color32::WHITE,
-    accent_lift: Color32::from_rgb(0x27, 0x7A, 0x75),
-    accent_ring: Color32::from_rgb(0x24, 0x70, 0x6C),
-    accent_pressed: Color32::from_rgb(0x24, 0x70, 0x6C),
-    accent_text: Color32::WHITE,
-    accent_word: Color32::from_rgb(0xA8, 0xDC, 0xD8),
-    accent_muted: Color32::from_rgb(0x26, 0x3F, 0x42),
-    cream: Color32::from_rgb(0xF4, 0xF8, 0xF8),
-    text: Color32::from_rgb(0xE2, 0xE9, 0xEA),
-    text_dim: Color32::from_rgb(0xAA, 0xC2, 0xC6),
-    warn: Color32::from_rgb(0xD8, 0xC0, 0x7A),
-    error: Color32::from_rgb(0xF2, 0xA2, 0x96),
-    overlay: Color32::from_rgb(0x17, 0x23, 0x24),
-    glass: Color32::from_rgb(0x17, 0x23, 0x24),
-    panel: Color32::from_rgb(0x17, 0x23, 0x24),
-    card: Color32::from_rgb(0x16, 0x1F, 0x21),
-    panel_rim: Color32::from_rgb(0x2A, 0x35, 0x36),
-    overlay_line: Color32::from_rgb(0x2A, 0x35, 0x36),
-    overlay_soft: Color32::from_rgba_unmultiplied_const(0x14, 0x1A, 0x1C, 140),
-    list_line: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 22),
+    ink: Rgba8::from_rgb(0x0F, 0x14, 0x16),
+    on_accent: Rgba8::WHITE,
+    on_status: Rgba8::from_rgb(0x0F, 0x14, 0x16),
+    surface: Rgba8::from_rgb(0x14, 0x1A, 0x1C),
+    surface_raised: Rgba8::from_rgb(0x1F, 0x28, 0x29),
+    surface_hover: Rgba8::from_rgb(0x2A, 0x35, 0x36),
+    line: Rgba8::from_rgb(0x63, 0x79, 0x7C),
+    accent: Rgba8::from_rgb(0x2B, 0x83, 0x7E),
+    accent_bright: Rgba8::WHITE,
+    accent_lift: Rgba8::from_rgb(0x27, 0x7A, 0x75),
+    accent_ring: Rgba8::from_rgb(0x24, 0x70, 0x6C),
+    accent_pressed: Rgba8::from_rgb(0x24, 0x70, 0x6C),
+    accent_text: Rgba8::WHITE,
+    accent_word: Rgba8::from_rgb(0xA8, 0xDC, 0xD8),
+    accent_muted: Rgba8::from_rgb(0x26, 0x3F, 0x42),
+    cream: Rgba8::from_rgb(0xF4, 0xF8, 0xF8),
+    text: Rgba8::from_rgb(0xE2, 0xE9, 0xEA),
+    text_dim: Rgba8::from_rgb(0xAA, 0xC2, 0xC6),
+    warn: Rgba8::from_rgb(0xD8, 0xC0, 0x7A),
+    error: Rgba8::from_rgb(0xF2, 0xA2, 0x96),
+    overlay: Rgba8::from_rgb(0x17, 0x23, 0x24),
+    glass: Rgba8::from_rgb(0x17, 0x23, 0x24),
+    panel: Rgba8::from_rgb(0x17, 0x23, 0x24),
+    card: Rgba8::from_rgb(0x16, 0x1F, 0x21),
+    panel_rim: Rgba8::from_rgb(0x2A, 0x35, 0x36),
+    overlay_line: Rgba8::from_rgb(0x2A, 0x35, 0x36),
+    overlay_soft: Rgba8::from_rgba_unmultiplied(0x14, 0x1A, 0x1C, 140),
+    list_line: Rgba8::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 22),
     shadow: 1.0,
-    tile_on: Color32::from_rgb(0x26, 0x3F, 0x42),
-    knob_on: Color32::from_rgb(0xE2, 0xE9, 0xEA),
-    gold: Color32::from_rgb(0xD8, 0xC0, 0x7A),
-    on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
-    control_edge: Color32::from_rgb(0x3A, 0x48, 0x49),
-    map_fill: Color32::from_rgb(0x17, 0x23, 0x24),
-    map_ink: Color32::from_rgb(0xE2, 0xE9, 0xEA),
-    map_rim: Color32::from_rgb(0x2A, 0x35, 0x36),
-    map_mark: Color32::from_rgb(0xF4, 0xF8, 0xF8),
+    tile_on: Rgba8::from_rgb(0x26, 0x3F, 0x42),
+    knob_on: Rgba8::from_rgb(0xE2, 0xE9, 0xEA),
+    gold: Rgba8::from_rgb(0xD8, 0xC0, 0x7A),
+    on_gold: Rgba8::from_rgb(0x1F, 0x28, 0x29),
+    control_edge: Rgba8::from_rgb(0x3A, 0x48, 0x49),
+    map_fill: Rgba8::from_rgb(0x17, 0x23, 0x24),
+    map_ink: Rgba8::from_rgb(0xE2, 0xE9, 0xEA),
+    map_rim: Rgba8::from_rgb(0x2A, 0x35, 0x36),
+    map_mark: Rgba8::from_rgb(0xF4, 0xF8, 0xF8),
     dark: true,
 };
 
@@ -279,44 +279,44 @@ pub const DARK: Palette = Palette {
 ///     than its accent-hover (3:1 round a pressed tag, 4.5:1 under the
 ///     plate's ink).
 pub const LIGHT: Palette = Palette {
-    ink: Color32::from_rgb(0xE7, 0xED, 0xED),
-    on_accent: Color32::WHITE,
-    on_status: Color32::WHITE,
-    surface: Color32::WHITE,
-    surface_raised: Color32::from_rgb(0xF8, 0xFA, 0xFA),
-    surface_hover: Color32::from_rgb(0xE7, 0xED, 0xED),
-    line: Color32::from_rgb(0x78, 0x8B, 0x8E),
-    accent: Color32::from_rgb(0x2B, 0x83, 0x7E),
-    accent_bright: Color32::from_rgb(0x17, 0x69, 0x6A),
-    accent_lift: Color32::from_rgb(0x27, 0x7A, 0x75),
-    accent_ring: Color32::from_rgb(0x24, 0x70, 0x6C),
-    accent_pressed: Color32::from_rgb(0x24, 0x70, 0x6C),
-    accent_text: Color32::from_rgb(0x17, 0x69, 0x6A),
-    accent_word: Color32::from_rgb(0x17, 0x69, 0x6A),
-    accent_muted: Color32::from_rgb(0xD9, 0xF0, 0xEE),
-    cream: Color32::from_rgb(0x0F, 0x14, 0x16),
-    text: Color32::from_rgb(0x1F, 0x28, 0x29),
-    text_dim: Color32::from_rgb(0x54, 0x65, 0x68),
-    warn: Color32::from_rgb(0x85, 0x57, 0x00),
-    error: Color32::from_rgb(0xB3, 0x36, 0x1E),
-    overlay: Color32::from_rgb(0xF1, 0xF5, 0xF5),
-    glass: Color32::from_rgb(0xF1, 0xF5, 0xF5),
-    panel: Color32::from_rgb(0xF1, 0xF5, 0xF5),
-    card: Color32::WHITE,
-    panel_rim: Color32::from_rgb(0xDA, 0xE3, 0xE3),
-    overlay_line: Color32::from_rgb(0xDA, 0xE3, 0xE3),
-    overlay_soft: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 150),
-    list_line: Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 22),
+    ink: Rgba8::from_rgb(0xE7, 0xED, 0xED),
+    on_accent: Rgba8::WHITE,
+    on_status: Rgba8::WHITE,
+    surface: Rgba8::WHITE,
+    surface_raised: Rgba8::from_rgb(0xF8, 0xFA, 0xFA),
+    surface_hover: Rgba8::from_rgb(0xE7, 0xED, 0xED),
+    line: Rgba8::from_rgb(0x78, 0x8B, 0x8E),
+    accent: Rgba8::from_rgb(0x2B, 0x83, 0x7E),
+    accent_bright: Rgba8::from_rgb(0x17, 0x69, 0x6A),
+    accent_lift: Rgba8::from_rgb(0x27, 0x7A, 0x75),
+    accent_ring: Rgba8::from_rgb(0x24, 0x70, 0x6C),
+    accent_pressed: Rgba8::from_rgb(0x24, 0x70, 0x6C),
+    accent_text: Rgba8::from_rgb(0x17, 0x69, 0x6A),
+    accent_word: Rgba8::from_rgb(0x17, 0x69, 0x6A),
+    accent_muted: Rgba8::from_rgb(0xD9, 0xF0, 0xEE),
+    cream: Rgba8::from_rgb(0x0F, 0x14, 0x16),
+    text: Rgba8::from_rgb(0x1F, 0x28, 0x29),
+    text_dim: Rgba8::from_rgb(0x54, 0x65, 0x68),
+    warn: Rgba8::from_rgb(0x85, 0x57, 0x00),
+    error: Rgba8::from_rgb(0xB3, 0x36, 0x1E),
+    overlay: Rgba8::from_rgb(0xF1, 0xF5, 0xF5),
+    glass: Rgba8::from_rgb(0xF1, 0xF5, 0xF5),
+    panel: Rgba8::from_rgb(0xF1, 0xF5, 0xF5),
+    card: Rgba8::WHITE,
+    panel_rim: Rgba8::from_rgb(0xDA, 0xE3, 0xE3),
+    overlay_line: Rgba8::from_rgb(0xDA, 0xE3, 0xE3),
+    overlay_soft: Rgba8::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 150),
+    list_line: Rgba8::from_rgba_unmultiplied(0x0F, 0x14, 0x16, 22),
     shadow: 0.6,
-    tile_on: Color32::WHITE,
-    knob_on: Color32::WHITE,
-    gold: Color32::from_rgb(0xE0, 0xBC, 0x5C),
-    on_gold: Color32::from_rgb(0x1F, 0x28, 0x29),
-    control_edge: Color32::from_rgb(0xC9, 0xD4, 0xD5),
-    map_fill: Color32::WHITE,
-    map_ink: Color32::from_rgb(0x17, 0x69, 0x6A),
-    map_rim: Color32::from_rgb(0x9F, 0xD1, 0xCD),
-    map_mark: Color32::from_rgb(0x2B, 0x83, 0x7E),
+    tile_on: Rgba8::WHITE,
+    knob_on: Rgba8::WHITE,
+    gold: Rgba8::from_rgb(0xE0, 0xBC, 0x5C),
+    on_gold: Rgba8::from_rgb(0x1F, 0x28, 0x29),
+    control_edge: Rgba8::from_rgb(0xC9, 0xD4, 0xD5),
+    map_fill: Rgba8::WHITE,
+    map_ink: Rgba8::from_rgb(0x17, 0x69, 0x6A),
+    map_rim: Rgba8::from_rgb(0x9F, 0xD1, 0xCD),
+    map_mark: Rgba8::from_rgb(0x2B, 0x83, 0x7E),
     dark: false,
 };
 
@@ -362,7 +362,7 @@ pub fn dark_here<R>(add: impl FnOnce() -> R) -> R {
 /// [`dark_here`]. Nothing to do while the theme is dark.
 pub fn use_dark_visuals(ui: &mut egui::Ui) {
     if is_light() {
-        ui.style_mut().visuals = visuals_of(&DARK);
+        ui.style_mut().visuals = visuals_of(&DARK32);
     }
 }
 
@@ -390,54 +390,54 @@ pub fn is_light() -> bool {
 /// The separation is the point. While the chrome was orange this was spelled
 /// `= ACCENT`, so the logo and every live control in the app were one constant —
 /// and repainting the chrome would have repainted the logo with it, silently.
-pub const BRAND: Color32 = Color32::from_rgb(0xFD, 0x60, 0x12);
+pub const BRAND: Rgba8 = Rgba8::from_rgb(0xFD, 0x60, 0x12);
 
 /// A person's **real location** — where their phone is, shared with a private
 /// chat (`systems::private_chat`). Blue because every map app draws the phone
 /// that way, and never the brand orange, which marks places sent in a chat: the
 /// two must not be confused on the map, one being a spot somebody pointed at and
 /// the other being where somebody actually is. Used for nothing else.
-pub const REAL_LOCATION: Color32 = Color32::from_rgb(0x4F, 0xB2, 0xFF);
+pub const REAL_LOCATION: Rgba8 = Rgba8::from_rgb(0x4F, 0xB2, 0xFF);
 
 /// **Public, and on the fediverse**: a community's posts and anything that
 /// came from another server (`systems::community_posts`). Lavender, the colour
 /// the design gave it (`docs/mockups/communities/v4-public-posts.html`), so the
 /// public half of a community never reads like its encrypted topics. Used for
 /// nothing else.
-pub const PUBLIC: Color32 = Color32::from_rgb(0xB3, 0x9D, 0xFF);
+pub const PUBLIC: Rgba8 = Rgba8::from_rgb(0xB3, 0x9D, 0xFF);
 
 /// **The council**: an item of a municipal council's business on the Plans
 /// layer (`systems::plans`), the square on the map and its badge on a card.
 /// The design's deep blue (`docs/mockups/plans-and-decisions/v1.png`), away
 /// from the brand orange the layer uses for notices still open. Used for
 /// nothing else.
-pub const COUNCIL: Color32 = Color32::from_rgb(0x2F, 0x4A, 0x7A);
+pub const COUNCIL: Rgba8 = Rgba8::from_rgb(0x2F, 0x4A, 0x7A);
 /// The council square's rim and the council's text on a dark card: the same
 /// blue, light enough to read.
-pub const COUNCIL_LIGHT: Color32 = Color32::from_rgb(0x9D, 0xB7, 0xE6);
+pub const COUNCIL_LIGHT: Rgba8 = Rgba8::from_rgb(0x9D, 0xB7, 0xE6);
 
 // Script editor syntax colours (`js_highlight`), on the code box's ink —
 // [`DARK`]'s in both themes: the script editor keeps a dark code box in the
 // light theme, so these are one set. Their own constants rather than borrowed
 // ones: a warning tone on every string would read as a page of warnings.
 /// Keywords — the accent, so the structure of a script is what stands out.
-pub const CODE_KEYWORD: Color32 = Color32::from_rgb(0x5C, 0xC6, 0xC0);
+pub const CODE_KEYWORD: Rgba8 = Rgba8::from_rgb(0x5C, 0xC6, 0xC0);
 /// String literals — a warm sand.
-pub const CODE_STRING: Color32 = Color32::from_rgb(0xE6, 0xB8, 0x86);
+pub const CODE_STRING: Rgba8 = Rgba8::from_rgb(0xE6, 0xB8, 0x86);
 /// Numbers and `true` / `false` / `nil`.
-pub const CODE_LITERAL: Color32 = Color32::from_rgb(0xC3, 0xA9, 0xFF);
+pub const CODE_LITERAL: Rgba8 = Rgba8::from_rgb(0xC3, 0xA9, 0xFF);
 /// Comments — recede, but stay readable.
-pub const CODE_COMMENT: Color32 = Color32::from_rgb(0x86, 0x9C, 0xA0);
+pub const CODE_COMMENT: Rgba8 = Rgba8::from_rgb(0x86, 0x9C, 0xA0);
 /// The host's own functions and handlers.
-pub const CODE_API: Color32 = Color32::from_rgb(0x8F, 0xCB, 0xFF);
+pub const CODE_API: Rgba8 = Rgba8::from_rgb(0x8F, 0xCB, 0xFF);
 /// Any other call.
-pub const CODE_CALL: Color32 = Color32::from_rgb(0xD6, 0xE4, 0xA8);
+pub const CODE_CALL: Rgba8 = Rgba8::from_rgb(0xD6, 0xE4, 0xA8);
 
 /// Backing for the small text chips painted straight onto the map — place-pin
 /// labels, the drag ghost, a feature's hover card. Darker and more opaque than
 /// [`Palette::overlay`] on purpose: these are a few words over an arbitrary tile, so
 /// legibility beats letting the map through.
-pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 235);
+pub const LABEL_CHIP: Rgba8 = Rgba8::from_rgba_unmultiplied(0x0F, 0x14, 0x16, 235);
 /// Halo behind map text that has no chip to sit on — the street names
 /// (`systems::street_labels`), which are painted *along* their street and would
 /// black it out under a chip. **Dark**, and only mostly opaque: a street name
@@ -448,44 +448,44 @@ pub const LABEL_CHIP: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14
 /// halo), and on tarmac the eye saw only the halo: a white outline round dark
 /// letters, which read as a sticker on the road rather than a name in it.
 /// Neutral, not tinted: the map underneath supplies all the hue in the frame.
-pub const LABEL_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0x16, 0x17, 0x19, 190);
+pub const LABEL_HALO: Rgba8 = Rgba8::from_rgba_unmultiplied(0x16, 0x17, 0x19, 190);
 /// The stroke inside [`LABEL_HALO`]: a warm off-white, the colour of road paint
 /// rather than of paper, and not [`Palette::cream`] — this one lies on tarmac in the
 /// world, that one is the chrome's, and the two are free to move apart.
-pub const LABEL_INK: Color32 = Color32::from_rgb(0xF6, 0xF3, 0xEC);
+pub const LABEL_INK: Rgba8 = Rgba8::from_rgb(0xF6, 0xF3, 0xEC);
 
 /// A scenario over the map (`systems::scenario`, `docs/mockups/scenarios/`).
 /// A region's own colour is the scenario file's (it is data, like a legend);
 /// what is here is the frame each mode wears and the inks of a track.
 pub mod scenario {
-    use egui::Color32;
+    use super::Rgba8;
 
     /// Live: an official source only, so the one frame allowed to look like a
     /// warning (v4-whole).
-    pub const LIVE: Color32 = Color32::from_rgb(0xD6, 0x3A, 0x2F);
-    pub const REPLAY: Color32 = Color32::from_rgb(0x4C, 0xAF, 0x6E);
+    pub const LIVE: Rgba8 = Rgba8::from_rgb(0xD6, 0x3A, 0x2F);
+    pub const REPLAY: Rgba8 = Rgba8::from_rgb(0x4C, 0xAF, 0x6E);
     /// Exercise: the yellow of its stripes, on every screen.
-    pub const EXERCISE: Color32 = Color32::from_rgb(0xE8, 0xC5, 0x47);
-    pub const SANDBOX: Color32 = Color32::from_rgb(0x9B, 0x7B, 0xFF);
+    pub const EXERCISE: Rgba8 = Rgba8::from_rgb(0xE8, 0xC5, 0x47);
+    pub const SANDBOX: Rgba8 = Rgba8::from_rgb(0x9B, 0x7B, 0xFF);
 
     /// A track's line, behind and (dashed) ahead, and its time ticks.
-    pub const TRACK: Color32 = Color32::from_rgb(0xFF, 0xCF, 0x9A);
+    pub const TRACK: Rgba8 = Rgba8::from_rgb(0xFF, 0xCF, 0x9A);
     /// The soft line under the path behind.
-    pub const TRACK_GLOW: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0xB2, 0x7A, 40);
+    pub const TRACK_GLOW: Rgba8 = Rgba8::from_rgba_unmultiplied(0xFF, 0xB2, 0x7A, 40);
     /// The cone of where it may go.
-    pub const CONE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x7A, 0x4A, 34);
-    pub const CONE_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x9A, 0x6A, 90);
+    pub const CONE: Rgba8 = Rgba8::from_rgba_unmultiplied(0xFF, 0x7A, 0x4A, 34);
+    pub const CONE_EDGE: Rgba8 = Rgba8::from_rgba_unmultiplied(0xFF, 0x9A, 0x6A, 90);
     /// The line between two areas of a figure: dark and thin, so neighbours
     /// in the same band still read as two places.
-    pub const AREA_EDGE: Color32 = Color32::from_rgba_unmultiplied_const(0x12, 0x18, 0x1A, 150);
+    pub const AREA_EDGE: Rgba8 = Rgba8::from_rgba_unmultiplied(0x12, 0x18, 0x1A, 150);
     /// The dark band under the light outline of the place being read, so it
     /// holds on a pale fill as on a dark one.
-    pub const AREA_HALO: Color32 = Color32::from_rgba_unmultiplied_const(0x0F, 0x14, 0x16, 170);
+    pub const AREA_HALO: Rgba8 = Rgba8::from_rgba_unmultiplied(0x0F, 0x14, 0x16, 170);
     /// The glow round a group's head, and its members.
-    pub const HEAD: Color32 = Color32::from_rgba_unmultiplied_const(0xFF, 0x6A, 0x3A, 90);
-    pub const HEAD_DOT: Color32 = Color32::from_rgb(0xFF, 0xF1, 0xC9);
+    pub const HEAD: Rgba8 = Rgba8::from_rgba_unmultiplied(0xFF, 0x6A, 0x3A, 90);
+    pub const HEAD_DOT: Rgba8 = Rgba8::from_rgb(0xFF, 0xF1, 0xC9);
     /// The rim of a group's label chip.
-    pub const HEAD_RIM: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x5A);
+    pub const HEAD_RIM: Rgba8 = Rgba8::from_rgb(0xFF, 0x8A, 0x5A);
     /// Where some were brought down.
-    pub const INTERCEPT: Color32 = Color32::from_rgb(0x9F, 0xD3, 0xFF);
+    pub const INTERCEPT: Rgba8 = Rgba8::from_rgb(0x9F, 0xD3, 0xFF);
 }

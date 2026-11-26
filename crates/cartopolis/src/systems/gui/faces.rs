@@ -710,7 +710,7 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
         ui.painter().circle_stroke(
             rect.center(),
             48.0,
-            egui::Stroke::new(1.5, theme::p().text_dim.gamma_multiply(0.4)),
+            egui::Stroke::new(1.5, theme::p32().text_dim.gamma_multiply(0.4)),
         );
         let name = if me.is_empty() { "?" } else { me };
         crate::systems::discs::paint_avatar(
@@ -738,7 +738,7 @@ pub fn you_picture(ui: &mut egui::Ui, faces: &mut Faces, me: &str, panel: &mut O
         ui.label(
             egui::RichText::new(note)
                 .size(12.5)
-                .color(theme::p().text_dim),
+                .color(theme::p32().text_dim),
         );
     }
 }
@@ -748,9 +748,9 @@ fn pill(icon: &str, text: &str) -> egui::Button<'static> {
     egui::Button::new(
         egui::RichText::new(format!("{icon} {text}"))
             .size(12.5)
-            .color(theme::p().text),
+            .color(theme::p32().text),
     )
-    .fill(theme::p().surface_raised)
+    .fill(theme::p32().surface_raised)
     .corner_radius(egui::CornerRadius::same(12))
     .min_size(egui::vec2(0.0, 32.0))
 }
@@ -884,7 +884,7 @@ fn draw_face_viewfinder(egui: &mut EguiMut, shooting: bool, acts: &mut Vec<Finde
     painter.rect_stroke(
         frame,
         egui::CornerRadius::ZERO,
-        egui::Stroke::new(2.0, theme::p().cream),
+        egui::Stroke::new(2.0, theme::p32().cream),
         egui::StrokeKind::Outside,
     );
     egui::Area::new(egui::Id::new("face_viewfinder_controls"))
@@ -905,10 +905,10 @@ fn draw_face_viewfinder(egui: &mut EguiMut, shooting: bool, acts: &mut Vec<Finde
                 let shutter = egui::Button::new(
                     egui::RichText::new(format!("{}  Take it", icons::CAMERA))
                         .size(15.0)
-                        .color(theme::p().ink)
+                        .color(theme::p32().ink)
                         .strong(),
                 )
-                .fill(theme::p().accent)
+                .fill(theme::p32().accent)
                 .corner_radius(egui::CornerRadius::same(18))
                 .min_size(egui::vec2(0.0, 40.0));
                 if ui.add_enabled(!shooting, shutter).clicked() {

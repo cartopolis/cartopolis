@@ -2055,7 +2055,7 @@ mod native {
                     Mode::Real => {
                         // unnamed: the backdrop only swallows touches, it does nothing.
                         ui.allocate_rect(full, egui::Sense::click_and_drag());
-                        painter.rect_filled(full, 0.0, theme::p().ink);
+                        painter.rect_filled(full, 0.0, theme::p32().ink);
                         if let Some((id, size)) = photo {
                             painter.image(
                                 id,
@@ -2075,7 +2075,7 @@ mod native {
                         let (pane, hole) = (lay.pane, lay.hole);
                         session.world_rect = Some(fractions(hole, viewport));
                         for r in around(full, hole) {
-                            painter.rect_filled(r, 0.0, theme::p().ink);
+                            painter.rect_filled(r, 0.0, theme::p32().ink);
                         }
                         if let Some((id, size)) = photo {
                             painter.image(
@@ -2172,24 +2172,24 @@ mod native {
                         if ready {
                             RECORD_RED
                         } else {
-                            theme::p().text_dim
+                            theme::p32().text_dim
                         },
                     );
                 } else {
                     let fill = if ready {
                         match session.mode {
-                            Mode::World => theme::BRAND,
+                            Mode::World => theme::BRAND.to_egui(),
                             _ => egui::Color32::WHITE,
                         }
                     } else {
-                        theme::p().text_dim
+                        theme::p32().text_dim
                     };
                     painter.circle_filled(shutter.center(), 27.0, fill);
                     if session.mode == Mode::Mixed && ready {
                         // Half photograph, half world: the Mixed mark.
                         painter.add(egui::Shape::convex_polygon(
                             half_disc(shutter.center(), 27.0),
-                            theme::BRAND,
+                            theme::BRAND.to_egui(),
                             egui::Stroke::NONE,
                         ));
                     }
@@ -2281,7 +2281,7 @@ mod native {
                         m.label(),
                         egui::FontId::proportional(14.0),
                         if on {
-                            theme::BRAND
+                            theme::BRAND.to_egui()
                         } else if offered {
                             egui::Color32::WHITE
                         } else {
@@ -2706,7 +2706,7 @@ mod native {
 
     /// The recording colour: the shutter in Video, and the running time. The
     /// call's hang-up red, the one red the chrome has.
-    pub const RECORD_RED: egui::Color32 = theme::CALL_END_RED;
+    pub const RECORD_RED: egui::Color32 = theme::CALL_END_RED.to_egui();
 
     /// The polaroid's rim over the map In world, and its width.
     pub const POLAROID_RIM: egui::Color32 = egui::Color32::from_rgb(0xFB, 0xFA, 0xF6);
@@ -2742,7 +2742,7 @@ mod native {
                 painter.rect_filled(
                     half.shrink(3.0),
                     SWITCH_SIZE.y / 2.0 - 3.0,
-                    theme::p().cream,
+                    theme::p32().cream,
                 );
             }
             painter.text(
@@ -2751,7 +2751,7 @@ mod native {
                 label,
                 egui::FontId::proportional(14.0),
                 if on {
-                    theme::p().ink
+                    theme::p32().ink
                 } else {
                     egui::Color32::WHITE
                 },
@@ -2864,7 +2864,7 @@ mod native {
                 let painter = ui.painter().clone();
                 // unnamed: the backdrop only swallows touches, it does nothing.
                 ui.allocate_rect(full, egui::Sense::click_and_drag());
-                painter.rect_filled(full, 0.0, theme::p().ink);
+                painter.rect_filled(full, 0.0, theme::p32().ink);
 
                 let shown = fit_in(texture.size_vec2(), room);
                 painter.image(
@@ -2896,7 +2896,7 @@ mod native {
                         ui.label(
                             egui::RichText::new(place)
                                 .size(theme::SIZE_TITLE)
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         );
                         ui.add_space(10.0);
                     }
@@ -2904,7 +2904,7 @@ mod native {
                         ui.label(
                             egui::RichText::new("Send to")
                                 .size(theme::SIZE_BODY)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                         egui::ScrollArea::vertical()
                             .max_height(120.0)
@@ -2932,7 +2932,7 @@ mod native {
                         ui.label(
                             egui::RichText::new(line)
                                 .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                         ui.add_space(8.0);
                     }
@@ -2957,9 +2957,9 @@ mod native {
                             egui::RichText::new(line)
                                 .size(theme::SIZE_SUB)
                                 .color(if *bad {
-                                    theme::p().error
+                                    theme::p32().error
                                 } else {
-                                    theme::p().text_dim
+                                    theme::p32().text_dim
                                 }),
                         );
                     }
@@ -3009,21 +3009,25 @@ mod native {
         let resp = theme::named(ui, resp, label);
         let disc = egui::pos2(col.center().x, col.top() + ACTION_DISC / 2.0);
         let (fill, ring, ink) = if hot {
-            (theme::BRAND, theme::BRAND, egui::Color32::WHITE)
+            (
+                theme::BRAND.to_egui(),
+                theme::BRAND.to_egui(),
+                egui::Color32::WHITE,
+            )
         } else if enabled && resp.hovered() {
             (
-                theme::p().surface_hover,
-                theme::p().accent,
-                theme::p().cream,
+                theme::p32().surface_hover,
+                theme::p32().accent,
+                theme::p32().cream,
             )
         } else {
             (
-                theme::p().surface_raised,
-                theme::p().overlay_line,
-                theme::p().text,
+                theme::p32().surface_raised,
+                theme::p32().overlay_line,
+                theme::p32().text,
             )
         };
-        let ink = if enabled { ink } else { theme::p().text_dim };
+        let ink = if enabled { ink } else { theme::p32().text_dim };
         let painter = ui.painter();
         painter.circle(
             disc,
@@ -3044,9 +3048,9 @@ mod native {
             label,
             egui::FontId::proportional(theme::SIZE_BODY),
             if enabled {
-                theme::p().text
+                theme::p32().text
             } else {
-                theme::p().text_dim
+                theme::p32().text_dim
             },
         );
         enabled && resp.on_hover_text(label).clicked()
@@ -3122,7 +3126,7 @@ mod native {
         let color = match tone {
             ChipTone::Good => CHIP_GOOD,
             ChipTone::Warn => CHIP_WARN,
-            ChipTone::Plain => theme::p().cream,
+            ChipTone::Plain => theme::p32().cream,
         };
         let galley =
             painter.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.5), color);
@@ -3158,7 +3162,7 @@ mod native {
             egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), on, label)
         });
         let fill = if on {
-            theme::p().accent
+            theme::p32().accent
         } else {
             egui::Color32::from_black_alpha(150)
         };
@@ -3169,7 +3173,7 @@ mod native {
             icon,
             egui::FontId::proportional(18.0),
             if on {
-                theme::p().ink
+                theme::p32().ink
             } else {
                 egui::Color32::WHITE
             },

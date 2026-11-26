@@ -231,7 +231,7 @@ fn centred_at(top: f32) -> String {
 
 /// A small swatch, in a colour of the layer's own (a content palette, as
 /// the dots on the map are).
-fn swatch(colour: egui::Color32, round: bool) -> View {
+fn swatch(colour: theme::Rgba8, round: bool) -> View {
     let radius = if round { "var(--m-radius-full)" } else { "3px" };
     let style = format!(
         "flex: none; width: 10px; height: 10px; border-radius: {radius}; background: {}",
@@ -258,7 +258,7 @@ fn chip_view(s: Signal<ChipState>, acts: &Rc<RefCell<Vec<Act>>>) -> View {
             };
             let works: View = match c.works {
                 Some(t) => view! {
-                    <span style="display: flex; align-items: center; gap: 6px; white-space: nowrap">{swatch(WORK, false)}{t}</span>
+                    <span style="display: flex; align-items: center; gap: 6px; white-space: nowrap">{swatch(WORK.into(), false)}{t}</span>
                 },
                 None => View::Empty,
             };
@@ -329,7 +329,7 @@ fn ink(i: Ink) -> String {
         Ink::Dim => "var(--m-text-dim)".to_string(),
         Ink::Open => hex(theme::BRAND),
         Ink::Council => hex(theme::COUNCIL_LIGHT),
-        Ink::Work => hex(WORK),
+        Ink::Work => hex(WORK.into()),
     }
 }
 
@@ -342,7 +342,10 @@ fn size(s: TextSize) -> &'static str {
 
 /// A row's marker, as the map draws its dot or square.
 fn marker(m: Marker) -> View {
-    swatch(m.colour(), matches!(m, Marker::Open | Marker::Closed))
+    swatch(
+        m.colour().into(),
+        matches!(m, Marker::Open | Marker::Closed),
+    )
 }
 
 /// A link out: the system browser where there is one, the page's own link

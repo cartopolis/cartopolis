@@ -652,7 +652,7 @@ pub fn render_bookmarks_panel(
                     ui.label(
                         egui::RichText::new(format!("Waiting for a photo for {waiting}…"))
                             .size(12.0)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                     if theme::action_button(ui, "Cancel").clicked() {
                         act.cancel_photo = true;
@@ -665,7 +665,7 @@ pub fn render_bookmarks_panel(
                     ui.label(
                         egui::RichText::new(message.as_str())
                             .size(12.0)
-                            .color(theme::p().warn),
+                            .color(theme::p32().warn),
                     );
                     if theme::action_button(ui, "Dismiss").clicked() {
                         act.dismiss_photo_error = true;
@@ -680,7 +680,7 @@ pub fn render_bookmarks_panel(
                      \"+ Folder\" makes somewhere to sort them into.",
                     )
                     .size(13.0)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
                 );
             }
             egui::ScrollArea::vertical()
@@ -753,9 +753,9 @@ pub fn render_bookmarks_panel(
                         let stroke = egui::Stroke::new(
                             1.0,
                             if hot {
-                                theme::p().accent
+                                theme::p32().accent
                             } else {
-                                theme::p().line
+                                theme::p32().line
                             },
                         );
                         ui.painter().rect_stroke(
@@ -1248,7 +1248,7 @@ fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
     let galley = painter.layout_no_wrap(
         name.to_string(),
         egui::FontId::proportional(theme::SIZE_SUB),
-        theme::DARK.cream,
+        theme::DARK32.cream,
     );
     let pad = theme::CHIP_PADDING;
     // Offset off the cursor so it never covers the row being dropped onto.
@@ -1260,7 +1260,7 @@ fn drag_ghost(ctx: &egui::Context, rows: &[Row]) {
         egui::Stroke::new(1.0, egui_color(color)),
         egui::StrokeKind::Inside,
     );
-    painter.galley(rect.min + pad, galley, theme::p().cream);
+    painter.galley(rect.min + pad, galley, theme::p32().cream);
 }
 
 /// Lay `contents` out left-to-right across everything the row has left, from
@@ -1651,7 +1651,7 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
                     ui.label(
                         egui::RichText::new("Loading the photo…")
                             .size(13.0)
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                 });
             }
@@ -1659,7 +1659,7 @@ fn photo_viewer(ctx: &egui::Context, viewport: egui::Vec2, bookmarks: &mut Bookm
                 ui.label(
                     egui::RichText::new("This photo could not be opened.")
                         .size(13.0)
-                        .color(theme::p().warn),
+                        .color(theme::p32().warn),
                 );
             }
         });

@@ -274,7 +274,7 @@ fn reference_ui(ui: &mut egui::Ui) {
                 egui::RichText::new(
                     "Handlers you define — the host calls these when something happens:",
                 )
-                .color(theme::p().text_dim)
+                .color(theme::p32().text_dim)
                 .small(),
             );
             for f in cartopolis_core::SCRIPT_EVENTS {
@@ -288,7 +288,7 @@ fn reference_ui(ui: &mut egui::Ui) {
                         ui.label(
                             egui::RichText::new(group.label())
                                 .strong()
-                                .color(theme::p().accent_text)
+                                .color(theme::p32().accent_text)
                                 .small(),
                         );
                         any = true;
@@ -309,7 +309,7 @@ fn entry_ui(ui: &mut egui::Ui, f: &cartopolis_core::ScriptFn) {
         egui::RichText::new(f.signature)
             .monospace()
             .small()
-            .color(theme::p().text),
+            .color(theme::p32().text),
     )
     .on_hover_text(f.summary);
 }
@@ -318,9 +318,9 @@ fn entry_ui(ui: &mut egui::Ui, f: &cartopolis_core::ScriptFn) {
 /// are the one thing that must not read as ordinary output.
 fn level_color(level: ScriptLevel) -> egui::Color32 {
     match level {
-        ScriptLevel::Info => theme::p().text,
-        ScriptLevel::Notice => theme::p().text_dim,
-        ScriptLevel::Error => theme::p().error,
+        ScriptLevel::Info => theme::p32().text,
+        ScriptLevel::Notice => theme::p32().text_dim,
+        ScriptLevel::Error => theme::p32().error,
     }
 }
 
@@ -398,7 +398,7 @@ pub fn render_script_panel(
             let Some(prim_id) = prim_id else {
                 ui.label(
                     egui::RichText::new("Hold or right-click an object and choose Script.")
-                        .color(theme::p().text_dim),
+                        .color(theme::p32().text_dim),
                 );
                 return;
             };
@@ -407,9 +407,9 @@ pub fn render_script_panel(
                 ui.label(
                     egui::RichText::new(&prim_name)
                         .strong()
-                        .color(theme::p().accent_text),
+                        .color(theme::p32().accent_text),
                 );
-                ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::p().text_dim));
+                ui.label(egui::RichText::new(format!("#{prim_id}")).color(theme::p32().text_dim));
                 // "Running" is the server's word for "I hold a compiled instance",
                 // which is not the same as "the source in this box" — hence the
                 // separate unsaved marker rather than one combined state.
@@ -425,20 +425,20 @@ pub fn render_script_panel(
                     )
                 };
                 ui.label(egui::RichText::new(dot).color(if editor.running {
-                    theme::p().accent
+                    theme::p32().accent
                 } else {
-                    theme::p().text_dim
+                    theme::p32().text_dim
                 }))
                 .on_hover_text(tip);
                 if editor.is_dirty() {
-                    ui.label(egui::RichText::new("• unsaved").color(theme::p().warn));
+                    ui.label(egui::RichText::new("• unsaved").color(theme::p32().warn));
                 }
             });
 
             if let Some(b) = budget {
                 ui.label(
                     egui::RichText::new(budget_line(b))
-                        .color(theme::p().text_dim)
+                        .color(theme::p32().text_dim)
                         .small(),
                 )
                 .on_hover_text(BUDGET_HINT);
@@ -505,7 +505,7 @@ pub fn render_script_panel(
                 });
 
             if !editor.fetched {
-                ui.label(egui::RichText::new("Loading…").color(theme::p().text_dim));
+                ui.label(egui::RichText::new("Loading…").color(theme::p32().text_dim));
                 return;
             }
 

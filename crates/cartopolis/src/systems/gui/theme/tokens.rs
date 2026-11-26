@@ -13,10 +13,9 @@
 //! ([`super::LIGHT`], 2026-11-10) took these values, role for role, and is
 //! free to move apart from them.
 
-use egui::Color32;
 use mithril_style::{Pair, Tokens};
 
-use super::{self as theme, Palette};
+use super::{self as theme, Palette, Rgba8};
 
 /// The client's dark palette as the web still draws it. On 2026-11-10 the
 /// app's accent plates went a deeper teal with white ink (the person: "a teal
@@ -24,11 +23,11 @@ use super::{self as theme, Palette};
 /// its generated theme keeps the bright accent and dark ink it had — and so,
 /// for now, do the library's screens in the app, which draw from this table.
 pub(crate) const WEB: Palette = Palette {
-    accent: Color32::from_rgb(0x5C, 0xC6, 0xC0),
-    on_accent: Color32::from_rgb(0x0F, 0x14, 0x16),
-    accent_lift: Color32::WHITE,
-    accent_pressed: Color32::from_rgb(0x3F, 0xA9, 0xA2),
-    accent_ring: Color32::from_rgb(0xA8, 0xDC, 0xD8),
+    accent: Rgba8::from_rgb(0x5C, 0xC6, 0xC0),
+    on_accent: Rgba8::from_rgb(0x0F, 0x14, 0x16),
+    accent_lift: Rgba8::WHITE,
+    accent_pressed: Rgba8::from_rgb(0x3F, 0xA9, 0xA2),
+    accent_ring: Rgba8::from_rgb(0xA8, 0xDC, 0xD8),
     ..theme::DARK
 };
 
@@ -40,63 +39,64 @@ pub(crate) const FONT_FAMILY: &str = "Plus Jakarta Sans";
 
 /// Page background: an off-white with the ramp's teal cast, the light twin of
 /// [`theme::INK`].
-pub(crate) const L_BG: Color32 = Color32::from_rgb(0xF1, 0xF5, 0xF5);
-pub(crate) const L_SURFACE: Color32 = Color32::WHITE;
-pub(crate) const L_SURFACE_RAISED: Color32 = Color32::from_rgb(0xF8, 0xFA, 0xFA);
-pub(crate) const L_SURFACE_SUNKEN: Color32 = Color32::from_rgb(0xE7, 0xED, 0xED);
+pub(crate) const L_BG: Rgba8 = Rgba8::from_rgb(0xF1, 0xF5, 0xF5);
+pub(crate) const L_SURFACE: Rgba8 = Rgba8::WHITE;
+pub(crate) const L_SURFACE_RAISED: Rgba8 = Rgba8::from_rgb(0xF8, 0xFA, 0xFA);
+pub(crate) const L_SURFACE_SUNKEN: Rgba8 = Rgba8::from_rgb(0xE7, 0xED, 0xED);
 /// Body text is the client's raised surface: the ramp, read the other way.
-pub(crate) const L_TEXT: Color32 = WEB.surface_raised;
-pub(crate) const L_TEXT_DIM: Color32 = Color32::from_rgb(0x54, 0x65, 0x68);
-pub(crate) const L_TEXT_FAINT: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
-pub(crate) const L_BORDER: Color32 = Color32::from_rgb(0xDA, 0xE3, 0xE3);
+pub(crate) const L_TEXT: Rgba8 = WEB.surface_raised;
+pub(crate) const L_TEXT_DIM: Rgba8 = Rgba8::from_rgb(0x54, 0x65, 0x68);
+pub(crate) const L_TEXT_FAINT: Rgba8 = Rgba8::from_rgb(0x84, 0x97, 0x9A);
+pub(crate) const L_BORDER: Rgba8 = Rgba8::from_rgb(0xDA, 0xE3, 0xE3);
 /// A control's boundary. Clears 3:1 on white for the reason [`theme::LINE`]
 /// does on the dark ramp (WCAG 1.4.11): a field at rest has no other edge.
-pub(crate) const L_BORDER_STRONG: Color32 = Color32::from_rgb(0x84, 0x97, 0x9A);
+pub(crate) const L_BORDER_STRONG: Rgba8 = Rgba8::from_rgb(0x84, 0x97, 0x9A);
 /// Pushed under the pointer: the same move as [`theme::ACCENT_PRESSED`].
-pub(crate) const L_ACCENT_HOVER: Color32 = WEB.accent_pressed;
+pub(crate) const L_ACCENT_HOVER: Rgba8 = WEB.accent_pressed;
 /// Links and accent-coloured words on white. The teal itself is too light to
 /// read there, so the text tint is a deep version of it.
-pub(crate) const L_ACCENT_TEXT: Color32 = Color32::from_rgb(0x17, 0x69, 0x6A);
+pub(crate) const L_ACCENT_TEXT: Rgba8 = Rgba8::from_rgb(0x17, 0x69, 0x6A);
 /// Selected rows, a pressed nav item: the light twin of [`theme::ACCENT_MUTED`].
-pub(crate) const L_ACCENT_SOFT: Color32 = Color32::from_rgb(0xD9, 0xF0, 0xEE);
+pub(crate) const L_ACCENT_SOFT: Rgba8 = Rgba8::from_rgb(0xD9, 0xF0, 0xEE);
 
 // ─── Status tones (the client has two: WARN and ERROR) ───────────────────────
 
-pub(crate) const L_INFO: Color32 = Color32::from_rgb(0x1F, 0x6A, 0xB0);
-pub(crate) const D_INFO: Color32 = theme::REAL_LOCATION;
-pub(crate) const L_INFO_SOFT: Color32 = Color32::from_rgb(0xE4, 0xF0, 0xFB);
-pub(crate) const D_INFO_SOFT: Color32 = Color32::from_rgb(0x15, 0x27, 0x36);
-pub(crate) const L_SUCCESS: Color32 = Color32::from_rgb(0x1C, 0x74, 0x42);
-pub(crate) const D_SUCCESS: Color32 = Color32::from_rgb(0x7C, 0xCF, 0x9B);
-pub(crate) const L_SUCCESS_SOFT: Color32 = Color32::from_rgb(0xE3, 0xF4, 0xE9);
-pub(crate) const D_SUCCESS_SOFT: Color32 = Color32::from_rgb(0x15, 0x2C, 0x1E);
-pub(crate) const L_WARNING: Color32 = Color32::from_rgb(0x85, 0x57, 0x00);
-pub(crate) const D_WARNING: Color32 = WEB.warn;
-pub(crate) const L_WARNING_SOFT: Color32 = Color32::from_rgb(0xFB, 0xF1, 0xDA);
-pub(crate) const D_WARNING_SOFT: Color32 = Color32::from_rgb(0x30, 0x29, 0x16);
-pub(crate) const L_DANGER: Color32 = Color32::from_rgb(0xB3, 0x36, 0x1E);
-pub(crate) const D_DANGER: Color32 = WEB.error;
-pub(crate) const L_DANGER_SOFT: Color32 = Color32::from_rgb(0xFC, 0xE8, 0xE4);
-pub(crate) const D_DANGER_SOFT: Color32 = Color32::from_rgb(0x36, 0x1D, 0x19);
+pub(crate) const L_INFO: Rgba8 = Rgba8::from_rgb(0x1F, 0x6A, 0xB0);
+pub(crate) const D_INFO: Rgba8 = theme::REAL_LOCATION;
+pub(crate) const L_INFO_SOFT: Rgba8 = Rgba8::from_rgb(0xE4, 0xF0, 0xFB);
+pub(crate) const D_INFO_SOFT: Rgba8 = Rgba8::from_rgb(0x15, 0x27, 0x36);
+pub(crate) const L_SUCCESS: Rgba8 = Rgba8::from_rgb(0x1C, 0x74, 0x42);
+pub(crate) const D_SUCCESS: Rgba8 = Rgba8::from_rgb(0x7C, 0xCF, 0x9B);
+pub(crate) const L_SUCCESS_SOFT: Rgba8 = Rgba8::from_rgb(0xE3, 0xF4, 0xE9);
+pub(crate) const D_SUCCESS_SOFT: Rgba8 = Rgba8::from_rgb(0x15, 0x2C, 0x1E);
+pub(crate) const L_WARNING: Rgba8 = Rgba8::from_rgb(0x85, 0x57, 0x00);
+pub(crate) const D_WARNING: Rgba8 = WEB.warn;
+pub(crate) const L_WARNING_SOFT: Rgba8 = Rgba8::from_rgb(0xFB, 0xF1, 0xDA);
+pub(crate) const D_WARNING_SOFT: Rgba8 = Rgba8::from_rgb(0x30, 0x29, 0x16);
+pub(crate) const L_DANGER: Rgba8 = Rgba8::from_rgb(0xB3, 0x36, 0x1E);
+pub(crate) const D_DANGER: Rgba8 = WEB.error;
+pub(crate) const L_DANGER_SOFT: Rgba8 = Rgba8::from_rgb(0xFC, 0xE8, 0xE4);
+pub(crate) const D_DANGER_SOFT: Rgba8 = Rgba8::from_rgb(0x36, 0x1D, 0x19);
 
 /// An opaque colour as CSS.
-pub(crate) fn hex(c: Color32) -> String {
+pub(crate) fn hex(c: Rgba8) -> String {
     debug_assert_eq!(c.a(), 255, "a translucent colour goes through alpha()");
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
-/// An opaque colour at a percentage, as CSS. Built from the opaque colour
-/// rather than from a translucent `Color32`, which egui stores premultiplied —
-/// reading one back at 5 % alpha does not return the colour it was made from.
-pub(crate) fn alpha(c: Color32, pct: f32) -> String {
+/// An opaque colour at a percentage, as CSS. Its own alpha is ignored: the
+/// percentage is the alpha. (This took an opaque colour rather than a
+/// translucent one while colours were egui's premultiplied `Rgba8`, which
+/// does not read back the colour it was made from at 5 %.)
+pub(crate) fn alpha(c: Rgba8, pct: f32) -> String {
     format!("rgb({} {} {} / {}%)", c.r(), c.g(), c.b(), pct.round())
 }
 
-fn pair(light: Color32, dark: Color32) -> Pair {
+fn pair(light: Rgba8, dark: Rgba8) -> Pair {
     Pair::new(&hex(light), &hex(dark))
 }
 
-fn both(c: Color32) -> Pair {
+fn both(c: Rgba8) -> Pair {
     Pair::same(&hex(c))
 }
 
@@ -134,9 +134,9 @@ pub fn tokens() -> Tokens {
         danger: pair(L_DANGER, D_DANGER),
         danger_soft: pair(L_DANGER_SOFT, D_DANGER_SOFT),
         focus: Pair::new(&alpha(w.accent, 50.0), &alpha(w.accent, 55.0)),
-        backdrop: Pair::new(&alpha(w.ink, 40.0), &alpha(Color32::BLACK, 60.0)),
+        backdrop: Pair::new(&alpha(w.ink, 40.0), &alpha(Rgba8::BLACK, 60.0)),
         // Dark: the midas hub's card shadow (`--lift-2`), as `theme::CARD_SHADOW`.
-        shadow_color: Pair::new(&alpha(w.ink, 8.0), &alpha(Color32::BLACK, 60.0)),
+        shadow_color: Pair::new(&alpha(w.ink, 8.0), &alpha(Rgba8::BLACK, 60.0)),
         font: format!("'{FONT_FAMILY}', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"),
         radius_sm: f32::from(theme::RADIUS_SM),
         radius: f32::from(theme::RADIUS),

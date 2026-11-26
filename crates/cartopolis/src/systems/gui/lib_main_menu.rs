@@ -221,7 +221,7 @@ fn face(me: Option<&str>, waiting: bool) -> View {
         Some(name) => {
             let look = disc_look(name, ChatKind::Private);
             (
-                hex(look.tone),
+                hex(look.tone.into()),
                 "var(--m-on-accent)",
                 look.text,
                 FACE * look.scale,

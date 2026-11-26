@@ -300,12 +300,12 @@ fn centred(c: egui::Pos2, w: f32, h: f32) -> String {
 
 /// Black at egui's `from_black_alpha(a)`.
 fn black(a: u8) -> String {
-    alpha(egui::Color32::BLACK, f32::from(a) / 255.0 * 100.0)
+    alpha(theme::Rgba8::BLACK, f32::from(a) / 255.0 * 100.0)
 }
 
 /// White, the ink over the picture.
 fn white() -> String {
-    hex(egui::Color32::WHITE)
+    hex(theme::Rgba8::WHITE)
 }
 
 /// A glyph of the icon face at `size` px.
@@ -532,7 +532,7 @@ fn finder_view(f: &FinderView, acts: &Acts) -> View {
                 "{}; box-sizing: border-box; border: {:.0}px solid {}; pointer-events: none",
                 at(f.frame.expand(POLAROID_RIM_W)),
                 POLAROID_RIM_W,
-                hex(POLAROID_RIM)
+                hex(POLAROID_RIM.into())
             );
             parts.push(el("div").attr("style", rim).into_view());
             // Only the controls' strip takes touches: the map inside the
@@ -720,13 +720,13 @@ fn shutter(f: &FinderView, acts: &Acts) -> View {
     let inner = if f.stoppable {
         format!(
             "flex: none; width: 28px; height: 28px; border-radius: 6px; background: {}",
-            hex(RECORD_RED)
+            hex(RECORD_RED.into())
         )
     } else if f.video {
         disc(format!(
             "background: {}",
             if f.ready {
-                hex(RECORD_RED)
+                hex(RECORD_RED.into())
             } else {
                 hex(d.text_dim)
             }
@@ -770,7 +770,7 @@ fn mode_view(f: &FinderView, i: usize, m: Mode, acts: &Acts) -> View {
     } else if offered {
         white()
     } else {
-        alpha(egui::Color32::WHITE, 40.0)
+        alpha(theme::Rgba8::WHITE, 40.0)
     };
     // Sideways the words end at `p` (egui's RIGHT_CENTER); upright they are
     // centred on it. Each box is the touch, as egui's text rect and 8 more.
@@ -817,8 +817,8 @@ fn chips_view(at_: egui::Pos2, chips: &[(String, ChipTone)]) -> View {
         .iter()
         .map(|(text, tone)| {
             let ink = match tone {
-                ChipTone::Good => hex(CHIP_GOOD),
-                ChipTone::Warn => hex(CHIP_WARN),
+                ChipTone::Good => hex(CHIP_GOOD.into()),
+                ChipTone::Warn => hex(CHIP_WARN.into()),
                 ChipTone::Plain => hex(theme::DARK.cream),
             };
             let style = format!(
@@ -841,7 +841,7 @@ fn timer_view(f: &FinderView, text: String) -> View {
     let pill = format!(
         "padding: 5px 8px; border-radius: 10px; background: {}; color: {}; font-size: {}px; \
          line-height: 1.2; white-space: nowrap",
-        hex(RECORD_RED),
+        hex(RECORD_RED.into()),
         white(),
         theme::SIZE_BODY
     );

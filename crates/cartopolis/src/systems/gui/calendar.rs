@@ -1217,9 +1217,9 @@ pub fn chat_name(
     )
 }
 
-const MEETUP_TONE: egui::Color32 = theme::BRAND;
+const MEETUP_TONE: egui::Color32 = theme::BRAND.to_egui();
 fn meeting_tone() -> egui::Color32 {
-    theme::p().accent
+    theme::p32().accent
 }
 
 fn kind_tone(item: &Item) -> egui::Color32 {
@@ -1235,8 +1235,8 @@ fn answer_pill(item: &Item) -> (String, egui::Color32, egui::Color32) {
     if item.skipped {
         return (
             "Skipped".into(),
-            theme::p().surface_raised,
-            theme::p().text_dim,
+            theme::p32().surface_raised,
+            theme::p32().text_dim,
         );
     }
     match item.mine {
@@ -1248,12 +1248,12 @@ fn answer_pill(item: &Item) -> (String, egui::Color32, egui::Color32) {
         Some(Rsvp::Maybe) => (
             "Maybe".into(),
             egui::Color32::from_rgb(0x30, 0x29, 0x16),
-            theme::p().warn,
+            theme::p32().warn,
         ),
         Some(Rsvp::No) => (
             "Can't come".into(),
-            theme::p().surface_raised,
-            theme::p().text_dim,
+            theme::p32().surface_raised,
+            theme::p32().text_dim,
         ),
         None => (
             "Answer".into(),
@@ -1292,7 +1292,11 @@ pub fn row(
     let resp = theme::named(ui, resp, &item.title());
     let p = ui.painter_at(rect);
     if resp.hovered() {
-        p.rect_filled(rect, egui::CornerRadius::same(10), theme::p().surface_hover);
+        p.rect_filled(
+            rect,
+            egui::CornerRadius::same(10),
+            theme::p32().surface_hover,
+        );
     }
     let fade = |c: egui::Color32| if faded { c.gamma_multiply(0.45) } else { c };
     let time_x = rect.left() + 52.0;
@@ -1309,7 +1313,7 @@ pub fn row(
         egui::Align2::RIGHT_CENTER,
         clock,
         font(14.5),
-        fade(theme::p().cream),
+        fade(theme::p32().cream),
     );
     if let Some(under) = row_under(item, day) {
         p.text(
@@ -1317,7 +1321,7 @@ pub fn row(
             egui::Align2::RIGHT_CENTER,
             under,
             font(11.0),
-            fade(theme::p().text_dim),
+            fade(theme::p32().text_dim),
         );
     }
     let bar = egui::Rect::from_min_size(
@@ -1341,24 +1345,30 @@ pub fn row(
     }
     let text_x = bar.right() + 10.0;
     let text_w = (pill_rect.left() - 8.0 - text_x).max(40.0);
-    let title_galley = one_line(&p, item.title(), font(14.5), fade(theme::p().cream), text_w);
+    let title_galley = one_line(
+        &p,
+        item.title(),
+        font(14.5),
+        fade(theme::p32().cream),
+        text_w,
+    );
     let ty = mid - 9.0;
     if item.skipped || item.mine == Some(Rsvp::No) {
         let r = egui::Rect::from_center_size(
             egui::pos2(text_x + title_galley.size().x / 2.0, ty),
             title_galley.size(),
         );
-        p.galley(r.min, title_galley, fade(theme::p().cream));
+        p.galley(r.min, title_galley, fade(theme::p32().cream));
         p.hline(
             r.x_range(),
             ty,
-            egui::Stroke::new(1.0, fade(theme::p().text_dim)),
+            egui::Stroke::new(1.0, fade(theme::p32().text_dim)),
         );
     } else {
         p.galley(
             egui::pos2(text_x, ty - title_galley.size().y / 2.0),
             title_galley,
-            fade(theme::p().cream),
+            fade(theme::p32().cream),
         );
     }
     let icon = if item.is_meetup() {
@@ -1367,11 +1377,11 @@ pub fn row(
         icons::VIDEOCAM
     };
     let sub = format!("{icon} {}", row_sub(item, chat_label));
-    let sub_galley = one_line(&p, sub, font(12.0), fade(theme::p().text_dim), text_w);
+    let sub_galley = one_line(&p, sub, font(12.0), fade(theme::p32().text_dim), text_w);
     p.galley(
         egui::pos2(text_x, mid + 10.0 - sub_galley.size().y / 2.0),
         sub_galley,
-        fade(theme::p().text_dim),
+        fade(theme::p32().text_dim),
     );
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1383,16 +1393,16 @@ fn heading(ui: &mut egui::Ui, text: &str, right: &str, today: bool) {
             egui::RichText::new(text)
                 .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
                 .color(if today {
-                    theme::BRAND
+                    theme::BRAND.to_egui()
                 } else {
-                    theme::p().text_dim
+                    theme::p32().text_dim
                 }),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(right)
                     .size(theme::SIZE_CHIP)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
         });
     });
@@ -1499,17 +1509,17 @@ fn week_strip(ui: &mut egui::Ui, today: i64, chosen: i64, items: &[Item]) -> Opt
         });
         let p = ui.painter();
         if on {
-            p.rect_filled(r, egui::CornerRadius::same(12), theme::p().accent);
+            p.rect_filled(r, egui::CornerRadius::same(12), theme::p32().accent);
         }
         let ink = if on {
-            theme::p().on_accent
+            theme::p32().on_accent
         } else {
-            theme::p().cream
+            theme::p32().cream
         };
         let dim = if on {
-            theme::p().on_accent
+            theme::p32().on_accent
         } else {
-            theme::p().text_dim
+            theme::p32().text_dim
         };
         let date = civil(d);
         p.text(
@@ -1535,7 +1545,7 @@ fn week_strip(ui: &mut egui::Ui, today: i64, chosen: i64, items: &[Item]) -> Opt
             })
             .map(|m| {
                 if on {
-                    theme::p().on_accent
+                    theme::p32().on_accent
                 } else if m {
                     MEETUP_TONE
                 } else {
@@ -1620,18 +1630,18 @@ fn now_line(ui: &mut egui::Ui, now: u64) {
     let g = p.layout_no_wrap(
         crate::systems::chats::clock_time(now),
         egui::FontId::proportional(10.5),
-        theme::BRAND,
+        theme::BRAND.to_egui(),
     );
     let gw = g.size().x;
     p.galley(
         egui::pos2(rect.left() + 12.0, y - g.size().y / 2.0),
         g,
-        theme::BRAND,
+        theme::BRAND.to_egui(),
     );
     p.hline(
         (rect.left() + 18.0 + gw)..=rect.right(),
         y,
-        egui::Stroke::new(1.0, theme::BRAND.gamma_multiply(0.6)),
+        egui::Stroke::new(1.0, theme::BRAND.to_egui().gamma_multiply(0.6)),
     );
 }
 
@@ -1650,7 +1660,7 @@ fn month(
         ui.label(
             egui::RichText::new(month_title(y, m))
                 .size(theme::SIZE_TITLE)
-                .color(theme::p().cream),
+                .color(theme::p32().cream),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if theme::icon_button_small(ui, icons::CHEVRON_RIGHT, "Next month").clicked() {
@@ -1672,7 +1682,7 @@ fn month(
             egui::Align2::CENTER_CENTER,
             *d,
             egui::FontId::proportional(11.0),
-            theme::p().text_dim,
+            theme::p32().text_dim,
         );
     }
     let (grid, _) =
@@ -1700,16 +1710,16 @@ fn month(
         });
         let p = ui.painter();
         if on {
-            p.rect_filled(r, egui::CornerRadius::same(12), theme::p().accent);
+            p.rect_filled(r, egui::CornerRadius::same(12), theme::p32().accent);
         }
         let ink = if on {
-            theme::p().on_accent
+            theme::p32().on_accent
         } else if d == today {
-            theme::BRAND
+            theme::BRAND.to_egui()
         } else if inside {
-            theme::p().text
+            theme::p32().text
         } else {
-            theme::p().line
+            theme::p32().line
         };
         p.text(
             egui::pos2(r.center().x, r.top() + 14.0),
@@ -1727,7 +1737,7 @@ fn month(
             })
             .map(|mu| {
                 if on {
-                    theme::p().on_accent
+                    theme::p32().on_accent
                 } else if mu {
                     MEETUP_TONE
                 } else {
@@ -1766,12 +1776,12 @@ fn names_line(ui: &mut egui::Ui, label: &str, names: &[String]) {
         ui.label(
             egui::RichText::new(format!("{label} {}", names.len()))
                 .size(theme::SIZE_SUB)
-                .color(theme::p().text_dim),
+                .color(theme::p32().text_dim),
         );
         ui.label(
             egui::RichText::new(names.join(", "))
                 .size(theme::SIZE_SUB)
-                .color(theme::p().text),
+                .color(theme::p32().text),
         );
     });
 }
@@ -1816,24 +1826,24 @@ fn detail(
             ui.label(
                 egui::RichText::new(item.title())
                     .size(theme::SIZE_PANEL_TITLE)
-                    .color(theme::p().cream),
+                    .color(theme::p32().cream),
             );
             ui.label(
                 egui::RichText::new(when_line(&item, now))
                     .size(theme::SIZE_BODY)
-                    .color(theme::p().text),
+                    .color(theme::p32().text),
             );
             if let Some(series) = series_line(&item) {
                 ui.label(
                     egui::RichText::new(series)
                         .size(theme::SIZE_SUB)
-                        .color(theme::p().accent),
+                        .color(theme::p32().accent),
                 );
             }
             ui.label(
                 egui::RichText::new(by_line(&item, &from, &me))
                     .size(theme::SIZE_SUB)
-                    .color(theme::p().text_dim),
+                    .color(theme::p32().text_dim),
             );
             ui.add_space(10.0);
             match &item.what {
@@ -1896,7 +1906,11 @@ fn meeting_detail(
     });
     if let Some(text) = &plan.text {
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(text).size(13.0).color(theme::p().text));
+        ui.label(
+            egui::RichText::new(text)
+                .size(13.0)
+                .color(theme::p32().text),
+        );
     }
     if !plan.agenda.is_empty() {
         theme::section(ui, "Agenda");
@@ -1905,14 +1919,14 @@ fn meeting_detail(
                 ui.label(
                     egui::RichText::new(&a.name)
                         .size(13.5)
-                        .color(theme::p().text),
+                        .color(theme::p32().text),
                 );
                 if a.minutes > 0 {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
                             egui::RichText::new(format!("{} min", a.minutes))
                                 .size(13.0)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                     });
                 }
@@ -1974,7 +1988,7 @@ fn meetup_detail(
                 walk_minutes(here, point)
             ))
             .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
+            .color(theme::p32().text_dim),
         );
         ui.add_space(6.0);
     }
@@ -2048,7 +2062,7 @@ fn new_page(
             long_day(day_start_ms(day) + 12 * 3_600_000)
         ))
         .size(theme::SIZE_TITLE)
-        .color(theme::p().cream),
+        .color(theme::p32().cream),
     );
     ui.add_space(6.0);
     let mut kind = cal.new_kind;
@@ -2084,7 +2098,7 @@ fn new_page(
                     } else {
                         theme::RowEnd::Nothing
                     };
-                    if theme::list_row(ui, icons::CHAT, &name, None, end, theme::p().accent)
+                    if theme::list_row(ui, icons::CHAT, &name, None, end, theme::p32().accent)
                         .clicked()
                     {
                         cal.new_chat = Some(c.key.clone());
@@ -2180,7 +2194,7 @@ pub fn coming_up(
                     ui.label(
                         egui::RichText::new(label)
                             .font(egui::FontId::new(theme::SIZE_SUB, theme::brand_family()))
-                            .color(theme::p().text_dim),
+                            .color(theme::p32().text_dim),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if theme::ghost_button(ui, icons::CHEVRON_RIGHT, "Calendar").clicked() {
@@ -2373,12 +2387,12 @@ pub fn render_reminder(
                         ui.label(
                             egui::RichText::new(&r.title)
                                 .size(15.0)
-                                .color(theme::p().cream),
+                                .color(theme::p32().cream),
                         );
                         ui.label(
                             egui::RichText::new(&r.line)
                                 .size(12.5)
-                                .color(theme::p().text_dim),
+                                .color(theme::p32().text_dim),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {

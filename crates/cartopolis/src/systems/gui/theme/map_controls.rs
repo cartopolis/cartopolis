@@ -58,9 +58,9 @@ pub fn map_disc(
     let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(size), sense);
     let held = resp.is_pointer_button_down_on();
     let (fill, ring, ink) = match (on || held, resp.hovered()) {
-        (true, _) => (p().accent, tone, p().on_accent),
-        (false, true) => (p().surface_hover, p().accent, p().cream),
-        (false, false) => (p().map_fill, p().map_rim, p().map_ink),
+        (true, _) => (p32().accent, tone, p32().on_accent),
+        (false, true) => (p32().surface_hover, p32().accent, p32().cream),
+        (false, false) => (p32().map_fill, p32().map_rim, p32().map_ink),
     };
     let radius = (size * 0.5 - 1.0) * crate::systems::motion::press(&resp);
     let p = ui.painter();
@@ -85,7 +85,7 @@ pub fn map_disc(
 /// reads on the light disc the mark sits on.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // the link is native-only
 #[must_use]
-pub fn midas_gold() -> Color32 {
+pub fn midas_gold() -> Rgba8 {
     p().warn
 }
 

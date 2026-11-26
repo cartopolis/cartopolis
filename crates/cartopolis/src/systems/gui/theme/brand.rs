@@ -25,7 +25,7 @@ use super::*;
 /// vertical gradient, which is its middle tone here (egui has no gradient
 /// primitive).
 pub(super) mod mark {
-    use egui::Color32;
+    use super::Rgba8;
 
     /// Half the icon's square. Every coordinate in the table is in that square's
     /// units with `(UNIT, UNIT)` at the centre, so `paint_mark` maps them with
@@ -44,11 +44,11 @@ pub(super) mod mark {
     /// The tile, as one tone: the source's `#2e424e` → `#1B2830` gradient in the
     /// middle, which is what an unlit slate reads as at any size. The mark is the
     /// logo: it did not go monochrome with the UI.
-    pub const PLATE: Color32 = Color32::from_rgb(0x25, 0x35, 0x3F);
+    pub const PLATE: Rgba8 = Rgba8::from_rgb(0x25, 0x35, 0x3F);
     /// The street plan's two inks — cream at 50 % and 30 % over the plate,
     /// pre-mixed so crossing strokes do not double up.
-    pub const STREET: Color32 = Color32::from_rgb(0x8C, 0x92, 0x95);
-    pub const WATER: Color32 = Color32::from_rgb(0x62, 0x6D, 0x72);
+    pub const STREET: Rgba8 = Rgba8::from_rgb(0x8C, 0x92, 0x95);
+    pub const WATER: Rgba8 = Rgba8::from_rgb(0x62, 0x6D, 0x72);
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub enum Ink {
@@ -73,7 +73,7 @@ pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32
     // `gamma_multiply` rather than a rebuilt `from_rgba_unmultiplied`: `Color32`
     // is premultiplied, so re-wrapping its channels as straight ones darkens
     // anything that already carries an alpha.
-    let a = |c: Color32| c.gamma_multiply(alpha);
+    let a = |c: Rgba8| Color32::from(c).gamma_multiply(alpha);
     let s = radius / mark::UNIT;
     // Icon units → screen.
     let q = |v: [f32; 2]| {
@@ -118,7 +118,7 @@ pub fn paint_mark(p: &egui::Painter, center: egui::Pos2, radius: f32, alpha: f32
 
 /// The mark's cream: the pin's keyline and dot, `#F2EFEA` in every copy of the
 /// icon. Not [`Palette::cream`], which is the chrome's text colour and a cooler white.
-pub(super) const MARK_CREAM: Color32 = Color32::from_rgb(0xF2, 0xEF, 0xEA);
+pub(super) const MARK_CREAM: Rgba8 = Rgba8::from_rgb(0xF2, 0xEF, 0xEA);
 
 // ─── Wordmark ─────────────────────────────────────────────────────────────────
 
@@ -146,7 +146,7 @@ pub const WORDMARK_TAIL: &str = "polis";
 /// It used to be `= ACCENT`, which held while the chrome was orange and would
 /// have quietly greyed the logo the day the chrome went monochrome. The
 /// wordmark, the mark and the loader are the *brand*; the chrome is not.
-pub const WORDMARK_TAIL_COLOR: Color32 = BRAND;
+pub const WORDMARK_TAIL_COLOR: Rgba8 = BRAND;
 
 /// Paint the wordmark centred on `center` at `size` points, faded by `alpha`.
 ///
@@ -157,7 +157,7 @@ pub const WORDMARK_TAIL_COLOR: Color32 = BRAND;
 /// Cream on the splash's dark in both themes ([`DARK`]): the splash is the
 /// same screen as `index.html`'s loader, which is dark.
 pub fn paint_wordmark(p: &egui::Painter, center: egui::Pos2, size: f32, alpha: f32) {
-    let a = |c: Color32| {
+    let a = |c: Rgba8| {
         Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
     };
     let font = FontId::new(size, brand_family());
@@ -181,7 +181,7 @@ pub fn wordmark_ui(ui: &mut egui::Ui, size: f32) {
         ui.label(
             egui::RichText::new(WORDMARK_HEAD)
                 .font(font.clone())
-                .color(p().cream),
+                .color(p32().cream),
         );
         ui.label(
             egui::RichText::new(WORDMARK_TAIL)

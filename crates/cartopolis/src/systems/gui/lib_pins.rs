@@ -280,8 +280,8 @@ pub(crate) fn px_scale(ui_scale: f32) -> f32 {
 }
 
 /// A colour as CSS, for a marker's own palette.
-pub(crate) fn css(c: egui::Color32) -> String {
-    let [r, g, b, a] = c.to_srgba_unmultiplied();
+pub(crate) fn css(c: theme::Rgba8) -> String {
+    let [r, g, b, a] = c.to_array();
     if a == 255 {
         format!("#{r:02x}{g:02x}{b:02x}")
     } else {
@@ -452,7 +452,7 @@ fn marker(key: &str, m: &Marker, tapped: &Rc<RefCell<Option<String>>>) -> View {
 /// head, a soft shadow where it stands.
 fn teardrop(name: &str, color: [f32; 3], tap: Handler) -> View {
     let to = |k: f32| {
-        egui::Color32::from_rgb(
+        theme::Rgba8::from_rgb(
             (color[0] * k) as u8,
             (color[1] * k) as u8,
             (color[2] * k) as u8,
@@ -464,12 +464,7 @@ fn teardrop(name: &str, color: [f32; 3], tap: Handler) -> View {
     let reach = DROP / std::f32::consts::SQRT_2;
     let h = r + reach;
     let cream = theme::DARK.cream;
-    let hole = css(egui::Color32::from_rgba_unmultiplied(
-        cream.r(),
-        cream.g(),
-        cream.b(),
-        (HOLE_ALPHA * 255.0) as u8,
-    ));
+    let hole = css(cream.with_alpha((HOLE_ALPHA * 255.0) as u8));
     let shadow_r = r * 0.3;
     let frame = boxed(-r, -h, DROP, h, "");
     let shadow = boxed(
@@ -571,15 +566,7 @@ fn person(
 ) -> View {
     use crate::systems::chat_people::{MarkerKind, DISC, RING, STEM};
     let colour = kind.colour();
-    let (solid, glow) = (
-        css(colour),
-        css(egui::Color32::from_rgba_unmultiplied(
-            colour.r(),
-            colour.g(),
-            colour.b(),
-            70,
-        )),
-    );
+    let (solid, glow) = (css(colour), css(colour.with_alpha(70)));
     let ring = DISC + 2.0 * RING;
     let h = ring + STEM;
     // The box is the ring over the stem; the rest is placed from the tip,
