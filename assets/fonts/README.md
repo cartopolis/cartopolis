@@ -38,3 +38,13 @@ so chat emoji draw instead of `◻`: egui's bundled Noto Emoji stops at U+1F6C5.
 Google Fonts ships it as a variable font (`NotoEmoji[wght].ttf`, google/fonts
 `ofl/notoemoji`); this file is that instanced at `wght` 400 with fontTools
 (`fonttools varLib.instancer NotoEmoji[wght].ttf wght=400`), 0.9 MB.
+
+**Hack** (`Hack-Regular.ttf`) — MIT License (Source Foundry Authors), derived
+from Bitstream Vera Sans Mono (Bitstream Vera License) and DejaVu (public
+domain). <https://sourcefoundry.org/hack/>
+
+The monospace face (`theme::MONO_TTF`): the library's code fields, the transit
+line numbers, the live departures board and the street-name fallback. Copied
+unchanged from `epaint_default_fonts` 0.36.2, which is where the client took it
+from while it still linked egui. Both licences require their notices to travel
+with the font; keep this one.

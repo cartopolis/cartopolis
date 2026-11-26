@@ -3,8 +3,8 @@
 //! Each rule here bit someone silently, and a line of prose only reaches the
 //! agent that happens to read it; a red test reaches every one. These read the
 //! sources rather than the types because none of them is a type error: a
-//! `Res<EguiManager>` compiles everywhere but the web, and a `NoFrustumCulling`
-//! without `NotShadowCaster` compiles and draws, just into every shadow cascade.
+//! `NoFrustumCulling` without `NotShadowCaster` compiles and draws, just into
+//! every shadow cascade, and `std`'s clock compiles and panics on the web.
 //! The one tile fixture (`cartopolis_geo::testdata`) is held the same way,
 //! where it lives.
 //!
@@ -51,35 +51,6 @@ fn code_lines_with(needle: &str) -> Vec<String> {
         }
     }
     hits
-}
-
-/// `EguiManager` is non-send on wasm, so `Res<EguiManager>` compiles and
-/// runs on every native target and breaks only the web build
-/// (`docs/notes/egui-shared-root-ui.md`).
-#[test]
-fn egui_is_reached_through_egui_ref_and_egui_mut() {
-    let hits: Vec<_> = ["Res<EguiManager>", "ResMut<EguiManager>"]
-        .iter()
-        .flat_map(|n| code_lines_with(n))
-        .collect();
-    assert!(
-        hits.is_empty(),
-        "reach egui through `EguiRef` / `EguiMut`, never `Res<EguiManager>`:\n{}",
-        hits.join("\n")
-    );
-}
-
-/// `egui_wants_keyboard_input()` is true for any focused widget, a button
-/// included, so game keys died after every click on the UI. Only a focused
-/// text field owns the keyboard (`docs/notes/egui-shared-root-ui.md`).
-#[test]
-fn game_keys_yield_only_to_a_focused_text_field() {
-    let hits = code_lines_with("egui_wants_keyboard_input");
-    assert!(
-        hits.is_empty(),
-        "use `UiInput::ui_owns_keyboard`, never `egui_wants_keyboard_input()`:\n{}",
-        hits.join("\n")
-    );
 }
 
 /// Bevy's shader compiles and screenshot readbacks share
@@ -215,24 +186,6 @@ fn the_clock_is_web_time_where_the_web_runs() {
     );
 }
 
-/// Time and curve live in `systems::motion` (`docs/mockups/fluid-ui/`): a
-/// panel says what kind of change it draws and takes the duration from there,
-/// so the five durations stay five and the reduced-motion setting reaches
-/// everything. egui's `animate_*` is called in that one module only.
-#[test]
-fn every_animation_goes_through_motion() {
-    let hits: Vec<_> = ["animate_bool", "animate_value"]
-        .iter()
-        .flat_map(|n| code_lines_with(n))
-        .filter(|hit| !hit.contains("systems/gui/motion.rs"))
-        .collect();
-    assert!(
-        hits.is_empty(),
-        "take durations and curves from `systems::motion`, never egui's `animate_*` directly:\n{}",
-        hits.join("\n")
-    );
-}
-
 /// The ground floor of the module graph names nothing above it.
 ///
 /// `resources` was meant as the state layer everyone reads, and by 2026-11-19
@@ -270,110 +223,6 @@ fn the_ground_floor_names_no_system() {
     assert!(
         bad.is_empty(),
         "these files are below every system; move what they need down to them:\n{}",
-        bad.join("\n")
-    );
-}
-
-/// Where a control's look is allowed to be egui's own rather than the
-/// theme's: the theme itself, and the controls that are custom by design
-/// (`docs/notes/ui-vocabulary.md`, "The controls are the web's"). A line
-/// elsewhere earns an exception with an `// egui's own:` comment on it or the
-/// line above, saying why.
-const EGUI_OWN_FILES: &[&str] = &[
-    "systems/gui/theme/",
-    "systems/gui/text_touch.rs",
-    // The chat pill over the map and the code editor draw their own fields.
-    "systems/gui/chat_overlay.rs",
-    "systems/gui/script_editor.rs",
-    // The developer tools (the dev panel, the Midas link, release approval):
-    // tooling, not the product's face. Bring them over when they are touched.
-    "systems/dev/",
-    "/tests.rs",
-];
-
-fn egui_own(path: &str, lines: &[&str], i: usize) -> bool {
-    EGUI_OWN_FILES.iter().any(|f| path.contains(f))
-        || lines[i].contains("egui's own:")
-        || (i > 0 && lines[i - 1].contains("egui's own:"))
-}
-
-/// Sites of `needles` outside [`EGUI_OWN_FILES`] and `cfg(test)` modules,
-/// with `ok` false for the ones that break the rule given their window.
-fn raw_widget_sites(needles: &[&str], ok: impl Fn(&[&str], usize) -> bool) -> Vec<String> {
-    let mut bad = Vec::new();
-    for (path, text) in sources() {
-        let rel = path
-            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if line.starts_with("#[cfg(test)]") {
-                break;
-            }
-            if is_comment(line)
-                || !needles.iter().any(|n| line.contains(n))
-                || egui_own(&rel, &lines, i)
-                || ok(&lines, i)
-            {
-                continue;
-            }
-            bad.push(format!("{rel}:{}: {}", i + 1, line.trim()));
-        }
-    }
-    bad
-}
-
-/// A text field is `theme::text_field`, never egui's `TextEdit` shown bare:
-/// egui frames a focused field with the pressed button's plate and
-/// `expansion`, the thick dark rim the owner called "really badly styled"
-/// (2026-11-22, `docs/notes/ui-vocabulary.md`).
-#[test]
-fn text_fields_are_the_themes() {
-    const REACH: usize = 3;
-    let bad = raw_widget_sites(
-        &[
-            "TextEdit::singleline(",
-            "TextEdit::multiline(",
-            "text_edit_singleline(",
-            "text_edit_multiline(",
-        ],
-        |lines, i| {
-            lines[i.saturating_sub(REACH)..=i]
-                .iter()
-                .any(|l| l.contains("text_field(") || l.contains("password_field("))
-        },
-    );
-    assert!(
-        bad.is_empty(),
-        "a text field goes through `theme::text_field` (the web's `.m-input`):\n{}",
-        bad.join("\n")
-    );
-}
-
-/// A button is one of the theme's — primary, secondary, ghost, danger, icon,
-/// or a menu entry — never a bare `egui::Button`, which beside the painted
-/// ones reads as egui's grey pill (`docs/notes/ui-vocabulary.md`).
-#[test]
-fn buttons_are_the_themes() {
-    let bad = raw_widget_sites(&[".button(", "egui::Button::new("], |_, _| false);
-    assert!(
-        bad.is_empty(),
-        "a button is `theme::primary_button_sized` / `secondary_button` / `ghost_button` / \
-         `danger_button` / `icon_button`, or `theme::menu_entry` in a menu:\n{}",
-        bad.join("\n")
-    );
-}
-
-/// A checkbox is `theme::checkbox`: egui's takes the buttons' radius and reads
-/// as a radio button.
-#[test]
-fn checkboxes_are_the_themes() {
-    let bad = raw_widget_sites(&["ui.checkbox("], |_, _| false);
-    assert!(
-        bad.is_empty(),
-        "a checkbox is `theme::checkbox`:\n{}",
         bad.join("\n")
     );
 }

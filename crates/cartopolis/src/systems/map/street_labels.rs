@@ -1005,22 +1005,13 @@ fn label_quad() -> Mesh {
 
 /// The rasteriser, over the brand semibold the app already embeds
 /// (`theme::BRAND_TTF`). Weight is the point: a road marking is read at a dozen
-/// pixels through a foreshortening projection, and egui's light body face breaks
-/// up into grey mush at that size. Falls back to egui's own stack if the brand
-/// face ever stops parsing.
+/// pixels through a foreshortening projection, and a light face breaks up into
+/// grey mush at that size. Falls back to the body face, then the monospace,
+/// if the brand face ever stops parsing.
 fn load_font() -> Option<fontdue::Font> {
-    if let Ok(font) = fontdue::Font::from_bytes(theme::BRAND_TTF, fontdue::FontSettings::default())
-    {
-        return Some(font);
-    }
-    let defs = egui::FontDefinitions::default();
-    for family in ["Ubuntu-Light", "Hack"] {
-        if let Some(data) = defs.font_data.get(family) {
-            if let Ok(font) =
-                fontdue::Font::from_bytes(data.font.as_ref(), fontdue::FontSettings::default())
-            {
-                return Some(font);
-            }
+    for bytes in [theme::BRAND_TTF, theme::BODY_TTF, theme::MONO_TTF] {
+        if let Ok(font) = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+            return Some(font);
         }
     }
     tracing::warn!("no embedded font for street labels");
@@ -1299,7 +1290,7 @@ mod tests {
     }
 
     fn font() -> fontdue::Font {
-        load_font().expect("egui ships an embedded font")
+        load_font().expect("the client embeds its faces")
     }
 
     fn line(name: &str, points: Vec<Vec2>) -> WorldLabelLine {

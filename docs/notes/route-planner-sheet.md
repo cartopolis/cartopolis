@@ -1,19 +1,19 @@
 ---
 topic: ui
-triggers: [navigation.rs, "route panel", "route planner", "bottom sheet", "detent", place_pins.rs, place_card.rs, egui_manager.rs, "responsive_right_panel"]
-updated: 2026-11-02
+triggers: [navigation.rs, lib_route.rs, "route panel", "route planner", "bottom sheet", "detent", place_pins.rs, place_card.rs]
+updated: 2026-11-26
 ---
 
 # The route planner is a bottom sheet
 
 Planning a route used to open `RightPanel::Route`, and on a compact viewport a
-right panel **is** the viewport (`egui_manager::responsive_right_panel`). So the
+right panel **is** the viewport. So the
 one act the planner exists for — "route to there" — covered the one thing it
 produces: the map with the line on it. You could read a turn list; you could not
 see the turn. That is the same sentence
 [chat-without-a-panel.md](chat-without-a-panel.md) opens with, and the same
-answer: the planner is a floating `Area` anchored to the bottom edge now, over a
-map that stays live — the shape every phone map app converged on.
+answer: the planner is a sheet anchored to the bottom edge now (`lib_route.rs`),
+over a map that stays live — the shape every phone map app converged on.
 
 ## Two detents, and neither is a preference
 
@@ -32,47 +32,36 @@ matters is that the sheet moves **by itself**, in `effective_detent`:
   map to set the destination…" line therefore lives *outside* the collapsing
   body, or the instruction would vanish with the collapse it causes.
 
-The grabber reads its drag **per frame** rather than accumulating from a drag
-origin. The answer is one bit, so the first frame past the threshold has already
-said everything a longer drag could; the alternative is cross-frame state for a
-two-state control.
+The grabber is a tap that flips the detent. (Until 2026-11-26 egui's read its
+drag per frame: the answer is one bit, so the first frame past the threshold
+said everything a longer drag could.)
 
 ## Three things a floating sheet owes that a docked panel did not
 
-A docked panel takes width out of the shared root `Ui`, and half this client's
-layout is written against what is left of it. An `Area` takes nothing, so each of
+A docked panel reserves its side of the map (`data-reserves-map`, which
+`UiInput::map_rect` subtracts). A floating sheet reserves nothing, so each of
 these had to be paid by hand:
 
-**The place pins had to learn about it.** They are floating `Area`s at the same
-`Order`, drawn *later* in the frame, which is exactly what wins egui's hit test
-within an order (`place_pins`' module note). A pin under the sheet is an
+**The place pins had to learn about it.** A pin under the sheet is an
 invisible teardrop eating the taps meant for Start — the trap the dock and the
 on-screen keyboard are already subtracted for. `RouteState::sheet_rect` publishes
-last frame's rect for the same reason `dock::reserved_bottom` is public.
+last frame's rect, which `place_pins::map_area` takes off the map.
 
-**The suggestion dropdown had to learn which way to open.** It hung off
-`field_rect.left_bottom()`, which from a bottom sheet is off the bottom of the
-screen: the suggestions for the field the whole panel is about would have been
-invisible. It pivots on the field's top edge when the field is in the lower half
-(`Area::pivot`), which needs no height — egui grows the box away from the pivot.
+**The suggestions had to stay on screen.** egui's dropdown hung under the field,
+off the bottom of the screen from a bottom sheet; the library draws one list
+inside the sheet, under the card.
 
 **The place card had to hide.** It is anchored centre-bottom too, so on a desktop
 window the two would have been drawn on top of each other. Hidden rather than
 closed: "Route to" is a verb on that place, and it is still the subject when the
 planner goes away.
 
-## The keyboard lift costs one frame, and that is affordable here
+## The keyboard lift
 
-`sheet_bottom` lifts the sheet clear of the on-screen keyboard when
-`OnScreenKeyboard::is_open()`, which is a frame behind the focus that opened it.
-So the first frame after tapping a field, `onscreen_keyboard::layout` still sees
-the field down at the bottom edge and puts that slab on the **top** edge; the
-next frame the sheet has moved up and the keys drop back. `chat_overlay`'s
-composer cannot take that frame — it never lifts, so the flip would stick for as
-long as the field holds focus, which is why that module *predicts* the height
-instead. A surface that does lift self-corrects, so it uses the simpler,
-non-flickering trigger (the keyboard holds its target across the frame egui takes
-focus away; `text_edit_focused()` does not).
+`sheet_bottom` lifts the sheet clear of the on-screen keyboard by its reach
+(`onscreen_keyboard::KeyboardInset`, zero while the keys are down or at the top).
+The keys open at the bottom and decide their edge only after the screens have
+lifted (`onscreen_keyboard`'s module note), so the lift does not make them flip.
 
 ## The peek has to say where the route goes
 
@@ -95,12 +84,10 @@ a field that holds something. The ways to fill an end without typing are chips
 under the card ("My position", "Choose on map"), drawn only for the end still
 open. A failure is said under the card, on an error plate, not above it.
 
-Two things cut the chips and the failure off the sheet's bottom on a phone, and
-both had to go. The card's column of two lines is allocated at their height
-(`2 × card_line_height`), not at zero, which painted both lines but reserved
-neither. And with no route the body is no longer charged the 150 pt of summary
-and action row it does not draw (`SHEET_HEADER_BARE_PTS`): on a 610 pt phone
-viewport that left the body 113 pt. The failure is drawn outside the scrolling body, beside the action row, so it is never the thing that scrolls away; and as one text (mark and words in a `LayoutJob`), since a wrapping label in a horizontal row reserves one line.
+In egui the chips and the failure were cut off the sheet's bottom on a phone (a
+two-line column reserved at zero height; 150 pt charged for a summary not drawn,
+leaving the body 113 pt of a 610 pt viewport). The failure is drawn outside the
+scrolling body, beside the action row, so it is never the thing that scrolls away.
 
 "My position" used to be the camera, filled once and kept. So it stayed wherever
 the camera was the first time the sheet opened: after the map had been at Winsum,
@@ -113,7 +100,7 @@ now reads "You are already at …", with the distance.
 
 ## Rejected: a shorter right panel
 
-The obvious smaller change was to stop `responsive_right_panel` filling the
+The obvious smaller change was to stop the right panel filling the
 compact viewport — dock it to, say, 70 % and leave a strip of map. It loses on
 both axes it was meant to win. The strip that is left is a *column* down one
 side, and a route is a line across a city: the useful thing to leave visible is
@@ -126,5 +113,4 @@ while it is up, for a planner that mostly wants to show one number and a button.
 The sheet has been shot headlessly at 412×915 and 1280×800 (`--ui route`), which
 is geometry and placement — trustworthy on lavapipe
 ([headless-shots-software-renderer.md](headless-shots-software-renderer.md)).
-The one-frame keyboard flip above has **not** been watched on a device or in the
-emulator; it is reasoned from `onscreen_keyboard::layout`, not measured.
+The keyboard lift has **not** been watched on a device or in the emulator.

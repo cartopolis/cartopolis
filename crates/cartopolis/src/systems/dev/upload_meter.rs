@@ -232,7 +232,7 @@ impl GpuReport {
         streamed_assets: usize,
         held: impl FnOnce() -> (usize, usize, usize),
     ) {
-        let now = egui_wgpu::wgpu::meter::snapshot();
+        let now = wgpu::meter::snapshot();
         let frame = now.written_bytes.saturating_sub(self.written_at_frame);
         self.written_at_frame = now.written_bytes;
         self.max_frame = self.max_frame.max(frame);

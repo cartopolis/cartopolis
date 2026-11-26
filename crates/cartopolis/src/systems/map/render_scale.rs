@@ -47,9 +47,10 @@
 //! allocate the main texture at the reduced size, and every pass then fills it
 //! edge to edge because that is simply how big the attachment is. The same
 //! `upscaling` blit stretches it over the full-size swapchain — now correctly,
-//! because the texture it samples is entirely rendered — and `egui_pass` runs
-//! *after* upscaling onto that full-size output, so the world gets cheaper while
-//! the interface stays sharp, which is the right way round.
+//! because the texture it samples is entirely rendered. The interface is a
+//! camera of its own (`lib_host::LibCamera`), blended onto that output after
+//! it; `apply_render_scale` leaves it at full size, so the world gets cheaper
+//! while the interface stays sharp, which is the right way round.
 //!
 //! ## What it does and does not buy
 //!
@@ -117,7 +118,7 @@
 //! reduced one needs. That is a rounding-scale cost, not a mapping error.
 //!
 //! So: do not "fix" this by scaling the main-world `Camera`. That would shrink
-//! the viewport `world_to_viewport`, egui layout and the touch mapping all read
+//! the viewport `world_to_viewport`, the interface layout and the touch mapping all read
 //! (the thing this module's whole design avoids), to correct an error that is not
 //! occurring. Verified against bevy_pbr 0.19; re-check it on a Bevy bump, since
 //! it rests on which world `cluster_factors` is computed in.
@@ -347,15 +348,21 @@ pub(crate) fn scaled_size(size: UVec2, scale: f32) -> UVec2 {
 /// because this runs in the **render** world and that marker is a main-world
 /// component that nothing extracts. Writing the query the other way compiles
 /// perfectly and matches zero entities — a silent no-op, which on a change whose
-/// only symptom is a frame rate is the worst possible failure mode. Every camera
-/// this app renders with is the world camera or the headless shot camera standing
-/// in for it, so applying to all extracted cameras is also the correct scope.
+/// only symptom is a frame rate is the worst possible failure mode. So it goes
+/// by order instead: the world camera (or the shot camera standing in for it)
+/// and the cosmos' sky are scaled; the interface's own camera
+/// (`lib_host::LibCamera`, order 100) is not — scaled, every screen on a phone
+/// was drawn at the reduced resolution and blown up, text and all.
 ///
 /// Note what is deliberately *not* touched: the main-world `Camera`. Its logical
 /// viewport is what `Camera::world_to_viewport` answers from (`place_pins`), what
-/// egui lays out against and what `touch.rs` maps fingers through — and all three
-/// are right, because the picture still covers the whole window. The reduced
-/// resolution exists only between extraction and the upscale blit.
+/// the interface lays out against and what `touch.rs` maps fingers through — and
+/// all three are right, because the picture still covers the whole window. The
+/// reduced resolution exists only between extraction and the upscale blit.
+/// The interface's camera and anything above it draw at the window's full
+/// resolution (`lib_host::LibCamera` is spawned at this order).
+pub const INTERFACE_CAMERA_ORDER: isize = 100;
+
 fn apply_render_scale(
     scale: Res<RenderScale>,
     mut cameras: Query<(&mut ExtractedCamera, &mut ExtractedView)>,
@@ -368,6 +375,9 @@ fn apply_render_scale(
         return;
     }
     for (mut camera, mut view) in &mut cameras {
+        if camera.order >= INTERFACE_CAMERA_ORDER {
+            continue;
+        }
         let Some(target) = camera.physical_target_size else {
             continue;
         };

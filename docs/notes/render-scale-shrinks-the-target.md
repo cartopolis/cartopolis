@@ -1,13 +1,16 @@
 ---
 topic: render-scale
 triggers: [render_scale.rs, systems::render_scale, MainPassResolutionOverride, RenderScale, apply_render_scale, make_the_blit_filter, physical_target_size, physical_viewport_size, ExtractedView, main_pass_viewport, upscaling, BlitPipeline, ANativeWindow_setBuffersGeometry, "render scale", "map in the corner"]
-updated: 2026-10-17
+updated: 2026-11-26
 ---
 
 # A render scale has to shrink the target, not the pass
 
 The phone tier draws the 3D world at a fraction of the screen (1/2 by default,
-a Settings slider since then) and blits it back up under a full-resolution egui.
+a Settings slider since then) and blits it back up. Until 2026-11-26 a
+full-resolution egui drew over that; the UI now has its own `LibCamera`, and
+`apply_render_scale` rewrites *every* extracted camera, which as written
+includes it — whether the UI now draws at the reduced scale is unchecked.
 `systems::render_scale`'s module doc has the mechanics; this note keeps the two
 routes that lost, because both look like the obvious answer.
 
@@ -40,8 +43,8 @@ So `apply_render_scale` shrinks the **target** instead, in the render world:
   without it puts screen-space effects on a different grid from the pass.
 
 The **main-world `Camera` is deliberately untouched**: `world_to_viewport`
-(the place pins), egui's layout and `touch.rs`'s finger mapping all read it, and
-all three are right because the picture still covers the whole window. Do not
+(the place pins) and `touch.rs`'s finger mapping read it (`UiMetrics` reads the
+`Window`), and both are right because the picture still covers the whole window. Do not
 "fix" the light clustering by scaling it — `cluster_factors` is computed in the
 render world from the rewritten `ExtractedView`, so it already lines up (verified
 against bevy_pbr 0.19; re-check on a Bevy bump).

@@ -38,6 +38,8 @@ mod imp {
         })
     }
 
+    // Paste: egui's text fields asked; the library's do not yet.
+    #[allow(dead_code)]
     pub fn get_text() -> Option<String> {
         clipboard().lock().ok()?.as_mut()?.get_text().ok()
     }
@@ -62,6 +64,8 @@ mod imp {
 
     static CLIPBOARD: Mutex<Option<String>> = Mutex::new(None);
 
+    // Paste: egui's text fields asked; the library's do not yet.
+    #[allow(dead_code)]
     pub fn get_text() -> Option<String> {
         CLIPBOARD.lock().ok()?.clone()
     }
@@ -90,6 +94,8 @@ mod imp {
     //! high-precision log first. Paste stays `None`: it feeds fields that need a
     //! soft keyboard to be useful, and Android 10+ refuses a clipboard read from
     //! an app that is not focused, which a JNI call from a worker can trip.
+    // Paste: egui's text fields asked; the library's do not yet.
+    #[allow(dead_code)]
     pub fn get_text() -> Option<String> {
         None
     }
@@ -106,6 +112,8 @@ mod imp {
     /// See the module note: reading the clipboard on the web is asynchronous and
     /// permission-gated, so there is nothing to return by the time the caller
     /// needs it. Not a stub waiting on `readText` — that call is the wrong shape.
+    // Paste: egui's text fields asked; the library's do not yet.
+    #[allow(dead_code)]
     pub fn get_text() -> Option<String> {
         None
     }
@@ -140,4 +148,5 @@ mod imp {
     }
 }
 
+#[allow(unused_imports)]
 pub use imp::{get_text, set_text};

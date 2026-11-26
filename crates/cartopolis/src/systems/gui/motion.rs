@@ -20,7 +20,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A state change: colour and rim of on/off, hover, a tab, a label appearing,
-/// the crossfade between the two spaces. Also egui's `Style::animation_time`.
+/// the crossfade between the two spaces. Was egui's `Style::animation_time`;
+/// kept as the vocabulary's, like [`ENTER`]'s readers.
+#[allow(dead_code)]
 pub const STATE: f32 = 0.2;
 /// A surface arriving: a card, a page, a cover, the keyboard.
 pub const ENTER: f32 = 0.36;

@@ -1,7 +1,7 @@
 ---
 topic: makehuman-avatars
 triggers: [crates/human, crowd.rs, crowd_pose.wesl, CrowdMaterial, CrowdSwatch, starter_looks, AvatarLook, SetAvatarLook, AvatarLookOf, RemoteLooks, looks.rs, V38__avatar_looks.sql, net/look.rs, systems::human_avatar, human_avatar.rs, avatar_designer.rs, HumanLook, CARTO_HUMAN_LOOK, aim_height, human-pack, default.humanpack, assets/models/avatar/human, mocap.rs, rig.rs, hands.rs, level_gaze, HumanTextureLoader, HumanNormalLoader, nrm.avatar, avatar.jpg, PACK_VERSION, ProxyRef, MakeHuman, MPFB, 100STYLE, CMU, BVH, from_stored, skin_tone, extras, aim_reach, aim_screen, DesignerTurn]
-updated: 2026-11-15
+updated: 2026-11-26
 ---
 
 # Realistic avatars are MakeHuman bodies built at runtime
@@ -153,7 +153,7 @@ Three things it does so the avatar can be seen while it is shaped:
 - **The model turns to the camera** (`update_avatar_model_pose`), which in
   Follow is behind it. A turn of the model only: the heading the sim holds and
   the camera stay where they were.
-- **On a phone it is a sheet over the bottom half** (`egui_manager::bottom_sheet`),
+- **On a phone it is a sheet over the bottom half** (`lib_avatar.rs`),
   not the right panel, which on a compact screen is the whole screen.
 - **The camera puts the avatar in the middle of the half the sheet leaves**:
   it aims at the body's middle (`CameraState::aim_height`, 0.9 m) or the face

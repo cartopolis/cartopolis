@@ -5,7 +5,7 @@
 # what it shows is what the client would build from the same bytes.
 #
 # **Why not the client itself.** Looking at a change to the ground meant launching
-# it — sign-in, tile streamer, egui, and a capture waiting for all of it to go
+# it — sign-in, tile streamer, the interface, and a capture waiting for all of it to go
 # quiet, six minutes a viewpoint on a software renderer. This is seconds, and the
 # same input gives the same picture.
 #

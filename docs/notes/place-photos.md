@@ -1,7 +1,7 @@
 ---
 topic: place-photos
-triggers: [photo.rs, photo_store.rs, bookmarks.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour", platform::photo, utils/photo_store.rs]
-updated: 2026-10-17
+triggers: [photo.rs, photo_store.rs, bookmarks.rs, lib_places.rs, user_store.rs, android.rs, "photo", "camera", "thumbnail", "picture", "image capture", "MediaStore", "rfd", "file picker", "context menu", "long_touched", marker_slot, "place row", "pin colour", platform::photo, utils/photo_store.rs]
+updated: 2026-11-26
 ---
 
 # A saved place can carry a photo
@@ -61,7 +61,8 @@ with a file picker, from the same element.
 Photos persist there like everything else: both sizes go into the Data namespace
 of `platform::storage`, which is IndexedDB on the web (`docs/notes/web-persistence.md`).
 Thumbnails are preloaded into the synchronous view before the app is built, because
-a row draws one inside an egui pass; the full-size photo is fetched when someone
+the places screen reads one synchronously, inside a frame
+(`lib_places::PlaceThumbs`); the full-size photo is fetched when someone
 opens the viewer, which is why `read_full` answers `Cached::Loading` and the viewer
 has a spinner state distinct from its "could not be opened" one.
 
@@ -86,17 +87,11 @@ panel is the whole screen and the buttons are still finger-sized, it left a name
 column too narrow to tell two long street names apart. The thumbnail needed
 28 pt more.
 
-egui reaches the menu from a touch screen with no work on our side:
-`Response::secondary_clicked` is true for a **long touch** as well as a
-right-click, and this client feeds egui real `Event::Touch`es
-(`egui_manager::pointer_events`), which is the condition
-`InputState::any_touches` — and therefore the whole long-press path — depends on.
-
-**The trap in that path:** egui's press-and-hold handler sets `clicked()` *as
-well as* `secondary_clicked()`, so a long press on a place would open the menu
-*and* fly the camera to the place behind it. `place_row` guards the jump with
-`!name_response.long_touched()`. Anything else that grows a context menu on a
-clickable widget needs the same guard.
+Until 2026-11-26 that was egui's context menu, opened by right-click or a long
+touch — and egui's press-and-hold also set `clicked()`, so a long press opened
+the menu *and* flew to the place unless guarded with `!long_touched()`. The
+component library's row ends in a ⋯ instead (`lib_places::kebab`), which opens
+the actions under it: no long press, no guard.
 
 ## A photo must not move the row it is in
 
@@ -111,13 +106,12 @@ there is no photo, and a hairline frame *inside* the tile when there is (outside
 it made the photo rows a shade wider than the pin rows — the same misalignment
 one step smaller).
 
-The pin is painted, not a glyph (`place_pins::paint_pin_glyph`). The slot used to
-call `theme::first_drawable(&["📍", "⌖", "•"])`, which probes the bundled font and
-had settled on `⌖` — a crosshair, next to a teardrop standing over the same place
-on the map. Painting it means the panel and the map cannot disagree.
+The pin is the icon font's `icons::PIN`, not a probed glyph. The slot used to
+call `theme::first_drawable(&["📍", "⌖", "•"])`, which had settled on `⌖` — a
+crosshair, next to a teardrop standing over the same place on the map.
 
 **Closing the viewer used to freeze the app**, and that is a renderer constraint
-rather than a photo one: [`egui-texture-lifetime`](egui-texture-lifetime.md).
+rather than a photo one: [`texture-lifetime`](texture-lifetime.md).
 
 ## Storage shape
 
@@ -130,8 +124,8 @@ the web, from one code path.
 - **Bytes are never in `user.json`.** `UserStore::save` re-serialises the whole
   document on every autosave tick and compares it to the last one; a base64 photo
   would make each tick a multi-megabyte serialise-and-compare.
-- **The stem carries a serial (`place-<id>-<seq>`), not just the place id.** egui
-  caches a texture by name, so replacing a photo under the same name would leave
+- **The stem carries a serial (`place-<id>-<seq>`), not just the place id.** The
+  thumbnail cache (`systems::thumbs`) keys a picture by stem, so replacing a photo under the same name would leave
   the old picture in the row until the app restarted.
 - **A stem is validated on the way out of the store.** `user.json` is a plain
   file anything can edit, so a stem is input; `../..` in one would otherwise aim

@@ -6,7 +6,7 @@
 //! | [`map`] | Everything streamed and drawn as world geometry — tiles, globe, buildings, terrain, water, vegetation, labels |
 //! | [`nav`] | Route planning and following, geocoding, transit |
 //! | [`player`] | Avatar, camera, collision, picking, gizmos |
-//! | [`gui`] | egui: the manager, the theme, and every panel |
+//! | [`gui`] | The interface: the theme, the input seam, and every screen (the component library's) |
 //! | [`net`] | Sim transport and the user store |
 //! | [`dev`] | Headless capture, debug overlays, desktop integration |
 //!
@@ -60,10 +60,9 @@ pub use cartopolis_geo::{
 };
 pub use gui::{
     action_ring, app_update, avatar_designer, bookmarks, building_card, chat, cosmos, data_layers,
-    design_room, discs, dismiss, dock, egui_manager, facade_check, faces, floor_picker, hud, icons,
-    layer_tiles, map_osd, model_library, motion, onscreen_keyboard, place_card, place_names,
-    place_pins, plans, scenario, script_editor, settings, splash, theme, ui, ui_input, ui_theme,
-    welcome, zoom_rail,
+    design_room, discs, dismiss, dock, facade_check, faces, floor_picker, hud, icons, layer_tiles,
+    map_osd, model_library, motion, onscreen_keyboard, place_card, place_names, place_pins, plans,
+    scenario, script_editor, settings, splash, theme, ui, ui_input, ui_theme, welcome, zoom_rail,
 };
 // Settings drawn by the component library, beside egui (`ui-probe`).
 #[cfg(all(feature = "ui-lib", feature = "comms", not(target_arch = "wasm32")))]

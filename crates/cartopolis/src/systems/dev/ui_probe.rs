@@ -324,6 +324,7 @@ fn spawn_probe(
                 mono: faces.body.clone(),
                 icons: None,
                 icon_scale: 1.0,
+                emoji: None,
             });
             let p = theme::p();
             mithril_bevy::with_host(|host| {

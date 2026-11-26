@@ -1,7 +1,7 @@
 ---
 topic: scenarios
 triggers: [crates/scenario, lens_areas.rs, lens_areas.wesl, LensAreaMaterial, cartopolis_scenario, scenario.rs, official_areas.rs, xlsx.rs, ladder.rs, cbs-2024.toml, ses-2023.toml, pbl-2050.toml, wlo-2060.toml, night-wave.toml, ne-admin1-europe.bin, assets/scenarios, CARTO_SCENARIO, "atlas areas", "region state", "region_state", "areas/", "cbs-buurt-2024", SES-WOA, statusscores, "regionale prognose", WLO, COROP, "change_since", "field_at"]
-updated: 2026-11-17
+updated: 2026-11-26
 ---
 
 # Scenarios: generic layers on a ladder of places
@@ -155,8 +155,8 @@ Opened from its own disc under Layers, not from the Layers panel
 the other was a radio dressed as a checkbox, and on a phone the panel covered
 the map you were choosing for. The lens is one surface (`scenario::Sheet`): a
 bottom sheet in portrait (figures, place, shelf), a column on the left
-otherwise. Its rect goes to `place_pins::map_area` through egui's memory
-(`scenario::lens_rect`), so pins under it do not eat its taps. Switching to
+otherwise. Its rect goes to `place_pins::map_area` as last frame's
+`scenario::LensSlot`, so pins under it do not eat its taps. Switching to
 another figure of the same file keeps the loaded areas (`switch_figure`); only
 another file fetches. A scenario file may give itself a `question` (the
 shelf's heading) and each region state a `group` (the figures' heading).
@@ -167,7 +167,7 @@ icon can say whether one is on"). On and shown are two things: on is the
 coloured map, the mode's frame and the lit disc; the sheet (the open
 figure's key over the figures) is raised by the disc and put away by its
 ✕, the disc, a pick off the shelf or the figures, or a drag that starts on
-the bare map (`EguiManager::map_dragged`, decided by where the press
+the bare map (`UiInput::map_dragged`, decided by where the press
 landed). "Lens off" turns it off. The same in the column. An earlier
 resting strip, then a one-row strip with the key behind a palette (v2), were
 dropped for it the same day: nothing has to rest over the map when the
@@ -175,14 +175,12 @@ sheet is one tap away.
 
 The lens answers back (asked 2026-11-01, "too static"): the area being read
 is outlined on the map — under the pointer on a desktop, with a card beside
-it, else under the crosshair; the scale's bands single theirs out (pointing
-previews, a tap keeps it, `CARTO_LENS_BAND=n` for a capture) and a marker
-stands over the band here, as a tick does on each figure's small scale; and
-an area's colour eases to its state's (`Open::colours`), so a played year or
-a switched figure flows over and a finer board fades in. **The map paints
-before the chrome**, so a band picked on the scale reaches the map a frame
-later, and the chrome asks for that frame itself. A finger has no hover: on
-a phone the crosshair is the pointer.
+it, else under the crosshair; the scale's bands single theirs out (a tap; the
+library has no hover, so pointing no longer previews; `CARTO_LENS_BAND=n` for a
+capture) and a marker stands over the band here, as a tick does on each
+figure's small scale; and an area's colour eases to its state's
+(`Open::colours`), so a played year or a switched figure flows over and a finer
+board fades in. A finger has no hover: on a phone the crosshair is the pointer.
 
 ## Drawn by the GPU, a texel an area
 

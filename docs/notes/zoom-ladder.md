@@ -1,7 +1,7 @@
 ---
 topic: zoom-ladder
-triggers: [zoom_rail.rs, zoom_rail_control, zoom_scale, edge_push, globe_return_alt, Scale, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
-updated: 2026-11-07
+triggers: [zoom_rail.rs, lib_cosmos.rs, zoom_scale, edge_push, globe_return_alt, Scale, cosmos.rs, galaxy_points, flight_step, galaxies.rs, GalaxyCatalogue, "cosmos/galaxies.bin", planets.rs, near_stars.rs, gen-near-stars.ts, globe_grab, globe_fling, globe_aim, rail_goal, cosmos_alt, hold_for_flight, FlightPhase, globe_light_direction, "--light", SunMode, "Milky Way", "solar system", ladder.rs]
+updated: 2026-11-26
 ---
 
 # The zoom ladder: one zoom from the street to the edge of the universe
@@ -15,8 +15,8 @@ The globe's camera stops at 45,000 km from the Earth's centre
 (`ORBIT_MAX_DISTANCE_SPACE`); the far plane, f32 precision and the atmosphere
 are all tuned to it. Rather than raise it, the zoom past it moves
 `CameraState::cosmos_alt` (up to 10²¹ m) while the 3D camera waits at the
-ceiling over the place it left, and `systems::cosmos` paints the rungs above
-in egui. Coming back under the ceiling hands the view back to the globe where
+ceiling over the place it left, and `systems::cosmos` works out the rungs above
+(`lib_cosmos` draws them, `lib_cosmos_sky` the star fields). Coming back under the ceiling hands the view back to the globe where
 it was — which is why a drag out there never turns the globe: turning it
 would move where the way down lands.
 
@@ -25,7 +25,7 @@ disc that replaced it read as a different ball). The camera does not move;
 its `Camera::sub_camera_view` is set larger than the whole image, by the
 factor the Earth has shrunk on the map, and offset to where the map puts the
 Earth, so the real globe — tiles, atmosphere, night side — shrinks and moves
-with it. Space is painted round it with a round hole (`fill_around`); below
+with it. Space is painted round it with a round hole; below
 2 px across the painted disc takes over. The globe keeps the camera's own
 side and its own light while the map turns to above the ecliptic: at the
 sizes where the two differ it reads as the same planet.
@@ -37,9 +37,8 @@ pan is clamped so the Earth stays within 0.4 of the screen's short side of the
 middle (or where it already was, past that), and that room shrinks to none
 between 2× and 1.05× the ceiling — the way down always lands home.
 
-The cosmos is painted on egui's **background layer, before the panel chain**.
-A separate `Order::Background` layer paints over panels, as every floating
-`Area` does (`egui-shared-root-ui.md`).
+The cosmos is the bottom library screen (`z-index: -20`, under the map's names)
+and listens nowhere, so a drag over it moves the map and every panel draws over it.
 
 ## Above the World rung, one map at one scale
 
@@ -202,7 +201,7 @@ if it were a mouse:
   landed. A pinch's first finger lands a few hundredths of a second before
   the second, so a pinch begun on the rail jumped the camera before it zoomed.
 
-Now (`map_osd::zoom_rail_control`) the list is gone. The rail names only the
+Now (`map_osd`'s `zoom_rail`) the list is gone. The rail names only the
 rung the camera is on, beside the thumb, and only while something moves: it
 fades out 2 s after the rung last changed or the rail was last used (a mouse
 over it counts; a finger never hovers), and the whole rail dims to 55 %. A tap on

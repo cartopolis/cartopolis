@@ -54,7 +54,7 @@ bevy = { workspace = true, features = ["debug"] }
 # manifest's minSdk is 28) and needs no permission for playback and no
 # `classes.dex`. `platform::audio`'s *capture* half stays off here on its own cfg.
 # `ui-probe` is the interface (the component library on bevy_ui), named here
-# as `audio` is: an APK without it would hide every egui screen and draw none.
+# as `audio` is: an APK without it would draw no interface at all.
 cartopolis = { path = "../cartopolis", default-features = false, features = [
     "audio",
     "comms",

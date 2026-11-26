@@ -25,6 +25,11 @@ const quiet = process.argv.includes("--quiet");
 
 const bevy = (n: string) => n === "bevy" || n.startsWith("bevy_") || n === "big_space";
 const client = (n: string) => n === "cartopolis" || n === "cartopolis_materials";
+// The interface is the component library's since 2026-11-26; egui and its
+// painter are gone, and a dependency that brought them back would put a second
+// UI toolkit in every build.
+const egui = (n: string) =>
+  n === "egui" || n.startsWith("egui-") || n.startsWith("egui_") || n === "epaint" || n === "ecolor";
 
 // crate → why → what it must not reach. Keep the reasons in CLAUDE.md's words.
 const RULES: { crate: string; why: string; forbidden: (n: string) => boolean }[] = [
@@ -45,6 +50,12 @@ const RULES: { crate: string; why: string; forbidden: (n: string) => boolean }[]
   },
   { crate: "cartopolis_viewer", why: "must not depend on cartopolis", forbidden: client },
   { crate: "cartopolis_materials", why: "never depends on cartopolis", forbidden: (n) => n === "cartopolis" },
+  // The client, everything that links it, and the library's Bevy backend:
+  // the workspace's interface never links egui.
+  { crate: "cartopolis", why: "never links egui (the component library draws)", forbidden: egui },
+  { crate: "cartopolis_android", why: "never links egui (the component library draws)", forbidden: egui },
+  { crate: "mithril_bevy", why: "never links egui (the component library draws)", forbidden: egui },
+  { crate: "cartopolis_viewer", why: "never links egui", forbidden: egui },
 ];
 
 // `cargo metadata` reads every package's manifest, also those only another

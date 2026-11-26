@@ -172,13 +172,13 @@ bevy = { version = "0.20", default-features = false, features = [
     #   now (above) but the client uses `Fxaa`, which needs no LUT at all. Adding
     #   it back is only worth it if somebody switches the edge filter to `Smaa`.
     # * `default_font` is `bevy_text?/default_font`, and `bevy_text` is not enabled
-    #   either — the UI is egui, which carries its own font (`systems::theme`). A
-    #   pure no-op.
+    #   either — the client embeds its own faces and hands them to the
+    #   component library (`systems::theme`, `lib_host`'s `FontMap`). A pure
+    #   no-op.
     #
     # Two more went on 2026-08-19, by the same audit:
     #
-    # * `custom_cursor` — zero hits for `CustomCursor`/`CursorIcon` in the client
-    #   (the `cursor` matches are all `egui::text::CCursor`).
+    # * `custom_cursor` — zero hits for `CustomCursor`/`CursorIcon` in the client.
     # * `jpeg` — bevy_image's JPEG decoder for `asset_server.load`, and no image
     #   in this tree goes through the asset server at all: tiles, photos and the
     #   window icon decode via the `image` crate directly, and the glTFs embed
@@ -191,8 +191,6 @@ bevy = { version = "0.20", default-features = false, features = [
 bevy_image = { version = "0.20", features = ["zstd_rust"] }
 big_space = { path = "crates/big_space" }
 bytes = "1.9"
-egui = "0.36"
-egui-wgpu = { version = "0.36", default-features = false }
 clap = { version = "4.5", features = ["derive"] }
 earcutr = "0.4"
 figment = { version = "0.10", features = ["toml", "env"] }

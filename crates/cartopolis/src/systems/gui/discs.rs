@@ -6,6 +6,7 @@
 
 use crate::systems::chat::ChatState;
 use crate::systems::icons;
+use crate::systems::theme::Rgba8;
 
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
 ///
@@ -13,17 +14,17 @@ use crate::systems::icons;
 /// read as six shades of the same mud, and a person's colour is the one
 /// thing in a list of names that is theirs. Each still carries white initials
 /// at better than 3:1.
-const AVATAR_TONES: [egui::Color32; 6] = [
-    egui::Color32::from_rgb(0x86, 0x5C, 0xC4),
-    egui::Color32::from_rgb(0x2C, 0x91, 0x7C),
-    egui::Color32::from_rgb(0xC0, 0x66, 0x30),
-    egui::Color32::from_rgb(0x43, 0x74, 0xC4),
-    egui::Color32::from_rgb(0xB8, 0x48, 0x68),
-    egui::Color32::from_rgb(0x5F, 0x8A, 0x2E),
+const AVATAR_TONES: [Rgba8; 6] = [
+    Rgba8::from_rgb(0x86, 0x5C, 0xC4),
+    Rgba8::from_rgb(0x2C, 0x91, 0x7C),
+    Rgba8::from_rgb(0xC0, 0x66, 0x30),
+    Rgba8::from_rgb(0x43, 0x74, 0xC4),
+    Rgba8::from_rgb(0xB8, 0x48, 0x68),
+    Rgba8::from_rgb(0x5F, 0x8A, 0x2E),
 ];
 
 /// The "Here" disc: the v1 inbox's dark slate, with a location pin on it.
-const HERE_TONE: egui::Color32 = egui::Color32::from_rgb(0x3F, 0x3B, 0x38);
+const HERE_TONE: Rgba8 = Rgba8::from_rgb(0x3F, 0x3B, 0x38);
 
 /// What kind of chat a channel is, which decides what it says about itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -49,7 +50,7 @@ pub fn kind_of(key: &str) -> ChatKind {
     }
 }
 
-pub(crate) fn tone_for(name: &str) -> egui::Color32 {
+pub(crate) fn tone_for(name: &str) -> Rgba8 {
     let h = name
         .bytes()
         .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
@@ -61,10 +62,10 @@ pub(crate) fn tone_for(name: &str) -> egui::Color32 {
 /// component library's discs (`lib_chats`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiscLook {
-    pub tone: egui::Color32,
+    pub tone: Rgba8,
     /// The initial, `#`, or an icon glyph.
     pub text: String,
-    /// `text` is a glyph of the icon font (egui's fonts fall back to it).
+    /// `text` is a glyph of the icon font.
     #[cfg_attr(not(all(feature = "ui-lib", feature = "comms")), allow(dead_code))]
     pub icon: bool,
     /// The text's size as a share of the disc's.

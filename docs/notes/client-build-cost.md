@@ -1,7 +1,7 @@
 ---
 topic: client-build-cost
 triggers: [slow build, llvm-lines, cranelift, MaterialPlugin, compile time, crate split, cargo timings, profile, dev-bevy, target dir, incremental, mold, lld, linker, "link time", "print link-args", save-temps, fuse-ld, .cargo/config.toml, crates/materials, crates/geo/Cargo.toml, crates/mcp_server/Cargo.toml, crates/cartopolis/Cargo.toml, simd_baseline.rs, cartopolis_materials, cartopolis_geo]
-updated: 2026-10-17
+updated: 2026-11-26
 ---
 
 # Where the client's build time actually goes
@@ -138,8 +138,9 @@ were compiled and linked as part of a Bevy binary. They are now `crates/geo`:
 > rows of it never did. `crates/geo/src` holds `furniture`, `mip`, `places`,
 > `pois`, `road_texture`, `routing`, `scatter` and `vector_tiles` — `theme`,
 > `shot_presets` and `utils/sun` are still client files, so roughly 1,260 lines
-> and 12 tests of the claim above are outstanding. `theme` cannot go to `geo` as
-> it stands: it is egui-only, and `geo` has no egui and should not grow one.
+> and 12 tests of the claim above are outstanding. `theme` could not go to `geo`
+> then: it was egui-only, and `geo` should not grow a UI crate. egui left the
+> client on 2026-11-26; whether `theme` can move now is unexamined.
 
 `vegetation` turned out to be the same story one level down: 1007 lines of which
 ~870 were pure scatter and meshing, with a 130-line ECS half on top. It split

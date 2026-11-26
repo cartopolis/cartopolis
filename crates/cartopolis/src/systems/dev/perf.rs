@@ -2217,7 +2217,7 @@ fn finish(
     let report = Report {
         meta: ReportMeta {
             adapter: format!("{:?} {}", adapter.device_type, adapter.name),
-            software_renderer: adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu
+            software_renderer: adapter.device_type == wgpu::DeviceType::Cpu
                 || is_software(&adapter.name),
             quality: format!("{:?}", crate::quality::budget().tier),
             size: run.size.clone(),

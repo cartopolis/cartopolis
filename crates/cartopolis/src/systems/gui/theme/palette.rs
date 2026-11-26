@@ -217,7 +217,7 @@ pub struct Palette {
     /// A strong mark on the map's chrome that is not a glyph — the zoom
     /// rail's thumb. Dark: [`Palette::cream`]. Light: the accent.
     pub map_mark: Rgba8,
-    /// Whether egui's dark visuals are the base ([`visuals`]).
+    /// Whether this is a dark palette.
     pub dark: bool,
 }
 
@@ -336,9 +336,8 @@ pub fn p() -> &'static Palette {
     }
 }
 
-/// Switch the chrome to the light theme or back. Only the palette: the egui
-/// style that holds its colours is re-applied by [`apply_visuals`], which
-/// `egui_manager::follow_theme_visuals` calls when the answer changes.
+/// Switch the chrome to the light theme or back; everything that paints reads
+/// the palette in force through [`p`].
 pub fn set_light(on: bool) {
     LIGHT_ON.store(on, Ordering::Relaxed);
 }

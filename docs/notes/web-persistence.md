@@ -1,7 +1,7 @@
 ---
 topic: web-persistence
 triggers: [storage.rs, user_store.rs, photo_store.rs, IndexedDB, idb, OPFS, localStorage, "web build", wasm32, "user.json", "does not persist", "settings lost", navigator.storage, persist, quota, Namespace, read_now, preload, "clear cache", "reset cache", ClearProgress, cache_reset.rs, platform::storage, crates/cartopolis/src/lib.rs, std::fs]
-updated: 2026-11-22
+updated: 2026-11-26
 ---
 
 # Everything the client keeps goes through one seam, IndexedDB-backed on the web
@@ -20,7 +20,8 @@ nothing, because each write was best-effort by design.
 
 **No browser offers a synchronous read on the main thread**, and two callers need
 one: `UserStore::load` runs while the `App` is still being built, and
-`photo_store::read_thumb` runs inside an egui pass. Neither can `await`.
+`photo_store::read_thumb` runs inside a frame (`lib_places::PlaceThumbs`).
+Neither can `await`.
 
 Options considered, and why they lost:
 

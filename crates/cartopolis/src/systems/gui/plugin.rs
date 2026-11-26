@@ -166,9 +166,6 @@ impl Plugin for GuiPlugin {
                 systems::ui_theme::follow_the_light,
                 // And how much it moves (`systems::motion`), for the same reason.
                 systems::motion::apply_pref,
-                // egui's own style follows it, for what egui still draws.
-                systems::egui_manager::follow_theme_visuals
-                    .after(systems::ui_theme::follow_the_light),
             )
                 .in_set(ClientPhase::Input),
         );
@@ -508,31 +505,15 @@ impl Plugin for GuiPlugin {
                 .in_set(ClientPhase::Input),
         );
 
-        // The right-hand panel chain — ONE ordered declaration.
+        // The panel drivers' chain — ONE ordered declaration.
         //
-        // Every system here draws into the *same* shared root `Ui`, so their call
-        // order fixes their right-to-left placement, and every one of them takes
-        // `crate::systems::egui_manager::EguiMut`, so Bevy already runs them one at a time
-        // regardless. The only thing ordering decides is *which* order — and where
-        // two are unconstrained, Bevy is free to pick differently from frame to
-        // frame.
-        //
-        // That is not a visual swap. The panels share the single `Background`
-        // layer, so a panel that lands over another on some frames wins egui's hit
-        // test on those frames, while `layer_id_at` still answers `Background`
-        // because the contest is *within* a layer. The symptom is a checkbox that
-        // ignores about half the clicks aimed at it, invisible to every
-        // layer-level diagnostic and impossible to reproduce in a single-panel
-        // test. `chat` and `appearance` were the two left unlinked once (fixed
-        // 2026-07-31).
-        //
-        // This used to be ~12 `.after()` links scattered over seven places in two
-        // `add_systems` calls, with the intended chain recorded only in a comment.
-        // `.chain()` makes the order structural: a panel added to this tuple is
-        // ordered by construction, and one added anywhere else is visibly not in
-        // the chain.
-        // Since these systems cannot run concurrently anyway, the total order
-        // costs no parallelism.
+        // These once drew into egui's shared root `Ui`, where the call order
+        // decided both placement and who won a click. The library draws them
+        // now, but the drivers still hand state to each other within a frame
+        // (the face sheet opens sign-in, the dock writes `MapChrome::holes`
+        // the overlays read), so the order stays structural: a driver added
+        // to this tuple is ordered by construction, and one added anywhere
+        // else is visibly not in the chain.
         //
         // **Two halves, one order.** The head runs in `ClientPhase::Input`: the
         // main menu opens the sign-in screen whose session driver has to land

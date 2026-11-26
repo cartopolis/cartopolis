@@ -23,7 +23,7 @@
 //!
 //! IndexedDB has **no synchronous read**, and two callers need one:
 //! `UserStore::load` runs while the `App` is still being built, and
-//! `photo_store::read_thumb` runs inside an egui draw. Neither can `await`.
+//! `photo_store::read_thumb` runs inside a screen's draw. Neither can `await`.
 //!
 //! So on the web, [`preload`] pulls a prefix of the Data namespace into memory
 //! *before the app is constructed* ([`crate::run`]), and [`get_now`] answers out
@@ -158,7 +158,7 @@ pub fn view_bytes() -> usize {
     imp::view_bytes()
 }
 
-/// Read from a synchronous context — an egui pass, or `App` construction.
+/// Read from a synchronous context — a screen being drawn, or `App` construction.
 ///
 /// Natively this is the file read, and answers `Ready` or `Missing` in the same
 /// call. On the web it answers out of the in-memory view, and a key that is in
@@ -195,8 +195,8 @@ pub fn remove_now(ns: Namespace, key: &str) {
 ///
 /// It exists because neither platform can answer "cleared" in the call: natively
 /// the work is a directory walk on another thread, and on the web it is a chain of
-/// IndexedDB requests. A caller that wanted a return value would have to block an
-/// egui frame on a filesystem.
+/// IndexedDB requests. A caller that wanted a return value would have to block a
+/// frame on a filesystem.
 #[derive(Default)]
 pub struct ClearProgress {
     done: std::sync::atomic::AtomicBool,

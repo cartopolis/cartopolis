@@ -1,7 +1,7 @@
 ---
 topic: tile-raster-cost
 triggers: [vector_tiles/raster.rs, map_geometry.rs, map_stream.rs, tile_source.rs, render_mvt, tiny-skia, TaskPoolOptions, "rasteris", "rasteriz", "tile cache", "map loads slowly", "paint batching", "fill rule", vello_cpu, "benchmark", "streaming performance", print_tile_pipeline_time]
-updated: 2026-09-21
+updated: 2026-11-26
 ---
 
 # Vector-tile rasterisation cost
@@ -330,8 +330,8 @@ would reopen this: a phone/wasm measurement showing a different ratio there
 (vello's NEON and simd128 lanes are newer than tiny-skia's), wanting per-tile
 *multithreading* (vello has it, tiny-skia never will), or text-on-raster
 (vello_cpu has a glyph pipeline; tiny-skia has none). Worth knowing: egui 0.35's
-`epaint` already depends on `vello_cpu` 0.0.9 via `glifo`, so the workspace
-compiles one regardless.
+`epaint` pulled in `vello_cpu` 0.0.9 via `glifo` until egui left the client
+(2026-11-26); `cartopolis_geo` now depends on `vello_cpu` 0.2 itself (`Cargo.lock`).
 
 ## The open question, and what any answer must beat
 

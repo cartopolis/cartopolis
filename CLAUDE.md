@@ -48,7 +48,7 @@ crates/cartopolis_android/build-apk.sh  # → $CARGO_TARGET_DIR/android/cartopol
 
 **`cargo check` does not compile `cfg(test)` code.** The suite silently rotted
 through the egui 0.35 migration until someone ran it, so run the tests, not just a
-check, when touching egui or the building geometry. Unit tests live in
+check, when touching the interface or the building geometry. Unit tests live in
 `#[cfg(test)]` modules; `cartopolis` is a lib plus a shim bin, both shim bins carry
 `test = false` and the owned libs `doctest = false`, so `cargo test` links a harness
 only for targets with tests in them.
@@ -121,7 +121,7 @@ in the gate's `tests` step: a new rule goes in its table, not only in this one.
 | `cartopolis_atlas` (`crates/atlas`) | Map-data pipelines, terrain tiles, and the web UI in `crates/atlas/web` (`atlas.md`) |
 | `cartopolis_server` (`crates/server`, `cartopolis-server`) | The simulator and atlas as one program: one binary, one `cartopolis.toml` (`[atlas]` inside), one HTTP address; atlas runs as a supervised second process of it, never in the tick's runtime (`the-server-stack.md`) |
 | `cartopolis_viewer` (`crates/viewer`, `carto-view`) | Draws what `cartopolis_geo` builds, in seconds, with stock materials; must not depend on `cartopolis`, and is a second Bevy binary in every workspace build |
-| `cartopolis` | The Bevy 0.20 client: rendering, ECS systems, egui 0.36 UI |
+| `cartopolis` | The Bevy 0.20 client: rendering, ECS systems, the component library's screens (`mithril_bevy` natively, DOM on the web) |
 | `cartopolis_android` | The APK's `cdylib`; both dependencies target-gated, so empty off Android (`android-build.md`) |
 | `cartopolis_mcp` (`crates/mcp_server`) | The client's MCP server: a socket on Unix desktops, the Midas device link on Android. **No `bevy` or `cartopolis`** (`driving-the-client-from-an-ide.md`) |
 | `cartopolis_materials` (`crates/materials`) | The custom material types and `MaterialsPlugin` only, split for build cost; never depends on `cartopolis` |
@@ -184,8 +184,7 @@ hand-mirrors `auth::AccountRow`**: change an account field and change it there t
 
 Each of these bit someone, usually silently. The note behind each has the story.
 The ones a source scan can hold are tests (`crates/cartopolis/src/source_rules.rs`,
-the panel chain in `egui_manager.rs`, the fixture in `testdata.rs`); the rest are
-prose, so read them.
+the fixture in `testdata.rs`); the rest are prose, so read them.
 
 **Bevy and the ECS**
 - A command aimed at an entity another system may despawn uses `try_insert` / `try_remove` / `try_despawn`; a release build only warns, a debug build panics — `entity-commands-outlive-entities.md`
@@ -201,7 +200,7 @@ prose, so read them.
 - A ring streamer centres on `AnchoredCamera::stream_xz_at` (`grid::StreamCentre`), never the camera: in Earth mode a rotate-drag swings the camera round a 2 km circle — `render-performance-survey.md`
 - Bound every streaming path per frame **in bytes** (`stream_ledger::admit`), not only in items, and gate it on drift or altitude: mass mesh churn loses the GPU device — `upload-bursts.md`
 - `NoFrustumCulling` also enters an entity into every shadow cascade; add `NotShadowCaster` unless it really casts — `render-performance-survey.md`
-- Never destroy a texture or buffer in the frame that recorded work on it; defer the free past `Queue::submit` — `egui-texture-lifetime.md`
+- Never destroy a texture or buffer in the frame that recorded work on it; defer the free past `Queue::submit` (the library's `ImageCache` frees a sweep late) — `texture-lifetime.md`
 - Altitude-driven visuals crossfade on `GlobeState::space_factor`, never switch on `in_space`, or a climb steps mid-zoom — `the-atmosphere-from-the-street-to-orbit.md`
 - Key any world-fixed shader pattern to anchor metres (UV0, `MeshTag`), never `world_position`: `big_space` jumps the render origin a whole cell — `water-surface.md`
 - Shaders are WESL (`import a::b;`, `@if`, bevy modules by file path); a shader error shows only in a run's log, never in `cargo check` or `cargo test` — `shaders-are-wesl.md`
@@ -211,16 +210,15 @@ prose, so read them.
 - Find a ring's outward side by probing 5 cm off the edge, never from its signed area: +z runs south, so winding rules come out inside-out — `doors-and-rooms.md`
 - Anything reading `Query<&Window>` falls back to `resources::HeadlessSurface`; a scissor that does not match the target quits a headless run silently — `headless-shots-software-renderer.md`
 
-**egui and input**
-- Systems reach egui through `EguiRef` / `EguiMut`, never `Res<EguiManager>` — it is non-send on wasm, so the mistake breaks only the web check — `egui-shared-root-ui.md`
-- Every system drawing into the shared root `Ui` goes in the panel-chain `.chain()` tuple in `systems/gui/plugin.rs`, or panels steal each other's clicks — `egui-shared-root-ui.md`
-- Floating `Area`s paint over panels: a world-anchored overlay culls (not clips) itself to `place_pins::map_area` and runs at the chain's tail — `egui-shared-root-ui.md`
-- UI chrome — colour, spacing, type, overlay frames, panel headers and close buttons — comes from `systems::theme`; never a fresh `Color32` for chrome in a panel (a palette for content, people or categories, is a named const in its module) — `ui-vocabulary.md`
-- Gate a world click on `UiInput::owns_click` (`systems::ui_input`, egui's and the library's verdict in one); `wants_pointer()` is only right while a button is down — `touch-input.md`
-- Game keys yield only to `UiInput::ui_owns_keyboard` (a focused text field), never `egui_wants_keyboard_input()`; read the UI's scale and size from `UiMetrics`, never egui — `egui-shared-root-ui.md`
-- Touch emits no mouse events: world clicks get an emulated mouse, gestures read `TouchGestures`, egui reads the event stream — `touch-input.md`
-- A clickable widget with a context menu guards its click with `!response.long_touched()`, because a long press also fires `clicked()` — `touch-input.md`
-- An anchored, size-to-content `Area` pins its content width, or it grows every frame until it spans the screen — `map-chrome.md`
+**The interface and input**
+- The interface is the component library: a screen is a `systems::lib_*` module on `mithril_bevy` natively and DOM on the web; its logic lives on the state, the view only draws it — `component-library-in-the-client.md`
+- UI chrome — colour, spacing, type — comes from `systems::theme` (`theme::p()`, `app_tokens()`) as `theme::Rgba8`; never a fresh colour literal for chrome in a screen (a palette for content, people or categories, is a named const in its module) — `ui-vocabulary.md`
+- A screen dark in both themes draws in `theme::DARK`'s colours rather than mounting dark: the host's dark switch is one for every screen — `ui-vocabulary.md`
+- A node is not laid out in the frame that makes it: ticking content (a timer, a readout) rewrites its text in place through a signal, never rebuilds its rows — `component-library-in-the-client.md`
+- A panel that takes room from the map marks its root `data-reserves-map`, or the dock, pins and names stand under it (`UiInput::map_rect`) — `ui-input.md`
+- Gate a world click on `UiInput::owns_click`; a finger's brisk tap has lifted before its click arrives, so it is judged by where it landed — `touch-input.md`
+- Game keys yield only to `UiInput::ui_owns_keyboard` (a focused text field, a modal); read the UI's scale and size from `UiMetrics` and convert window points with `window_to_ui` — `ui-input.md`
+- Touch emits no mouse events: world clicks get an emulated mouse, gestures read `TouchGestures`, the library reads Bevy's picking pointers — `touch-input.md`
 
 **Platforms**
 - Everything the client keeps for the user (settings, chats, photos) goes through `platform::storage`, never `std::fs`, which fails on wasm; `std::fs` is for code that never runs on the web (caches, crash reports, dev tools). On the web a read can be `Loading`, and treating that as `Missing` never recovers — `web-persistence.md`

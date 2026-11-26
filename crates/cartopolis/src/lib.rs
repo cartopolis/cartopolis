@@ -113,7 +113,6 @@ use resources::{
     EditDialogState, GameState, LocalAvatarSimId, MarqueeState, OsmTileUrlTemplate,
     PrimTextureCache, TextureLibrary,
 };
-use systems::egui_manager::EguiPlugin;
 use systems::*;
 
 /// Start the client.
@@ -973,15 +972,11 @@ fn run_client() {
         // there to be replaced.
         .add_plugins(render_setup::MeshSlabCapPlugin)
         // `UiMetrics` and `UiInput`: the UI's scale and who owns the input, as
-        // plain resources (`systems::ui_input`). Before `EguiPlugin`, which
-        // writes egui's half of `UiInput`.
+        // plain resources (`systems::ui_input`), written by the library's side.
         .add_plugins(systems::ui_input::UiInputPlugin)
-        .add_plugins(EguiPlugin)
         // Renders the 3D world below the screen's resolution on a tier that asks
-        // for it, and no-ops entirely on the tiers that do not. Must come after
-        // `EguiPlugin`, which is what puts `egui_pass` after `upscaling` — the
-        // ordering that keeps the interface at full resolution while the world
-        // scales.
+        // for it, and no-ops entirely on the tiers that do not. The interface
+        // stays at full resolution: the library draws on its own camera.
         .add_plugins(systems::render_scale::RenderScalePlugin)
         // Watches the render app's `PipelineCache` for pipelines that failed to
         // build, for the diagnostics report — a failed pipeline is otherwise a

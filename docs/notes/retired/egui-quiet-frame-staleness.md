@@ -1,10 +1,19 @@
 ---
-topic: egui-quiet-frame-staleness
-triggers: [egui_manager.rs, end_egui_frame, WorldAnchored, place_pins.rs, EguiRenderOutput, force_next_write, keep_egui_fresh, repaint_delay, request_repaint, shot_harness.rs, "--shot", "cargo shots", "stale UI", "frozen HUD", "compass does not move", quiet frame, tessellate]
+topic: retired/egui-quiet-frame-staleness
+triggers: ["egui_manager.rs", "end_egui_frame", "WorldAnchored", "keep_egui_fresh", "repaint_delay", "stale UI", "frozen HUD", "quiet frame"]
 updated: 2026-11-26
 ---
 
-# egui's repaint signal does not know about the ECS
+# Retired: egui's quiet-frame skip
+
+Retired 2026-11-26, when egui left the client: the component library redraws
+every frame, so nothing skips a frame's geometry on its own say-so any more.
+The lesson to keep if a redraw skip ever comes back: **a UI's own "nothing
+changed" knows only its own input** — content read off the world (a clock, the
+camera, a projected pin) goes stale under it silently, and worst in a scripted
+capture, which exists to settle. What follows is the note as it stood.
+
+## egui's repaint signal does not know about the ECS
 
 `egui_manager::end_egui_frame` skips the tessellate → clone → upload chain when
 egui reports `repaint_delay == Duration::MAX`, and lets `egui_pass` redraw the

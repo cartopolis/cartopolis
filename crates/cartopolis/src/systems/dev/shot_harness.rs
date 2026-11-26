@@ -5366,7 +5366,7 @@ fn record_metrics(
                 r.total_reserved_bytes / 1024,
             )
         });
-    let gpu_meter = egui_wgpu::wgpu::meter::snapshot();
+    let gpu_meter = wgpu::meter::snapshot();
     let deck_steps = readouts.decks.approach_steps(&readouts.terrain);
     let m = ShotMetrics {
         shot: progress.index + 1,
@@ -5631,7 +5631,7 @@ fn record_metrics(
                 )
             })
             .collect(),
-        software_renderer: readouts.adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu,
+        software_renderer: readouts.adapter.device_type == wgpu::DeviceType::Cpu,
         vram_allocated_kb: vram.0,
         vram_reserved_kb: vram.1,
         gpu_buffers_kb: gpu_meter.buffer_bytes / 1024,

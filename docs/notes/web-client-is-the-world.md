@@ -1,7 +1,7 @@
 ---
 topic: web-client-is-the-world
 triggers: [framed_session.rs, world-frame.ts, world-browser.ts, discs.rs, comms, "feature = \"comms\"", "cartopolis.session", "cartopolis.ready", crates/cartopolis/index.html, chat.tsx]
-updated: 2026-11-22
+updated: 2026-11-26
 ---
 
 # On the web the client is only the world; the page does the talking
@@ -11,8 +11,8 @@ Decided 2026-11-22 with the owner. The app runs as three things: the native app
 app's own wasm build framed by that site as its World tab. Before this, the wasm
 build was the whole app, so in one browser a person had two sign-ins, two
 connections and **two chat devices** with their own keys (`web-chat.md`), and
-every talking feature existed twice in the browser — once in HTML, once in egui
-inside the frame — and calls three times (str0m in the app, `web_call` in the
+every talking feature existed twice in the browser — once in HTML, once in the
+app's UI inside the frame — and calls three times (str0m in the app, `web_call` in the
 frame, `lib/call.ts` on the page).
 
 ## The split
@@ -34,11 +34,10 @@ frame, `lib/call.ts` on the page).
   open?"), the parameter and its uses are `cfg`'d and the web build reads the
   answer as "closed" or "none". The drawing both halves use — a person's disc,
   the round button — moved to `systems::discs`, which `chats` names back.
-- **The panel chain is still one total order.** A `cfg` cannot sit on a tuple
-  element, so the comms panels are registered in their own statement inside
-  the `panel-chain` markers, each run pinned `.after()`/`.before()` the two
-  world neighbours it stood between. `every_root_ui_panel_is_in_the_chain`
-  reads both. The same goes for every edge from a world system to a comms one:
+- **The panel drivers' chain is still one total order** (`systems/gui/plugin.rs`).
+  A `cfg` cannot sit on a tuple element, so the comms drivers are registered in
+  their own statement, each pinned `.after()`/`.before()` the two world
+  neighbours it stood between. The same goes for every edge from a world system to a comms one:
   it is written on the comms side (`drive_login_screen.before(drive_session)`),
   so the world's registration names nothing that may not exist.
 

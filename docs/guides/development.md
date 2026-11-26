@@ -44,7 +44,7 @@ Rust toolchain; Linux is the primary development target.
 | Regenerate README images | `cargo shots` |
 
 One trap: `cargo check` does **not** compile `cfg(test)` code, so a green check
-says nothing about the suite. Run the tests when touching egui, geometry or tile
+says nothing about the suite. Run the tests when touching the interface, geometry or tile
 parsing.
 
 A module's tests live beside it: a short `#[cfg(test)] mod tests { … }` at the
@@ -148,7 +148,7 @@ phases in `lib.rs`:
 | `systems/map/` | `map_stream`, `map_geometry`, `tile_loader`, `tile_source`, `rendering`, `globe`, `globe_ocean`, `globe_weather`, `osm_buildings`, `lod22`, `terrain`, `height`, `water`, `vegetation`, `street_furniture`, `street_labels`, `weather`, `particles` |
 | `systems/nav/` | `navigation`, `route_ahead`, `driver`, `geo_nav`, `transit_live`, `transit_vehicles` |
 | `systems/player/` | `avatar`, `collision`, `free_camera`, `picking`, `gizmo`, `prim_geo` |
-| `systems/gui/` | `egui_manager`, `theme`, `icons`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
+| `systems/gui/` | `lib_host` and the `lib_*` screens, `ui_input`, `theme`, `icons`, `ui`, `hud`, `dock`, `bookmarks`, `place_pins`, `chat`, `ai_assistant`, `splash`, `data_layers` |
 | `systems/net/` | `network`, `user_store` (plus `../login.rs`) |
 | `systems/dev/` | `shot_harness`, `shot_presets`, `debug`, `desktop_integration`, `window_icon` |
 | `platform/` | `http`, `storage`, `location`, `stream`, `work`, `workers` (native vs wasm behind one API) |
@@ -420,7 +420,7 @@ longer than it says there — is
 
 `CLAUDE.md`'s [**Rules that hold everywhere**](../../CLAUDE.md#rules-that-hold-everywhere)
 is the short list of traps that apply to any change (commands outliving entities,
-GPU device loss under mesh churn, egui panel ordering, the ground's depth ladder).
+GPU device loss under mesh churn, who owns a click, the ground's depth ladder).
 It is worth reading once before your first non-trivial change. Everything more
 local — the atmosphere in space, the routing graph's noding, avatar heights — is
 a note in [`docs/notes/`](../notes/), found by the file it is about (its

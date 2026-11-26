@@ -1,7 +1,7 @@
 ---
 topic: session
 triggers: [session.rs, login_screen.rs, network.rs, keep_avatar_across_reconnect, last_place, last_avatar, "sign in", login, "run mode", offline, solo, "--connect", disconnect, auth, local_avatar.rs, ws_transport.rs, systems::session, can_simulate, ws_url, drive_session, SessionKind, wants_avatar, "--offline"]
-updated: 2026-11-01
+updated: 2026-11-26
 ---
 
 # Two modes, decided at runtime: offline and online
@@ -205,15 +205,14 @@ only *sign in*. Adding
 "create an account" is a protocol change (a `PROTOCOL_HISTORY` row), not a UI one
 — which is why the screen does not offer it and does not pretend to.
 
-## The modal's two layering facts
+## The modal owns the pointer and the keys
 
-The card must be at the top of `Order::Foreground` and put there with
-`move_to_top` every frame: the address-bar card is itself a `Foreground` area, so
-an `egui::Window` at its default `Middle` order renders *underneath the menu it
-was opened from*.
-
-And the backdrop must be an actual widget (`Sense::click_and_drag` over the whole
-viewport), not a painted wash. The world's mouse consumers gate on
-`egui_wants_pointer_input()`, which in this client collapses to "egui claimed this
-press" (`touch-input.md`, `egui-shared-root-ui.md`) — so a press on a merely painted
-dim layer reaches the camera and spins the world behind the card.
+The backdrop must be a library node that takes the press (`lib_login.rs`: four
+click-to-dismiss spacers *around* the card, since as DOM a click on the card
+would bubble into a backdrop it sat in), not a painted wash: the world's
+consumers gate on `UiInput::owns_click`, which yields only to a library screen
+under the pointer (`ui-input.md`), so a press on a merely painted dim layer
+would reach the camera and spin the world behind the card. The keys need saying
+separately: `LoginScreen::modal` sets `UiInput`'s modal flag, or WASD walks the
+avatar behind the card (`UiInput::ui_owns_keyboard`). Until 2026-11-26 egui also
+had to keep the card on top of the menu it was opened from by hand.

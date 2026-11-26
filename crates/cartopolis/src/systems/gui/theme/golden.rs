@@ -1,13 +1,11 @@
-//! Every colour the theme names, as egui draws it, pinned in
-//! `golden_colours.txt`.
+//! Every colour the theme names, pinned in `golden_colours.txt`.
 //!
 //! Written before the theme moved off `egui::Color32` onto its own
 //! [`Rgba8`](super::Rgba8) (egui-removal stage S3, 2026-11-26), so the move
-//! could be shown to change no visible colour: each line is a value's bytes
-//! *as egui gets them* — premultiplied, which is what is painted — and the
-//! straight (unmultiplied) bytes read back from that. A table that still
-//! matches after an edit to `palette.rs` or `tokens.rs` changed nothing on
-//! screen; one that does not names the value that moved.
+//! could be shown to change no visible colour. With egui gone each line is a
+//! value's straight (unmultiplied) bytes. A table that still matches after an
+//! edit to `palette.rs` or `tokens.rs` changed nothing on screen; one that
+//! does not names the value that moved.
 //!
 //! ```text
 //! CARTO_WRITE_THEME_GOLDEN=1 cargo test -p cartopolis theme::golden
@@ -17,22 +15,14 @@
 
 use std::fmt::Write as _;
 
-use egui::Color32;
-
 use super::tokens::{self, WEB};
-use super::{brand, scenario, Palette, DARK, LIGHT};
+use super::{brand, scenario, Palette, Rgba8, DARK, LIGHT};
 
 const FILE: &str = "src/systems/gui/theme/golden_colours.txt";
 
-fn line(out: &mut String, name: &str, c: impl Into<Color32>) {
-    let c: Color32 = c.into();
+fn line(out: &mut String, name: &str, c: Rgba8) {
     let [r, g, b, a] = c.to_array();
-    let [ur, ug, ub, ua] = c.to_srgba_unmultiplied();
-    writeln!(
-        out,
-        "{name:<32} premul {r:02x}{g:02x}{b:02x}{a:02x}  straight {ur:02x}{ug:02x}{ub:02x}{ua:02x}"
-    )
-    .unwrap();
+    writeln!(out, "{name:<32} straight {r:02x}{g:02x}{b:02x}{a:02x}").unwrap();
 }
 
 fn palette(out: &mut String, name: &str, p: &Palette) {

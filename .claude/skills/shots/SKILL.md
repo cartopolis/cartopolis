@@ -69,7 +69,7 @@ cargo run -p cartopolis -- --shot /tmp/fly.png \
 - Each capture waits for the streams to go quiet (`--settle`, capped by `--wait`)
   rather than sleeping. Both count *virtual* seconds clamped at 0.25 s a frame, so
   on a slow renderer they run ~6× longer than they read.
-- The egui overlay is in the picture (the HUD documents the shot); `--hide-ui`
+- The interface is in the picture (the HUD documents the shot); `--hide-ui`
   drops it. `--ui a,b` opens panels and states — the vocabulary is
   `shot_harness::UI_ELEMENTS` (`dev`, `layers`, `route` seeds a demo route,
   `driver`, `sit`, `fire`, `building`, `inside`, `chat`, `settings`, `all`, …);

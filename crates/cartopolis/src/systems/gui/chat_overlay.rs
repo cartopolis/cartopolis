@@ -465,7 +465,7 @@ pub fn seed_demo_chat(chat: &mut ChatState, overlay: &mut ChatOverlay, open: boo
             "The stroopwafel stall is open".into(),
             Some(6.0),
         );
-        chat.receive("local", ME, "You".into(), "On my way".into(), Some(0.0));
+        chat.receive("local", ME, "You".into(), "On my way 👍".into(), Some(0.0));
         chat.receive(
             "local",
             THEM,

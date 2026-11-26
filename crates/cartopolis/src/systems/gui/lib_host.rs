@@ -129,10 +129,10 @@ pub fn prepare_bevy(
     ui_scale.0 = metrics.ui_scale();
     let body = fonts.add(bevy::prelude::Font::from_bytes(theme::BODY_TTF.to_vec()));
     // A camera of the library's own, drawing nothing but the library and
-    // after the world's camera has finished — egui included, which draws
-    // after the upscale, past where `bevy_ui`'s pass sits. On the world's
-    // camera every egui button lay over the library's cards. It draws to
-    // the world camera's target (`follow_world_target`).
+    // after the world's camera has finished, past the upscale — so the
+    // interface stays at full resolution while the world scales
+    // (`render_scale`). It draws to the world camera's target
+    // (`follow_world_target`).
     //
     // Unlike the world's (HDR, its own MSAA) it has a texture of its own,
     // laid over the target after: so it clears that texture to transparent
@@ -144,7 +144,8 @@ pub fn prepare_bevy(
         .spawn((
             bevy::prelude::Camera2d,
             bevy::prelude::Camera {
-                order: 100,
+                // Above it, `render_scale` leaves a camera at full resolution.
+                order: crate::systems::render_scale::INTERFACE_CAMERA_ORDER,
                 clear_color: bevy::camera::ClearColorConfig::Custom(bevy::prelude::Color::NONE),
                 output_mode: bevy::camera::CameraOutputMode::Write {
                     blend_state: Some(
@@ -161,17 +162,12 @@ pub fn prepare_bevy(
         .id();
     commands.insert_resource(mithril_bevy::UiCamera(overlay));
     commands.insert_resource(mithril_bevy::FontMap {
-        regular: body.clone(),
+        regular: body,
         semibold: fonts.add(bevy::prelude::Font::from_bytes(theme::BRAND_TTF.to_vec())),
-        // egui's own monospace (Hack, in its default fonts), which egui's
-        // code fields set; the body face before, so code was not monospace.
-        mono: egui::FontDefinitions::default()
-            .font_data
-            .get("Hack")
-            .map(|d| fonts.add(bevy::prelude::Font::from_bytes(d.font.to_vec())))
-            .unwrap_or(body),
+        mono: fonts.add(bevy::prelude::Font::from_bytes(theme::MONO_TTF.to_vec())),
         icons: Some(fonts.add(bevy::prelude::Font::from_bytes(icons::FONT.to_vec()))),
         icon_scale: theme::ICON_SCALE,
+        emoji: Some(fonts.add(bevy::prelude::Font::from_bytes(theme::EMOJI_TTF.to_vec()))),
     });
     *ready = true;
 }
@@ -220,13 +216,12 @@ pub fn follow_world_target(
     *lib = world.clone();
 }
 
-/// The library's screens hold the input they are under, as egui's panels
-/// do: a world click under any of them yields (`UiInput::owns_click`), and
-/// a text field with the keyboard holds the game keys off
-/// (`UiInput::ui_owns_keyboard`). Written into `UiInput` for the next frame;
-/// `egui_manager::publish_ui_input` hands it on to the egui systems that
-/// still ask `EguiManager`. As DOM the screens sit over the canvas, whose
-/// pointer and keyboard Bevy reads, so only the Bevy backend needs telling.
+/// The library's screens hold the input they are under: a world click under
+/// any of them yields (`UiInput::owns_click`), and a text field with the
+/// keyboard holds the game keys off (`UiInput::ui_owns_keyboard`). Written
+/// into `UiInput` for the next frame. As DOM the screens sit over the
+/// canvas, whose pointer and keyboard Bevy reads, so only the Bevy backend
+/// needs telling.
 #[cfg(feature = "ui-probe")]
 pub fn bridge_input(
     focus: Option<bevy::prelude::Res<bevy::input_focus::InputFocus>>,

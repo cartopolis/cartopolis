@@ -34,9 +34,11 @@ pub struct FontMap {
     /// (`font-family: 'Material Symbols Rounded'`); `None` falls back to
     /// the regular face.
     pub icons: Option<Handle<Font>>,
-    /// The icon face drawn this much larger than its `font-size`, as an
-    /// egui `FontTweak::scale` does; 1 for none.
+    /// The icon face drawn this much larger than its `font-size`; 1 for none.
     pub icon_scale: f32,
+    /// A face every text face falls back to for a character it lacks — an
+    /// emoji font, so a 😮 in a chat is a face and not an empty box.
+    pub emoji: Option<Handle<Font>>,
 }
 
 impl FontMap {
@@ -53,19 +55,22 @@ impl FontMap {
         }
     }
 
-    fn pick(&self, family: &str, weight: u16) -> Handle<Font> {
-        if family.contains("monospace") || family.contains("mono") {
-            return self.mono.clone();
-        }
+    fn pick(&self, family: &str, weight: u16) -> bevy::text::FontSource {
         if family.contains("Symbols") || family.contains("icons") {
             if let Some(icons) = &self.icons {
-                return icons.clone();
+                return icons.clone().into();
             }
         }
-        if weight >= 550 {
+        let face = if family.contains("monospace") || family.contains("mono") {
+            self.mono.clone()
+        } else if weight >= 550 {
             self.semibold.clone()
         } else {
             self.regular.clone()
+        };
+        match &self.emoji {
+            Some(emoji) => bevy::text::FontSource::list([face, emoji.clone()]),
+            None => face.into(),
         }
     }
 }

@@ -5,7 +5,7 @@ use super::*;
 /// Padding inside a label chip over the map ([`LABEL_CHIP`] behind a few
 /// words, [`RADIUS_SM`] round): the driver's chip and the lens's marks
 /// (`lib_driver`, `lib_scenario_map`) use the same two numbers.
-pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
+pub const CHIP_PADDING: bevy::math::Vec2 = bevy::math::Vec2::new(6.0, 3.0);
 
 /// Height of a primary button on a pointer. Under a finger it grows to
 /// [`row_height`], which is larger.

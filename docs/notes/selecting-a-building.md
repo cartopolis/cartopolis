@@ -1,7 +1,7 @@
 ---
 topic: buildings
 triggers: [building_select.rs, building_card.rs, BuildingSelection, ghost, in_ghost, ghost_ring, set_indoors, PrimClick, ShellMeasure, shell_stats, roof area, volume, "click a building", "double click", "double tap", "touch", "tap does nothing on android", "fingers_this_frame", "see through walls", "avatar inside a building", bagviewer, building_windows.wesl, picking.rs, systems::building_select, systems::building_card]
-updated: 2026-10-17
+updated: 2026-11-26
 ---
 
 # Selecting a building, and seeing into one
@@ -36,7 +36,7 @@ records whether the *ray* found a prim, on every press `prim_picking` evaluates,
 hit or miss. Not what `prim_picking` then decided to do — a **scripted prim is
 worked rather than selected**, so "is a prim selected?" answers `false` for a
 press that was very much spent. And not a frame stamp either: the presses
-`prim_picking` skips (egui has the pointer, no cursor, no camera) are exactly the
+`prim_picking` skips (the UI owns the click, no cursor, no camera) are exactly the
 presses `pick_building` skips, so a value that is only written on a processed
 press cannot go stale in a way anybody can reach.
 
@@ -113,8 +113,9 @@ tap now seen, the double tap was recognised — and `pick_building` returned at
 its first gate. A finger's click reaches `ButtonInput` a frame after egui saw the
 finger land, the brisk second tap has lifted by then, and with no button down
 `egui_wants_pointer_input()` answers `true` everywhere (`touch-input.md` has why).
-The world click gate is `EguiManager::owns_click` now, which decides a finger's
-click by where it landed.
+The world click gate became `EguiManager::owns_click`, which decides a finger's
+click by where it landed; since 2026-11-26 it is `UiInput::owns_click`
+(`ui-input.md`).
 
 ## Roof area and volume are measured, not fetched
 

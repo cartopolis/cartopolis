@@ -10,7 +10,7 @@ triggers:
     so the harness runs it too — see `the-harness-must-share-the-clients-geometry.md`)
   - files: systems/map/terrain.rs, terrain_refine.rs, terrain_tiles.rs, terrain_grade.rs,
     map_stream.rs, systems::ground_detail, ground_detail.wesl, height.rs
-updated: 2026-11-02
+updated: 2026-11-26
 ---
 
 # Terrain relief: what AHN actually holds, and the shape the field takes from it
@@ -336,12 +336,11 @@ express. The trade is deliberate — a hill no longer darkens the valley behind 
 low sun. Over Dutch relief (±2 m) that is invisible; if the Veluwe ever needs it, it
 belongs to the finest level alone, not to all four.
 
-**This is a UI bug as much as a rendering one.** The egui bridge spends one pass per
-pointer-button event (`egui_manager::take_pass_events`) and hit-tests against the
-previous pass's rects, so a click costs three passes; egui discards a press→release
-that spans more than `max_click_duration` (0.8 s). At 10–11 fps with hitches, panel
-checkboxes and close buttons stop responding while the camera still feels fine. Any
-change that halves the frame rate shows up there first.
+**It was a UI bug as much as a rendering one** while egui drew the UI (until
+2026-11-26): a click cost three egui passes, and a press→release spanning more than
+0.8 s was discarded, so at 10–11 fps panel checkboxes and close buttons stopped
+responding while the camera still felt fine. Whether the component library degrades
+the same way at a low frame rate is unmeasured.
 
 ## 25 m had no slopes in it, and that is why the field is 3.125 m (measured 2026-09-13)
 

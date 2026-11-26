@@ -739,7 +739,7 @@ pub fn setup_camera(
     // 1-or-4 sample-count restriction as WebGPU, and fails the same silent way —
     // see the `Msaa` comment below. Detect it rather than keying off the headless
     // run, so `cargo shots` on a real GPU keeps its 2×.
-    let software_renderer = adapter.device_type == egui_wgpu::wgpu::DeviceType::Cpu;
+    let software_renderer = adapter.device_type == wgpu::DeviceType::Cpu;
     // The web and a software adapter both advertise sample counts of 1 and 4 only
     // — see the `Msaa` comment at the camera spawn.
     let restricted_sample_counts = cfg!(target_arch = "wasm32") || software_renderer;
@@ -749,7 +749,7 @@ pub fn setup_camera(
         restricted_sample_counts,
         // Metal resolves the samples in tile memory, so 4× is free there (see
         // the method). An adapter fact, like the two clamps above.
-        adapter.backend == egui_wgpu::wgpu::Backend::Metal,
+        adapter.backend == wgpu::Backend::Metal,
     );
     // Said once, because the `render budget in force` line reports the rung's
     // count and this is the camera's, after the adapter had its say.
@@ -1189,10 +1189,8 @@ pub fn camera_mode_toggle(
         return;
     }
     // **The only game binding in the client that had no guard at all.** Tab is
-    // also egui's focus-traversal key, so pressing it while typing an address
-    // into Search moved the focus *and* threw the camera into Fly mode — and
-    // since Tab is now forwarded to egui unconditionally (`egui_manager`), the
-    // overlap is live on every frame rather than only on focused ones. Same
+    // also a focus-traversal key, so pressing it while typing an address into
+    // Search moved the focus *and* threw the camera into Fly mode. Same
     // predicate every other key in this file uses.
     if ui_input.ui_owns_keyboard(false, &keyboard_input) {
         return;

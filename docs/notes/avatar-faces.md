@@ -1,7 +1,7 @@
 ---
 topic: avatar-faces
 triggers: [avatar_face.rs, face_tracking.rs, avatar_video.rs, crates/face, crates/tract_tflite, crates/human/src/face.rs, face_units, FACE_UNITS, Expression, ExpressionState, SetFaceFrame, FaceFrameOf, MorphWeights, assets/models/face, CARTO_FACE, faceunits01]
-updated: 2026-10-27
+updated: 2026-11-26
 ---
 
 # The avatar's face moves: expressions, blinks, and the user's own face
@@ -85,10 +85,11 @@ new. The device camera meanwhile is the tracker's.
 - **Its far plane culls nothing**: the city behind the avatar is drawn (a
   4 m far plane still showed buildings 30 m off, 2026-10-27), so it is a
   second, small view of the whole scene. Its cost on a phone is unmeasured.
-- **egui draws onto every Core3d view**, and the window's scissors on a
-  512 × 384 target failed the whole submission — headless, the run just never
-  finished its capture. `egui_pass` skips cameras ordered below 0; the avatar
-  camera is -1. A new offscreen camera must be ordered below 0 too.
+- **Until 2026-11-26 egui drew onto every Core3d view**, and the window's
+  scissors on a 512 × 384 target failed the whole submission — headless, the run
+  just never finished its capture; the avatar camera's order -1 kept it out. The
+  component library draws only on its own `LibCamera`, so an offscreen camera no
+  longer needs that; -1 still makes its picture ready before the frame is read.
 
 `CARTO_AVATAR_VIDEO=/tmp/x.png` films the avatar with no call and writes the
 pictures there, for a capture.

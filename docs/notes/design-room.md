@@ -1,6 +1,6 @@
 ---
 triggers: [design_room.rs, systems::design_room, designs.rs, "/api/inventory/designs", "/api/inventory/drafts", V48__designs.sql, V49__prim_draft_and_groups.sql, DESIGN_LAYER, RenderLayers, "Design here", designroom, draft, PrimDto::draft, place_draft, only_for, SimWorld::sees]
-updated: 2026-11-19
+updated: 2026-11-26
 ---
 
 # The design room, as built
@@ -35,8 +35,8 @@ the room has none of them, deliberately.
 
 What still shows: the sky (bevy's atmosphere is a camera effect, not an entity —
 the room's walls, a 40 m unlit sphere, are what hide it from inside), and every
-egui overlay anchored to the world — those do not go through render layers at
-all, so each one that matters asks `DesignRoom::spot` itself: place names, and
+UI overlay anchored to the world (drawn on `LibCamera`) — those do not go
+through render layers at all, so each one that matters asks `DesignRoom::spot` itself: place names, and
 the map chrome (dock, compass column, touch clusters, zoom rail) all stand down
 while the room is open, as they do for driver mode and the camera. Place pins
 do not yet (their system is at Bevy's parameter cap). Looking up near the

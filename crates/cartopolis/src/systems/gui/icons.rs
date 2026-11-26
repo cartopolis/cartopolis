@@ -3,8 +3,8 @@
 //! # Why a font of our own
 //!
 //! Every icon in this client used to be a Unicode symbol picked out of whatever
-//! egui's bundled font stack (`Ubuntu-Light` + `NotoEmoji` + `emoji-icon-font`)
-//! happened to cover, chosen through a *preference ladder* — `["🔍", "⌕", "S"]` —
+//! the old toolkit's bundled font stack (`Ubuntu-Light` + `NotoEmoji` +
+//! `emoji-icon-font`) happened to cover, chosen through a *preference ladder* — `["🔍", "⌕", "S"]` —
 //! that fell back to a letter when the font could not draw the glyph. That
 //! machinery worked, in the sense that nothing drew an empty box; what it could
 //! not do is look like an icon set. The ladder's survivors were a dharma wheel
@@ -39,20 +39,13 @@ use crate::systems::routing::{Maneuver, TravelMode};
 /// The subset font, embedded at compile time.
 ///
 /// Like the brand font and the app icon, this is a **Git LFS object**: a clone
-/// without `git lfs install` embeds a 130-byte pointer file here and epaint
-/// panics on it (see the repo `CLAUDE.md`).
+/// without `git lfs install` embeds a 130-byte pointer file here, which no
+/// font parser accepts (see the repo `CLAUDE.md`). The library draws it as
+/// `FontMap::icons` (`lib_host`).
 pub const FONT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../assets/fonts/MaterialSymbolsRounded-subset.ttf"
 ));
-
-/// The name `theme::fonts` registers [`FONT`] under, and the name it appends to
-/// every family's fallback list.
-///
-/// It names font *data*, not a family: `FontFamily::Name(FONT_NAME)` is unbound
-/// and panics in epaint the first frame it is drawn. Draw an icon with
-/// `FontId::proportional`, where the fallback list finds it.
-pub const FONT_NAME: &str = "MaterialSymbols";
 
 /// One row of the table, for the test that checks the shipped font against it.
 ///
@@ -453,7 +446,6 @@ pub fn travel_mode(mode: TravelMode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
 
     /// **Every icon in the table must be in the shipped subset.**
     ///
@@ -463,32 +455,18 @@ mod tests {
     /// at on a screen, since a missing glyph is an empty box and nothing logs.
     #[test]
     fn every_icon_has_a_glyph() {
-        let ctx = egui::Context::default();
-        crate::systems::theme::install(&ctx);
-        // Inside a pass, like the other font tests: the fonts are built on the
-        // first frame, and asking before one has run answers about a stack that
-        // does not exist yet.
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-        let _ = ctx.run_ui_unpainted(
-            egui::RawInput {
-                screen_rect: Some(screen),
-                ..Default::default()
-            },
-            |ui| {
-                let font = egui::TextStyle::Body.resolve(ui.style());
-                let missing: Vec<&str> = ui.ctx().fonts_mut(|f| {
-                    ALL.iter()
-                        .filter(|i| !f.has_glyphs(&font, i.glyph))
-                        .map(|i| i.konst)
-                        .collect()
-                });
-                assert!(
-                    missing.is_empty(),
-                    "the subset font has no glyph for {missing:?} — re-run \
-                     `tools/subset-icon-font.py` and commit \
-                     assets/fonts/MaterialSymbolsRounded-subset.ttf with the table",
-                );
-            },
+        let font = fontdue::Font::from_bytes(FONT, fontdue::FontSettings::default())
+            .expect("the icon font parses (is Git LFS fetched?)");
+        let missing: Vec<&str> = ALL
+            .iter()
+            .filter(|i| i.glyph.chars().any(|c| font.lookup_glyph_index(c) == 0))
+            .map(|i| i.konst)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "the subset font has no glyph for {missing:?} — re-run \
+             `tools/subset-icon-font.py` and commit \
+             assets/fonts/MaterialSymbolsRounded-subset.ttf with the table",
         );
     }
 

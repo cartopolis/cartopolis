@@ -371,10 +371,10 @@ pub fn poll_chat_pictures(mut pictures: ResMut<ChatPictures>) {
 /// How a picture is drawn at `max_width`: its own aspect, never taller than
 /// `max_height`, never wider than it is.
 #[must_use]
-pub fn fit(r: &PictureRef, max_width: f32, max_height: f32) -> egui::Vec2 {
+pub fn fit(r: &PictureRef, max_width: f32, max_height: f32) -> Vec2 {
     let (w, h) = (r.width.max(1) as f32, r.height.max(1) as f32);
     let scale = (max_width / w).min(max_height / h).min(1.0);
-    egui::vec2(w * scale, h * scale)
+    Vec2::new(w * scale, h * scale)
 }
 
 #[cfg(test)]
@@ -399,6 +399,6 @@ mod tests {
         assert!((tall.y - 240.0).abs() < 0.01 && (tall.x - 135.0).abs() < 0.01);
         // A small picture is not blown up.
         let small = fit(&picture(100, 50), 240.0, 240.0);
-        assert_eq!(small, egui::vec2(100.0, 50.0));
+        assert_eq!(small, Vec2::new(100.0, 50.0));
     }
 }

@@ -1,13 +1,13 @@
 ---
 topic: chat
-triggers: [chat.rs, chat_overlay.rs, "speech bubble", "transcript", "composer", "nearby chat", dock.rs, "chat sheet", "chat chip", call_screen.rs]
-updated: 2026-11-14
+triggers: [chat.rs, chat_overlay.rs, lib_chat_overlay.rs, "speech bubble", "transcript", "composer", "nearby chat", dock.rs, "chat sheet", "chat chip", call_screen.rs]
+updated: 2026-11-26
 ---
 
 # Chat is not a panel
 
 Chatting used to mean opening `RightPanel::Chat`. On a compact viewport a right
-panel is the **whole screen** (`egui_manager::responsive_right_panel`), so in a
+panel is the **whole screen**, so in a
 client whose Local channel is scoped by *how far away someone is standing*,
 saying anything meant covering the world and the people in it. That is the
 sentence the whole redesign follows from.
@@ -65,7 +65,7 @@ you were replying to the moment you started replying.
 
 That cannot be fixed inside a panel, and the keyboard's own module note says why:
 *"we cannot scroll the panel or shrink its layout, because by the time this runs
-the panel has already composed."* An `Area` can move. This is the load-bearing
+the panel has already composed."* An overlay can move. This is the load-bearing
 argument for the overlay — see `onscreen_keyboard::expected_height`, which the
 composer calls to clear the slab **before the slab exists**, because the frame
 the keyboard first lays out is the only frame that decides its edge.
@@ -98,8 +98,8 @@ identifies a nearby person at all. There are no nameplates on remote avatars.
 
 ## Three rules that are not preferences
 
-**An `Area` that is faded out is still a live click target.** The transcript is
-`interactable(false)` unless the composer is open — the rule being "you can act
+**An overlay that is faded out is still a live click target.** The transcript
+took no taps unless the composer was open — the rule being "you can act
 on chat while you are in the conversation, and the map has the taps the rest of
 the time". This is the same trap `place_pins` culls for (a clipped-away pin still
 eats the tap) and `map_osd` hides for. The durable path to Block and Report is

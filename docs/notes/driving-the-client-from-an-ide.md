@@ -1,7 +1,7 @@
 ---
 topic: tooling
-triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, "theme::named", fly_to, "mcp/avatar.rs", set_avatar, "mcp/world.rs", "world_tools", check_geometry, set_sky, read_posts, undo]
-updated: 2026-11-05
+triggers: [mcp, mcp_server, cartopolis_mcp, "--mcp-listen", "--mcp-headless", "systems/dev/mcp", "tools/mcp.ts", "editor access", "MCP token", "mcp.sock", "cartopolis mcp", "mcp/relay.rs", "unix socket", "agent drives the client", "faster screenshots", "AI assistant", "--mcp-allow", "mcp/agent.rs", AgentWalk, sender_is_account, viberbot, viberfox, "deck bot", "prompt injection", look_around, pace_idle, "mcp/surroundings.rs", "bot memory", "midas bot", "tools/bot", inbox, "camera picture", photo_pose, "mcp/device.rs", "mcp/screen.rs", ui_tree, log_ring, fly_to, "mcp/avatar.rs", set_avatar, "mcp/world.rs", "world_tools", check_geometry, set_sky, read_posts, undo]
+updated: 2026-11-26
 ---
 
 # Driving the client from an editor
@@ -109,8 +109,7 @@ harness through three fields rather than growing a second state machine
 Two consequences. A windowed client captures its **window**, so `--mcp-size` does
 nothing there and the returned image is whatever the window is; only
 `--mcp-headless` renders offscreen at a size you choose. And the systems that
-*hold* something for the duration of a capture — the camera mode, the forced egui
-refresh — run only while a viewpoint is in progress (`shot_in_progress`), because
+*hold* something for the duration of a capture — the camera mode — run only while a viewpoint is in progress (`shot_in_progress`), because
 a camera mode held every frame by an idle camera operator is a camera the person
 at the keyboard cannot change.
 
@@ -443,15 +442,11 @@ about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
   (Editor access), the background connection (a permanent notification and
   the battery), the debug switches and the microphone's gain stay the
   person's. A value goes through serde, as a saved file does.
-- **`ui_tree` reads egui's AccessKit output**, switched on only while a call
-  waits, so an idle client pays nothing. `press` puts a finger into egui's
-  next input, so egui's own hit test decides what it reaches and a covered
-  control cannot be pressed. Typed text is never read.
-- **Since 2026-11-26 both read the component library's tree while it draws**
-  (`screen::serve`, `mithril_bevy::access_tree` / `press`); egui's
-  AccessKit path is only for `CARTO_UI_LIB=0`, and a screen egui still draws
-  beside the library (`CARTO_UI_LIB=<list>`, the Midas dev tab) is not listed.
-  Names follow the browser's order (`aria-label`, `aria-labelledby`, `<label
+- **`ui_tree` and `press` read the component library's tree**
+  (`screen::serve`, `mithril_bevy::access_tree` / `press`; a build without
+  `ui-probe` refuses them). Typed text is never read; a covered control
+  cannot be pressed. Until 2026-11-26 they read egui's AccessKit output and
+  put a finger into egui's next input. Names follow the browser's order (`aria-label`, `aria-labelledby`, `<label
   for>`, `title`, placeholder); a button's one piece of text is its name, a
   row's several pieces are withheld as egui's were. A press hit-tests the
   `UiStack` as `bevy_ui`'s picking backend does and triggers
@@ -460,11 +455,9 @@ about the app, signed in or not: `app_info`, `app_log`, `last_crash`, `perf`,
   (tags, classes, sibling positions), so it survives a remount. The library
   has no long press, so `long` is refused there. `mithril_bevy::set_text`
   types into a field, but `press` takes no text yet.
-- **A hand-drawn control is a nameless rectangle to egui.** The dock and the
-  map controls first listed as sixteen "clickable area (no label)".
-  `theme::named` gives one its name, and
-  `source_rules::hand_drawn_controls_are_named` fails the build for one
-  without it (or an `// unnamed:` saying why).
+- **A control with no name is a nameless rectangle to `ui_tree`.** Under egui
+  the dock and the map controls first listed as sixteen "clickable area (no
+  label)"; a library control takes its name from `aria-label` or `title`.
 - **`view`'s `yaw_deg` is a compass heading.** It was passed straight to
   the harness, which turns counter-clockwise, under a description saying
   clockwise; s584's eastward shots faced west. `state` reports a heading too.

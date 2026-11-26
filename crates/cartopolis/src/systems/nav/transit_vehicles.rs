@@ -912,26 +912,25 @@ fn parse_position(data: &[u8]) -> Option<(f32, f32)> {
     Some((lat?, lng?))
 }
 
-// --- Line-number label painter (fontdue over egui's embedded Hack font) ---
+// --- Line-number label painter (fontdue over the embedded Hack font) ---
 
 /// Label texture size (2:1, matching `LABEL_W`:`LABEL_H`).
 const LABEL_PX_W: usize = 128;
 const LABEL_PX_H: usize = 64;
 
-/// Rasterises a short line number onto a small badge texture. Reuses the `Hack`
-/// font egui already embeds (no extra assets), like `transit_live`'s boards.
+/// Rasterises a short line number onto a small badge texture, in the
+/// embedded `Hack` face (`theme::MONO_TTF`), like `transit_live`'s boards.
 struct LabelPainter {
     font: Option<fontdue::Font>,
 }
 
 impl LabelPainter {
     fn new() -> Self {
-        let font = egui::FontDefinitions::default()
-            .font_data
-            .get("Hack")
-            .and_then(|d| {
-                fontdue::Font::from_bytes(d.font.as_ref(), fontdue::FontSettings::default()).ok()
-            });
+        let font = fontdue::Font::from_bytes(
+            crate::systems::theme::MONO_TTF,
+            fontdue::FontSettings::default(),
+        )
+        .ok();
         Self { font }
     }
 

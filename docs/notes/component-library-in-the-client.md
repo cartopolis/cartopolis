@@ -1,24 +1,19 @@
 ---
 topic: component-library-in-the-client
 triggers: [mithril_bevy, lib_keyboard.rs, systems::lib_keyboard, KeyEdits, data-keep-focus, KeyboardInset, LibCamera, follow_world_target, ellipsis.rs, images.rs, app_tokens, lib_chats.rs, systems::lib_chats, lib_search.rs, systems::lib_search, SearchView, bridge_input, overlay_owns_keyboard, crates/mithril_bevy, lib_settings.rs, systems::lib_settings, ui_probe.rs, CARTO_UI_LIB, CARTO_UI_PROBE, LibScreens, SettingsState::lib, "ui-probe", UiPointer, overlay_owns_pointer, FontMap, drive_ui, DriveUi, with_host, "replace_children", UiTransform]
-updated: 2026-11-25
+updated: 2026-11-26
 ---
 
-# The component library draws beside egui: how a screen moves over
+# The component library is the client's interface
 
-`docs/mockups/component-library` is the study; this is what holds in the code
-while egui and the library (`mithril`, the Rust edition in `jeroen/mithril`,
-rendered by `crates/mithril_bevy`) share the client.
-
-**Since 2026-11-25 every screen has a library edition and the library is the
-interface**: `ui-probe` is a default feature (and named in the APK's), and
-`LibScreens` turns every screen on unless `CARTO_UI_LIB=0` (or `?ui=egui` on
-the web) asks for egui's. A build without a backend for the library
-(`ui-probe` natively, `ui-dom` on the web) keeps egui's, or each screen egui
-gave up would draw nowhere. egui is on its way out: what is still its own is
-the logic (each egui system publishes its screen's view and applies its
-taps), the cosmos' star fields, the Midas tab of Developer tools and the
-OSD's multi-touch.
+`docs/mockups/component-library` is the study; this is what holds in the code.
+The library is `mithril` (the Rust edition in `jeroen/mithril`), drawn by
+`crates/mithril_bevy` on `bevy_ui` natively (feature `ui-probe`, a default
+and named in the APK's) and as DOM on the web (`ui-dom`). Every screen is a
+`systems::lib_*` module; `LibScreens` turns them all on whenever the build has
+a backend. **egui left the client on 2026-11-26** (screens moved over from
+2026-11-24, the bridge deleted last); the sections below keep, dated, what the
+move taught. Input and size questions are `ui-input.md`'s.
 
 Two traps every port met: a node is not laid out in the frame that makes it,
 so content rebuilt while it ticks is blank on every frame it is rebuilt — a
@@ -67,71 +62,37 @@ with each node's size; that is how they were found.
   frame childless in the layout tree, and nothing re-syncs it until its
   children change again. `replace_children(&all)` edits in place.
 
-## A screen on the library, beside egui
+## The shape of a screen
 
-`CARTO_UI_LIB=settings` puts Settings on the library (`systems::lib_settings`,
-2026-11-24). The shape every further screen follows:
+Settings was the first (`systems::lib_settings`, 2026-11-24); every screen
+since has the same shape:
 
-- **egui keeps the slot, the library draws in it.** egui's panel system
-  returns early (`SettingsState::lib`) but still shows an *empty, unframed*
-  `responsive_right_panel`, so the dock, the pins and `map_rect` move aside as
-  for any panel and a click in that strip is egui's — not the world's. The
-  library's panel is absolute over the same strip. Without this the dock sat
-  over the panel's header on the desktop.
-- **The library's system owns the panel's life.** `PostUpdate` before
-  `DriveUi`: `RightPanel::Settings` appears → mount; disappears → `host.clear()`;
-  its ✕ sets a `Cell` the system reads and clears `RightPanel`.
+- **The screen's system owns its life.** `PostUpdate` before `DriveUi`:
+  `RightPanel::Settings` appears → mount; disappears → clear; its ✕ sets a
+  `Cell` the system reads and clears `RightPanel`. Each screen mounts under
+  its own key (`lib_host::mount_keyed`), so a card over the map and a panel
+  stand side by side and clear independently.
 - **State is bridged by a frame-by-frame diff**, not by callbacks: a signal
   whose value moved since the last frame writes the preference; a preference
   that moved writes the signal; `AppPrefs` is assigned only when something
-  differs, because its `is_changed()` gates re-run work (the same rule egui's
-  panel keeps with its `edited` copy).
-- **A world click under the library's panel yields** through
-  `EguiManager::set_overlay_owns_pointer(UiPointer::owns_pointer())`, set
-  for every library screen at once by `lib_host::bridge_input`; and each
-  screen mounts under its own key (`lib_host::mount_keyed`), so a card over
-  the map and a panel stand side by side and clear independently.
+  differs, because its `is_changed()` gates re-run work. `DataLayers`
+  (`lib_layers`) goes further: written through `bypass_change_detection` and
+  `set_changed` only when a field moved, because its `is_changed` restarts
+  streaming work.
+- **The logic lives on the state, not in the view.** What Search's field and
+  rows do is `GeoNavState`'s (`query_edited`, `submit_query`, `search_list`,
+  …); a screen whose actions need the camera or the store publishes a view
+  (`lib_view`) and runs the action the library hands back.
+- **A panel that takes room from the map marks its root `data-reserves-map`**
+  (`ui-input.md`), and the pointer and keyboard verdicts reach the world
+  through `lib_host::bridge_input` → `UiInput`.
 
-Captures: `--shots docs/phone-ui-shots.toml --only settings` with
-`CARTO_UI_LIB=settings` (`CARTO_UI_LIB_PAGE=general|graphics|world` for a
-page), and `CARTO_UI_LIB_HTML=<path>` writes the same panel as HTML for the
-browser beside it (the study's `fase3b-settings.png`).
-
-## The second screen: Layers
-
-`systems::lib_layers` follows the Settings shape exactly — `DataLayers::lib`
-makes egui's `render_data_layers_panel` keep an empty strip, the library's
-system owns `RightPanel::Layers`, every switch is a signal diffed against
-the resource each frame. Two things differ. The resource is written
-through `bypass_change_detection` and `set_changed` only when a field
-moved, because `DataLayers::is_changed` restarts streaming work. And the
-panel is drawn as the mockup had it, not as egui built it: a `TileGrid`
-of `Tile`s, `IconTabs` for the categories, `Chip`s for the kinds, choice
-tiles for the basemap — components added to the library for it. A
-category can be asked for by name (`CARTO_UI_LIB_PAGE=city`, `&page=city`).
-
-## The third screen: Search
-
-`systems::lib_search` (`CARTO_UI_LIB=search`, `&panel=search`) is the
-first whose field drives the world. Two rules came out of it:
-
-- **One set of methods, two editions.** What the field and the rows do is
-  `GeoNavState`'s (`query_edited`, `submit_query`, `search_list`, `pick`,
-  `go_home`), called by egui's `search_ui` and the library's screen alike,
-  so the two cannot drift. Move a panel's logic onto its state before
-  drawing it a second time.
-- **The camera side stays with egui's system.** The view actions (Set
-  Home, Copy link, Share) need the camera, the store and the share sheet,
-  which egui's `render_search_panel` already holds; with `nav.lib` on it
-  draws only its empty strip, publishes `GeoNavState::lib_view` (where the
-  camera is, what is possible) and runs the action the library hands back.
-
-A library text field with the keyboard holds the game keys off
-(`lib_host::bridge_input` → `EguiManager::set_overlay_owns_keyboard`,
-read by `ui_owns_keyboard`); before it, typing a Settings password walked
-the avatar. A field takes the keyboard on mount with `autofocus` (the
-renderer action `@focus`), only when asked (Ctrl+L, `--ui search`), so a
-tap on the phone does not throw the keyboard over the recents.
+A field takes the keyboard on mount with `autofocus` (the renderer action
+`@focus`), only when asked (Ctrl+L, `--ui search`), so a tap on the phone does
+not throw the keyboard over the recents. Captures: `--shots
+docs/phone-ui-shots.toml --only settings` (`CARTO_UI_LIB_PAGE=general|graphics|world`
+for a page, `&page=` on the web), and `CARTO_UI_LIB_HTML=<path>` writes the
+panel as HTML for the browser beside it.
 
 ## The same screen as DOM, in the web build
 
@@ -144,9 +105,8 @@ id="cartopolis-ui">` over the canvas, `pointer-events: none` except where a
 screen is, with the library's stylesheets written into a `<style>` from
 `theme::tokens()` the first time something mounts (no file is copied; the
 page's own baseline `base.css` is left out). The container carries
-`data-theme` from the app's setting, not the page's. Switched on by the
-page's query: `?ui=lib`, `&panel=settings` opens it, `&page=graphics`
-on a page. The Bevy-only parts of the system (camera, fonts, UI scale,
+`data-theme` from the app's setting, not the page's. The page's query
+can open a screen: `&panel=settings`, `&page=graphics` on a page. The Bevy-only parts of the system (camera, fonts, UI scale,
 the pointer's ownership) are a `BevyBackend` parameter behind `ui-probe`;
 as DOM the panel sits over the canvas and a click never reaches the world.
 
@@ -178,13 +138,10 @@ computed colours, so a change of token reaches both:
 Every Settings page is on the library since 2026-11-24. An action the page
 asks for — the chime, the microphone, a deletion, an unblock, a token made
 or revoked, a copy — is a `Cell` in `Actions` the view sets and the system
-takes, where the resources, the connection and egui's clipboard are; a
-value shown (the meter, the token list, an error) is a signal the system
-mirrors each frame when it differs.
+takes, where the resources, the connection and the clipboard
+(`utils::clipboard`) are; a value shown (the meter, the token list, an
+error) is a signal the system mirrors each frame when it differs.
 
-Not yet: the camera test (a live picture; the library has no image node),
-the General page's receiver, storage and editor-access sections, and
-cartopolis' own `Tokens` (phase 4).
 - **An `<img>`** whose `src` is a `data:` URL (`data:image/jpeg;base64,…`)
   is decoded into an asset shared by every node with that source and shown
   as an `ImageNode` (`images.rs`); the browser shows the same tag as it
@@ -193,7 +150,7 @@ cartopolis' own `Tokens` (phase 4).
   decoded pixels pass `CAP_BYTES` (48 MB) unshown ones go earlier, least
   recently used first; a shown one is never evicted. The asset leaves
   `Assets<Image>` one sweep after its entry, never in the frame that may
-  have drawn it (`egui-texture-lifetime.md`); shown again, it decodes
+  have drawn it (`texture-lifetime.md`); shown again, it decodes
   again. So screens may show pictures — chats, avatars, community
   pictures, post photos — as `data:` thumbnails scaled to the size they
   draw, since the URL sits in the view and in its HTML dump. `bevy:NAME`
@@ -205,7 +162,7 @@ cartopolis' own `Tokens` (phase 4).
   by the cut text instead, every box around it that sizes to its content
   shrank with the cut and kept it cut; a first measurement before the
   faces loaded was too narrow, so the fit starts over once, ~45 frames
-  in. A line that still reads cut where egui's did not usually has
+  in. A line that reads cut where it should fit usually has
   less room: measure it (`MITHRIL_BEVY_DUMP=1`) before blaming the cut.
 - **`@scroll-end`** (a renderer action) scrolls a scroll area to its end;
   `settle_scroll` brings the asked-for `f32::MAX` back to the laid-out
@@ -214,21 +171,21 @@ cartopolis' own `Tokens` (phase 4).
 ## Type scale: the app's, not the site's
 
 The library's screens in the app draw with `theme::app_tokens()` — the
-site's `tokens()` on egui's sizes (`SIZE_BODY` 14, `SIZE_SUB` 12.5,
+site's `tokens()` on the app's sizes (`SIZE_BODY` 14, `SIZE_SUB` 12.5,
 `SIZE_TITLE` 17); screen headers are 19 px (`SIZE_HEADING`), card and
 sub-page titles 17. On the site's 15/13 every screen read a size larger
-than its egui twin and titles wrapped (2026-11-25). The site's
+than the egui screen it replaced and titles wrapped (2026-11-25). The site's
 `theme.css` stays on `tokens()`.
 
-## The library draws above egui, on a camera of its own
+## The library draws on a camera of its own
 
-egui draws after the upscale (`egui_pass.after(upscaling)`), and
-`bevy_ui`'s pass sits before it, so on the world's camera every egui
-button lay over the library's cards (2026-11-25). `lib_host::prepare_bevy`
-spawns `LibCamera`, a `Camera2d` at order 100 with no clear and no MSAA,
-and makes it the `UiCamera`; `follow_world_target` copies the world
-camera's `RenderTarget` onto it, since a capture moves that onto an image.
-A Core2d camera runs no egui pass, so egui draws once, under the library.
+`lib_host::prepare_bevy` spawns `LibCamera`, a `Camera2d` at order 100 with
+no clear and no MSAA, and makes it the `UiCamera`, so the interface draws
+after the world's upscale at full resolution (on the world's camera
+`bevy_ui`'s pass sits before the upscale; while egui lived, its buttons lay
+over the library's cards there, 2026-11-25). `follow_world_target` copies
+the world camera's `RenderTarget` onto it, since a capture moves that onto
+an image. The web build has no `LibCamera` (the screens are DOM).
 
 The "…" fit waits for a new measure after each cut (`Ellipsis::cut_from`):
 a text's `TextLayoutInfo` lags its change by a frame, and cutting by the
@@ -257,10 +214,3 @@ key. **A key must not take the focus it types into**: a press on a control
 takes the focus (`events.rs`), and `PointerFocusPlugin`'s `AcquireFocus`
 bubbles to the window and clears it. An element with `data-keep-focus`
 does neither.
-
-A screen is claimed for the library in `PreUpdate` (`lib_search::claim`),
-not only in its `PostUpdate` system: claimed late, egui drew the Search
-panel for one frame and took the "focus the field" a scripted run or
-Ctrl+L asks for, so the library's field never took the keyboard
-(2026-11-25). A screen whose egui system consumes a one-shot request
-needs the same early claim.

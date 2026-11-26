@@ -1,27 +1,21 @@
 //! What the interface knows about the screen and the input, as two plain
-//! resources nobody needs egui to read.
+//! resources.
 //!
 //! - [`UiMetrics`]: the UI scale, the viewport in UI points, whether it is
 //!   compact, and the window→UI conversion. Computed from the window (or the
-//!   [`HeadlessSurface`] of a `--shot` run) and the scale settings, with the
-//!   same arithmetic `egui_manager` lays egui out with — `EguiManager` holds
-//!   one of these, so the two cannot disagree.
+//!   [`HeadlessSurface`] of a `--shot` run) and the scale settings.
 //! - [`UiInput`]: who owns this frame's input — a world click
 //!   ([`UiInput::owns_click`]), a drag on the map ([`UiInput::map_dragged`]),
-//!   the game keys ([`UiInput::ui_owns_keyboard`]). Two writers OR their
-//!   verdicts together: egui's ([`EguiVerdict`], written by
-//!   `egui_manager::publish_ui_input` right after egui's pass begins) and the
-//!   component library's (`lib_host::bridge_input`, from `mithril_bevy`'s
-//!   `UiPointer` and the focused `EditableText`). It also carries the map's
-//!   free area ([`UiInput::map_rect`]): the screen less the room the
-//!   library's panels mark with [`RESERVES_MAP`], measured after layout by
+//!   the game keys ([`UiInput::ui_owns_keyboard`]). The component library
+//!   writes it (`lib_host::bridge_input`, from `mithril_bevy`'s `UiPointer`
+//!   and the focused `EditableText`), and [`track_map_drag`] follows a drag
+//!   from where it was pressed. It also carries the map's free area
+//!   ([`UiInput::map_rect`]): the screen less the room the library's panels
+//!   mark with [`RESERVES_MAP`], measured after layout by
 //!   `lib_host::measure_map_room`.
 //!
 //! Both are ordinary `Send` resources, so a system reads them as `Res<…>` on
-//! every target — unlike `EguiManager`, which is non-send on the web
-//! (`EguiRef`). A system that only asks these questions takes these, not egui
-//! (stage S2 of taking egui out: `docs/notes/egui-shared-root-ui.md` has why
-//! each question is asked the way it is, `touch-input.md` the brisk tap).
+//! every target (`docs/notes/touch-input.md` has the brisk tap).
 
 use bevy::prelude::*;
 
@@ -191,12 +185,6 @@ impl UiMetrics {
         }
     }
 
-    /// Physical pixels of the surface.
-    #[must_use]
-    pub fn physical(&self) -> UVec2 {
-        self.physical
-    }
-
     /// Physical pixels per UI point (display scale × UI scale).
     #[must_use]
     pub fn pixels_per_point(&self) -> f32 {
@@ -275,38 +263,13 @@ pub fn update_ui_metrics(
 
 // ─── UiInput ─────────────────────────────────────────────────────────────────
 
-/// egui's answers for this frame, taken right after its pass begins
-/// (`egui_manager::publish_ui_input`). Plain values: what egui decided, not
-/// egui itself.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct EguiVerdict {
-    /// `egui_wants_pointer_input()`: only meaningful while a pointer button
-    /// is down (`docs/notes/touch-input.md`), which is when every caller asks.
-    pub wants_pointer: bool,
-    /// A text field has the keyboard (`text_edit_focused()`, never
-    /// `egui_wants_keyboard_input()` — `egui-shared-root-ui.md`).
-    pub text_focused: bool,
-    /// A drag is under way that started on the bare map.
-    pub map_dragged: bool,
-    /// The window cursor (window logical points) [`Self::press_over_ui`] was
-    /// decided at — the cursor every world click reads this frame, taken after
-    /// `touch::recognize_touch_gestures` has moved it to the finger.
-    pub cursor: Option<Vec2>,
-    /// A press at [`Self::cursor`] lands on egui: on a floating area or modal,
-    /// or on a panel (the root layer outside the map). `egui_manager`'s
-    /// `press_over_ui`.
-    pub press_over_ui: bool,
-    /// What the panels left of egui's root `Ui` at the end of the last pass,
-    /// in window logical points. No longer read: the map comes from the
-    /// library's layout ([`UiInput::map_rect`]).
-    pub map_rect: Option<Rect>,
-}
-
-/// Who owns this frame's input: the interface (egui's panels or the
-/// library's screens) or the world under it. See the module header.
+/// Who owns this frame's input: the interface (the library's screens) or
+/// the world under it. See the module header.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiInput {
-    egui: EguiVerdict,
+    /// A drag is under way that was pressed on the bare map
+    /// ([`track_map_drag`]).
+    map_dragged: bool,
     /// The pointer is over a library screen (`mithril_bevy::UiPointer`). Set
     /// each frame by `lib_host::bridge_input`, for the next frame.
     lib_pointer: bool,
@@ -325,10 +288,6 @@ pub struct UiInput {
     /// focused field, which would leave WASD walking the avatar behind a
     /// card that has the user's attention.
     modal: bool,
-    /// The UI moved on its own last pass (an egui animation in progress), as
-    /// opposed to merely wanting a look within a quarter second. Written after
-    /// `end_egui_frame`; the idle throttle counts it as busy.
-    ui_animating: bool,
 }
 
 impl UiInput {
@@ -337,56 +296,51 @@ impl UiInput {
     /// `picking::prim_picking` and `building_select::pick_building` must agree
     /// (`picking::PrimClick`).
     ///
-    /// A library screen under the pointer owns it outright. A mouse click
-    /// asks egui's `wants_pointer`, which is right for a mouse (the button is
-    /// still down). **A finger's click is decided by where it landed**,
-    /// because it arrives a frame after egui saw it, and a brisk tap has
-    /// already lifted: with no button down egui claims every point
-    /// (`EguiManager::owns_click` has the whole story).
+    /// A library screen under the pointer owns it outright, which is the
+    /// whole answer for a mouse (the cursor stays where it clicked). **A
+    /// finger's click is also decided by where it landed**: it arrives a
+    /// frame late (`touch::emulate_mouse`), and after a brisk tap the finger
+    /// has lifted and the hover with it, so a tap outside the map — on a
+    /// panel the library's layout reserved — is the interface's too.
     #[must_use]
     pub fn owns_click(&self, touch_click: bool, cursor: Option<Vec2>) -> bool {
         if self.lib_pointer {
             return true;
         }
         match (touch_click, cursor) {
-            (true, Some(at)) if Some(at) == self.egui.cursor => self.egui.press_over_ui,
-            // A point the verdict was not taken at: only the panels are known,
-            // not egui's floating areas.
             (true, Some(at)) => self.map.is_some_and(|map| !map.contains(at)),
-            _ => self.egui.wants_pointer,
+            _ => false,
         }
     }
 
-    /// egui's `egui_wants_pointer_input()` alone — the gate the camera's drags
-    /// and the gizmo use. Only meaningful while a pointer button is down; a
-    /// world click gates on [`Self::owns_click`] instead.
+    /// The pointer is over a library screen — the gate the camera's drags
+    /// and the gizmo use. A world click gates on [`Self::owns_click`]
+    /// instead, which also knows the brisk tap.
     #[must_use]
     pub fn wants_pointer(&self) -> bool {
-        self.egui.wants_pointer
+        self.lib_pointer
     }
 
-    /// Is a drag under way that started on the bare map — not on a panel or
-    /// a floating area? A sheet over the map steps aside for it. (Its one
-    /// caller, `scenario`'s sheet, still draws in egui and asks the manager.)
-    #[allow(dead_code)]
+    /// Is a drag under way that was pressed on the bare map — not on a
+    /// library screen or a panel's room? A sheet over the map steps aside
+    /// for it (`scenario`).
     #[must_use]
     pub fn map_dragged(&self) -> bool {
-        self.egui.map_dragged
+        self.map_dragged
     }
 
     /// True when the keyboard belongs to the UI and the game (avatar
-    /// movement, gizmo keys) must ignore it: a text field — egui's or the
-    /// library's — is focused, a modal is up, the prim edit dialog is open, or
-    /// a Ctrl/Super chord is held. Pass `edit_dialog_open = false` for actions
-    /// that stay live while editing a prim (the gizmo's Move/Rotate/Scale).
+    /// movement, gizmo keys) must ignore it: a library text field is
+    /// focused, a modal is up, the prim edit dialog is open, or a Ctrl/Super
+    /// chord is held. Pass `edit_dialog_open = false` for actions that stay
+    /// live while editing a prim (the gizmo's Move/Rotate/Scale).
     #[must_use]
     pub fn ui_owns_keyboard(
         &self,
         edit_dialog_open: bool,
         keyboard: &ButtonInput<KeyCode>,
     ) -> bool {
-        self.egui.text_focused
-            || self.lib_keyboard
+        self.lib_keyboard
             || self.modal
             || edit_dialog_open
             || keyboard.pressed(KeyCode::ControlLeft)
@@ -410,12 +364,6 @@ impl UiInput {
         self.lib_keyboard
     }
 
-    /// Whether the UI moved on its own last pass.
-    #[must_use]
-    pub fn ui_animating(&self) -> bool {
-        self.ui_animating
-    }
-
     /// The map: what the library's side panels and sheets left of the
     /// screen at the last layout ([`free_map`]), in **window** logical
     /// points, or `None` before the first measure (callers take the whole
@@ -432,17 +380,6 @@ impl UiInput {
     )]
     pub fn set_map_rect(&mut self, map: Option<Rect>) {
         self.map = map;
-    }
-
-    /// egui's verdict for this frame, as written.
-    #[must_use]
-    pub fn egui_verdict(&self) -> EguiVerdict {
-        self.egui
-    }
-
-    /// egui's verdict for this frame (`egui_manager::publish_ui_input`).
-    pub fn set_egui(&mut self, verdict: EguiVerdict) {
-        self.egui = verdict;
     }
 
     /// The library's verdict, for the next frame (`lib_host::bridge_input`).
@@ -463,10 +400,56 @@ impl UiInput {
     pub fn modal(&self) -> bool {
         self.modal
     }
+}
 
-    /// Whether the UI animated on its last pass (`egui_manager`).
-    pub fn set_ui_animating(&mut self, animating: bool) {
-        self.ui_animating = animating;
+/// How far (window points) a press has to travel before it is a drag and not
+/// a click: about egui's old threshold, which the scenario sheet was tuned on.
+const DRAG_THRESHOLD_PTS: f32 = 6.0;
+
+/// Where the pointer went down, and whether that was on the bare map.
+#[derive(Default)]
+pub struct DragTrack {
+    origin: Option<Vec2>,
+    on_map: bool,
+}
+
+/// Follow a press from where it went down, for [`UiInput::map_dragged`]: a
+/// press on the bare map (not over a library screen, not in a panel's room)
+/// that has moved past [`DRAG_THRESHOLD_PTS`] is someone looking at the map.
+/// `PreUpdate`, after the touch recogniser has put the window cursor on the
+/// finger.
+pub fn track_map_drag(
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    touches: Option<Res<bevy::input::touch::Touches>>,
+    windows: Query<&Window>,
+    mut input: ResMut<UiInput>,
+    mut track: Local<DragTrack>,
+) {
+    let mouse_down = mouse.is_some_and(|m| m.pressed(MouseButton::Left));
+    let finger_down = touches
+        .as_deref()
+        .is_some_and(|t| t.iter().next().is_some());
+    let cursor = windows.iter().next().and_then(Window::cursor_position);
+    let dragged = match (mouse_down || finger_down, cursor) {
+        (true, Some(at)) => {
+            let origin = match track.origin {
+                Some(origin) => origin,
+                None => {
+                    track.origin = Some(at);
+                    track.on_map = !input.owns_click(finger_down, Some(at));
+                    at
+                }
+            };
+            track.on_map && origin.distance(at) > DRAG_THRESHOLD_PTS
+        }
+        (true, None) => input.map_dragged,
+        (false, _) => {
+            *track = DragTrack::default();
+            false
+        }
+    };
+    if input.map_dragged != dragged {
+        input.map_dragged = dragged;
     }
 }
 
@@ -536,16 +519,24 @@ pub fn free_map(screen: Rect, rooms: impl IntoIterator<Item = (MapSide, Rect)>) 
     map
 }
 
-/// Registers [`UiMetrics`] and [`UiInput`] and keeps the metrics current.
-/// `EguiPlugin` adds it too when it is missing (a test app), and writes
-/// egui's half of [`UiInput`].
+/// Registers [`UiMetrics`] and [`UiInput`], keeps the metrics current and
+/// follows a drag on the map ([`track_map_drag`]); the library writes the
+/// rest of [`UiInput`] (`lib_host`).
 pub struct UiInputPlugin;
 
 impl Plugin for UiInputPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UiMetrics>()
             .init_resource::<UiInput>()
-            .add_systems(PreUpdate, update_ui_metrics);
+            .add_systems(
+                PreUpdate,
+                (
+                    update_ui_metrics,
+                    track_map_drag
+                        .after(bevy::input::InputSystems)
+                        .after(crate::systems::touch::recognize_touch_gestures),
+                ),
+            );
     }
 }
 
@@ -636,39 +627,115 @@ mod tests {
     }
 
     /// The brisk tap, as `UiInput` answers it: a finger's click is decided by
-    /// where it landed even when egui, which has seen it lift, claims the
-    /// pointer; a mouse click asks egui; a library screen owns any click.
+    /// where it landed — the hover went with the lifted finger — so a tap in
+    /// a panel's room is the interface's and one on the map the world's; a
+    /// mouse click asks the library's pointer; a library screen owns any
+    /// click.
     #[test]
     fn a_fingers_click_is_decided_where_it_landed() {
         let on_map = Vec2::new(300.0, 300.0);
+        let on_panel = Vec2::new(1200.0, 300.0);
         let mut input = UiInput::default();
-        input.set_egui(EguiVerdict {
-            wants_pointer: true,
-            cursor: Some(on_map),
-            press_over_ui: false,
-            ..default()
-        });
         input.set_map_rect(Some(Rect::new(0.0, 0.0, 1000.0, 720.0)));
         assert!(
             !input.owns_click(true, Some(on_map)),
             "the map is the world's"
         );
-        assert!(input.owns_click(false, Some(on_map)), "a mouse asks egui");
-        assert!(input.owns_click(true, None), "no cursor asks egui");
-        // A point the verdict was not taken at falls back to the panels.
-        assert!(input.owns_click(true, Some(Vec2::new(1200.0, 300.0))));
-        assert!(!input.owns_click(true, Some(Vec2::new(500.0, 300.0))));
-
-        assert!(!input.map_dragged());
-        input.set_egui(EguiVerdict {
-            map_dragged: true,
-            ..input.egui_verdict()
-        });
-        assert!(input.map_dragged());
+        assert!(input.owns_click(true, Some(on_panel)), "a panel's room");
+        assert!(
+            !input.owns_click(false, Some(on_panel)),
+            "a mouse asks the library's pointer"
+        );
+        assert!(!input.owns_click(true, None), "no cursor, no panel");
+        assert!(!input.wants_pointer());
 
         input.set_overlay(true, false);
         assert!(input.owns_click(true, Some(on_map)), "a library screen's");
+        assert!(input.owns_click(false, Some(on_map)));
         assert!(input.overlay_owns_pointer());
+        assert!(input.wants_pointer());
+    }
+
+    /// A drag pressed on the bare map is one past a few points of travel; a
+    /// press over a library screen never is, however far it goes; lifting
+    /// ends it.
+    #[test]
+    fn a_drag_on_the_map_is_told_from_one_on_a_screen() {
+        let mut app = App::new();
+        app.init_resource::<UiInput>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(Update, track_map_drag);
+        let mut window = Window::default();
+        window.resolution.set_physical_resolution(1280, 720);
+        window.set_cursor_position(Some(Vec2::new(300.0, 300.0)));
+        let w = app.world_mut().spawn(window).id();
+        let move_to = |app: &mut App, p: Vec2| {
+            app.world_mut()
+                .get_mut::<Window>(w)
+                .unwrap()
+                .set_cursor_position(Some(p));
+        };
+        let set_mouse = |app: &mut App, down: bool| {
+            let mut m = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+            if down {
+                m.press(MouseButton::Left);
+            } else {
+                m.release(MouseButton::Left);
+            }
+        };
+        let dragged = |app: &App| app.world().resource::<UiInput>().map_dragged();
+
+        set_mouse(&mut app, true);
+        app.update();
+        assert!(!dragged(&app), "a press is not yet a drag");
+        move_to(&mut app, Vec2::new(302.0, 300.0));
+        app.update();
+        assert!(!dragged(&app), "nor is a hand's drift");
+        move_to(&mut app, Vec2::new(340.0, 300.0));
+        app.update();
+        assert!(dragged(&app), "a drag on the map");
+        set_mouse(&mut app, false);
+        app.update();
+        assert!(!dragged(&app), "lifted");
+
+        app.world_mut()
+            .resource_mut::<UiInput>()
+            .set_overlay(true, false);
+        set_mouse(&mut app, true);
+        app.update();
+        move_to(&mut app, Vec2::new(400.0, 300.0));
+        app.update();
+        assert!(!dragged(&app), "pressed on a library screen");
+    }
+
+    /// Why [`phone_ui_scale`] is 1.0 on the web: the render budget's stage
+    /// transform has already shrunk the surface Bevy sees, so magnifying
+    /// again would leave a 240 pt panel no room to dock. Same handset as
+    /// above through the phone tier's k ≈ 1.83: winit measures the
+    /// *untransformed* box, so Bevy's surface is 1080/1.83 px.
+    #[test]
+    fn the_web_phone_tier_has_no_room_to_magnify() {
+        let surface = UVec2::new(590, 1245);
+        let mut unscaled = UiMetrics::with_ui_scale(1.0);
+        unscaled.set_surface(surface, 2.75);
+        assert!(unscaled.viewport_pts().x > 200.0, "usable at 1.0");
+        let mut scaled = UiMetrics::with_ui_scale(1.5);
+        scaled.set_surface(surface, 2.75);
+        assert!(
+            scaled.viewport_pts().x < 240.0,
+            "1.5× would dock a 240 pt panel in a {} pt viewport",
+            scaled.viewport_pts().x
+        );
+    }
+
+    /// An out-of-range scale is clamped rather than obeyed: at 20× there is
+    /// no longer a button on screen to press to undo it.
+    #[test]
+    fn an_absurd_ui_scale_is_clamped() {
+        for (raw, want) in [(20.0_f32, 3.0_f32), (0.01, 0.5), (1.4, 1.4)] {
+            let clamped = raw.clamp(*UI_SCALE_RANGE.start(), *UI_SCALE_RANGE.end());
+            assert_eq!(clamped, want, "clamping {raw}");
+        }
     }
 
     /// The keyboard yields to a text field of either kind, a modal, the edit
@@ -686,13 +753,6 @@ mod tests {
         input.set_overlay(false, true);
         assert!(input.ui_owns_keyboard(false, &none), "a library field");
         assert!(input.overlay_owns_keyboard());
-
-        let mut input = UiInput::default();
-        input.set_egui(EguiVerdict {
-            text_focused: true,
-            ..default()
-        });
-        assert!(input.ui_owns_keyboard(false, &none), "an egui field");
 
         let mut input = UiInput::default();
         input.set_modal(true);

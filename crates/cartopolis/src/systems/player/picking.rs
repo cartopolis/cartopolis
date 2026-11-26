@@ -26,7 +26,7 @@ pub struct PrimPickWorld<'w, 's> {
     cameras: crate::grid::AnchoredCamera<'w, 's>,
     anchor: Res<'w, crate::resources::MapAnchor>,
     online: Option<Res<'w, crate::resources::OnlineSession>>,
-    /// Whether this frame's press is a finger's — see `EguiManager::owns_click`.
+    /// Whether this frame's press is a finger's — see `UiInput::owns_click`.
     touch: Res<'w, crate::systems::touch::TouchGestures>,
     /// Whether the camera is over the globe, where the right button turns the
     /// view (`free_camera::earth_mode`) and a menu about a point on the ground

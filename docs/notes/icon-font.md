@@ -1,7 +1,7 @@
 ---
 topic: ui
 triggers: [icons.rs, systems/gui/theme, "icon", "glyph", "tofu", "empty box", "material symbols", "first_drawable", subset-icon-font.py]
-updated: 2026-08-16
+updated: 2026-11-26
 ---
 
 # The icons are a font we ship, not characters we hope the font has
@@ -81,10 +81,14 @@ shot if the body face or the type scale ever moves.
 It was deleted rather than kept for a rainy day, because the workspace denies
 `unused` and a helper nobody calls does not compile. What it was working around
 is still true, though, of the *other* kind of non-Latin-1 character — a symbol
-inside a sentence, a currency mark, the on-screen keyboard's `€` — which still
-comes from egui's own stack, whose coverage remains both thinner than it looks
-and wider than people guess. `theme::tests::no_painted_glyph_is_tofu` still walks
-both crates' sources and holds every hard-coded glyph to that; its advice is now
+inside a sentence, a currency mark, the on-screen keyboard's `€` — which comes
+from the body face (`theme::BODY_TTF`, the library's `FontMap`; egui's own stack
+until 2026-11-26), whose coverage is both thinner than it looks and wider than
+people guess. **The library has no emoji face**: egui's `EMOJI_TTF` went with
+it (2026-11-26), so a 🙂 typed in chat draws as tofu again, and `KNOWN_TOFU`
+pins the one the app paints itself (the call screen's 😮). Monospace is
+`theme::MONO_TTF` (Hack, copied from egui's defaults) through `FontMap`'s mono. `theme::tests::no_painted_glyph_is_tofu` walks both crates'
+sources and holds every hard-coded glyph to that; its advice is
 "take it from `systems::icons`, or use something Latin-1". If a preference ladder
 is ever wanted again, `git log` has it.
 

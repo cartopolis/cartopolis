@@ -494,19 +494,52 @@ fn write_html(view: View) {
 
 // ─── Pieces ──────────────────────────────────────────────────────────────────
 
-type Rect = egui::Rect;
+fn pos2(x: f32, y: f32) -> Vec2 {
+    Vec2::new(x, y)
+}
 
-fn pos2(x: f32, y: f32) -> egui::Pos2 {
-    egui::pos2(x, y)
+/// The rect builders the placement was written with (it was egui's), over
+/// Bevy's `Rect`. `from_min_max` does not reorder its corners.
+trait RectExt {
+    fn from_min_max(min: Vec2, max: Vec2) -> Rect;
+    fn from_min_size(min: Vec2, size: Vec2) -> Rect;
+    /// `by` in from every side.
+    fn shrink(self, by: f32) -> Rect;
+    /// `by` out on every side.
+    fn expand(self, by: f32) -> Rect;
+}
+
+impl RectExt for Rect {
+    fn from_min_max(min: Vec2, max: Vec2) -> Rect {
+        Rect { min, max }
+    }
+
+    fn from_min_size(min: Vec2, size: Vec2) -> Rect {
+        Rect {
+            min,
+            max: min + size,
+        }
+    }
+
+    fn shrink(self, by: f32) -> Rect {
+        self.expand(-by)
+    }
+
+    fn expand(self, by: f32) -> Rect {
+        Rect {
+            min: self.min - Vec2::splat(by),
+            max: self.max + Vec2::splat(by),
+        }
+    }
 }
 
 /// The largest rect of shape `aspect` inside `rect`, centred.
 fn contain(aspect: f32, rect: Rect) -> Rect {
     let target = rect.width() / rect.height().max(1.0);
     let size = if aspect > target {
-        egui::vec2(rect.width(), rect.width() / aspect)
+        Vec2::new(rect.width(), rect.width() / aspect)
     } else {
-        egui::vec2(rect.height() * aspect, rect.height())
+        Vec2::new(rect.height() * aspect, rect.height())
     };
     Rect::from_center_size(rect.center(), size)
 }
@@ -547,9 +580,9 @@ fn plate(k: f32, r: Rect, radius: f32, fill: &str) -> View {
 
 /// A circle's outline: `radius` to the middle of a `width` stroke, as egui's
 /// `circle_stroke`.
-fn ring(k: f32, c: egui::Pos2, radius: f32, width: f32, colour: &str) -> View {
+fn ring(k: f32, c: Vec2, radius: f32, width: f32, colour: &str) -> View {
     let outer = radius + width * 0.5;
-    let r = Rect::from_center_size(c, egui::Vec2::splat(2.0 * outer));
+    let r = Rect::from_center_size(c, Vec2::splat(2.0 * outer));
     let style = bx(
         k,
         r,
@@ -603,7 +636,7 @@ fn line(segs: Vec<Seg>, size: f32) -> View {
 /// nowhere.
 #[allow(clippy::too_many_arguments)]
 fn text_at(k: f32, x: f32, y: f32, band: f32, segs: Vec<Seg>, size: f32, colour: &str) -> View {
-    let r = Rect::from_center_size(pos2(x, y), egui::vec2(band, size * 2.0 + 8.0));
+    let r = Rect::from_center_size(pos2(x, y), Vec2::new(band, size * 2.0 + 8.0));
     let style = bx(
         k,
         r,
@@ -616,8 +649,8 @@ fn text_at(k: f32, x: f32, y: f32, band: f32, segs: Vec<Seg>, size: f32, colour:
 }
 
 /// A person's disc, `d` across, centred on `c`: their coloured initial.
-fn avatar(k: f32, c: egui::Pos2, name: &str, d: f32) -> View {
-    let r = Rect::from_center_size(c, egui::Vec2::splat(d));
+fn avatar(k: f32, c: Vec2, name: &str, d: f32) -> View {
+    let r = Rect::from_center_size(c, Vec2::splat(d));
     let style = bx(
         k,
         r,
@@ -691,7 +724,7 @@ fn call_button(
     acts: &Acts,
     k: f32,
     pal: &Palette,
-    c: egui::Pos2,
+    c: Vec2,
     d: f32,
     glyph: &'static str,
     tip: &str,
@@ -720,7 +753,7 @@ fn call_button(
             }
         }
     };
-    let r = Rect::from_center_size(c, egui::Vec2::splat(d - 2.0));
+    let r = Rect::from_center_size(c, Vec2::splat(d - 2.0));
     let style = bx(
         k,
         r,
@@ -786,7 +819,7 @@ fn encrypted_line(k: f32, x: f32, y: f32, band: f32, agent: bool) -> View {
 /// The fold-down arrow in the top-left corner.
 fn fold_button(acts: &Acts, k: f32) -> View {
     let d = 40.0;
-    let r = Rect::from_min_size(pos2(EDGE, EDGE), egui::Vec2::splat(d));
+    let r = Rect::from_min_size(pos2(EDGE, EDGE), Vec2::splat(d));
     let style = bx(
         k,
         r,
@@ -865,7 +898,7 @@ fn screen_view(l: &ScreenLive) -> View {
 }
 
 /// Where the incoming screen's disc stands, and how wide it is.
-fn incoming_disc(w: f32, h: f32) -> (egui::Pos2, f32) {
+fn incoming_disc(w: f32, h: f32) -> (Vec2, f32) {
     let disc = (w.min(h) * 0.34).clamp(96.0, 150.0);
     (pos2(w * 0.5, h * 0.30), disc)
 }
@@ -982,7 +1015,7 @@ fn incoming(
 fn waiting(l: &ScreenLive, title: &str, own: Option<f32>, agent: bool, w: f32, h: f32) -> View {
     let k = l.k;
     let pal = &theme::DARK;
-    let full = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+    let full = Rect::from_min_size(Vec2::ZERO, Vec2::new(w, h));
     let x = w * 0.5;
     let band = w - 2.0 * EDGE;
     let mut out = Vec::new();
@@ -993,7 +1026,7 @@ fn waiting(l: &ScreenLive, title: &str, own: Option<f32>, agent: bool, w: f32, h
     let y = h * 0.38;
     // The spinner: a faint ring with the gold arc turning on it.
     let r = 18.0;
-    let spin = Rect::from_center_size(pos2(x, y), egui::Vec2::splat(2.0 * r + 3.0));
+    let spin = Rect::from_center_size(pos2(x, y), Vec2::splat(2.0 * r + 3.0));
     let spin_style = bx(
         k,
         spin,
@@ -1137,14 +1170,14 @@ fn grid(
     let cols = cols.clamp(1, n);
     let rows = n.div_ceil(cols);
     let gap = 8.0;
-    let cell = egui::vec2(
+    let cell = Vec2::new(
         (area.width() - gap * (cols - 1) as f32) / cols as f32,
         (area.height() - gap * (rows - 1) as f32) / rows as f32,
     );
     for (i, person) in tiles.iter().enumerate() {
         let (r, c) = (i / cols, i % cols);
         let rect = Rect::from_min_size(
-            area.min + egui::vec2(c as f32 * (cell.x + gap), r as f32 * (cell.y + gap)),
+            area.min + Vec2::new(c as f32 * (cell.x + gap), r as f32 * (cell.y + gap)),
             cell,
         );
         grid_tile(out, k, pal, rect, person);
@@ -1156,7 +1189,7 @@ fn grid(
 fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
     let k = l.k;
     let pal = &theme::DARK;
-    let full = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h));
+    let full = Rect::from_min_size(Vec2::ZERO, Vec2::new(w, h));
     let x = w * 0.5;
     let mut out: Vec<View> = Vec::new();
 
@@ -1176,12 +1209,12 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
         tiles.push(&v.me);
         let (screen_rect, strip) = if portrait {
             let sh = (stage.width() / aspect.max(0.1)).min(stage.height() * 0.55);
-            let screen_rect = Rect::from_min_size(stage.min, egui::vec2(stage.width(), sh));
+            let screen_rect = Rect::from_min_size(stage.min, Vec2::new(stage.width(), sh));
             let strip = Rect::from_min_max(pos2(stage.min.x, screen_rect.max.y + 8.0), stage.max);
             (screen_rect, strip)
         } else {
             let sw = (stage.width() * 0.78).min(stage.width() - 160.0);
-            let screen_rect = Rect::from_min_size(stage.min, egui::vec2(sw, stage.height()));
+            let screen_rect = Rect::from_min_size(stage.min, Vec2::new(sw, stage.height()));
             let strip = Rect::from_min_max(pos2(screen_rect.max.x + 8.0, stage.min.y), stage.max);
             (screen_rect, strip)
         };
@@ -1309,7 +1342,7 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
         let ph = (pw / a.max(0.1)).min(h * 0.32);
         let pw = ph * a;
         let top = if v.controls { 76.0 } else { EDGE };
-        let rect = Rect::from_min_size(pos2(w - EDGE - pw, top), egui::vec2(pw, ph));
+        let rect = Rect::from_min_size(pos2(w - EDGE - pw, top), Vec2::new(pw, ph));
         out.push(plate(k, rect.expand(1.0), 13.0, &black(47.0)));
         out.push(picture(k, &tile_name(SELF_TILE), a, rect, 12.0, true));
         let rim = bx(
@@ -1324,7 +1357,7 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
         out.push(view! { <div style={rim}></div> });
         if v.me.muted {
             let b = pos2(rect.min.x + 16.0, rect.max.y - 16.0);
-            let r = Rect::from_center_size(b, egui::Vec2::splat(24.0));
+            let r = Rect::from_center_size(b, Vec2::splat(24.0));
             let style = bx(
                 k,
                 r,
@@ -1357,7 +1390,7 @@ fn in_call(l: &ScreenLive, v: &InCallView, w: f32, h: f32) -> View {
         if v.any_picture {
             out.push(shade(
                 k,
-                Rect::from_min_size(full.min, egui::vec2(w, 120.0)),
+                Rect::from_min_size(full.min, Vec2::new(w, 120.0)),
                 true,
             ));
             out.push(shade(
@@ -1441,7 +1474,7 @@ fn people_button(l: &ScreenLive, v: &InCallView, w: f32) -> View {
     let pal = &theme::DARK;
     let d = 40.0;
     let c = pos2(w - EDGE - d * 0.5, EDGE + d * 0.5);
-    let r = Rect::from_center_size(c, egui::Vec2::splat(d));
+    let r = Rect::from_center_size(c, Vec2::splat(d));
     let style = bx(
         k,
         r,
@@ -1462,7 +1495,7 @@ fn people_button(l: &ScreenLive, v: &InCallView, w: f32) -> View {
             };
             // `c + (0.38 d, −0.36 d)` in the button's own frame.
             let b = pos2(d * 0.5 + d * 0.38, d * 0.5 - d * 0.36);
-            let br = Rect::from_center_size(b, egui::Vec2::splat(18.0));
+            let br = Rect::from_center_size(b, Vec2::splat(18.0));
             let style = bx(
                 k,
                 br,
@@ -1507,7 +1540,7 @@ fn dock(out: &mut Vec<View>, l: &ScreenLive, v: &InCallView, w: f32, h: f32) {
     let mut cx = x - (n - 1.0) * step * 0.5;
     let tray = Rect::from_center_size(
         pos2(x, y + LABEL_GAP * 0.5),
-        egui::vec2((n - 1.0) * step + d + 24.0, d + 20.0 + LABEL_GAP),
+        Vec2::new((n - 1.0) * step + d + 24.0, d + 20.0 + LABEL_GAP),
     );
     out.push(plate(k, tray, tray.height() * 0.5, &black(51.0)));
     let label = |cx: f32, word: &str| {
@@ -1603,7 +1636,7 @@ fn meeting_chips(out: &mut Vec<View>, l: &ScreenLive, v: &InCallView, w: f32) {
     let mut y = EDGE + 60.0;
     // A band the window's width, centred on `y`, its content centred in it.
     let band = |y: f32, child: View| -> View {
-        let r = Rect::from_center_size(pos2(w * 0.5, y), egui::vec2(w, 32.0));
+        let r = Rect::from_center_size(pos2(w * 0.5, y), Vec2::new(w, 32.0));
         let style = bx(
             k,
             r,
@@ -2588,7 +2621,7 @@ fn folded_tiles(
     );
     let mut tiles: Vec<View> = Vec::new();
     for (i, person) in people.iter().enumerate() {
-        let tile = Rect::from_min_size(pos2(i as f32 * (tw + gap), 0.0), egui::vec2(tw, th));
+        let tile = Rect::from_min_size(pos2(i as f32 * (tw + gap), 0.0), Vec2::new(tw, th));
         // The card's shadow under each tile, as egui's `card_shadow`.
         let lift = bx(
             k,
@@ -2604,7 +2637,7 @@ fn folded_tiles(
     // The tiles take the tap that unfolds: a box over them, listening.
     let over = bx(
         k,
-        Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, th)),
+        Rect::from_min_size(Vec2::ZERO, Vec2::new(width, th)),
         "cursor: pointer",
     );
     let unfold = on(&l.acts, vec![CallAct::Unfold]);
@@ -2747,7 +2780,7 @@ mod tests {
 
     #[test]
     fn a_letterboxed_picture_keeps_its_shape() {
-        let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
+        let rect = Rect::from_min_size(Vec2::ZERO, Vec2::new(1600.0, 900.0));
         let r = contain(0.75, rect);
         assert!((r.height() - 900.0).abs() < 1e-3);
         assert!((r.width() / r.height() - 0.75).abs() < 1e-4);

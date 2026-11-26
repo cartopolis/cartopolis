@@ -1,7 +1,7 @@
 ---
 topic: navigation
 triggers: [driver.rs, route_ahead.rs, navigation.rs, free_camera.rs, gui/data_layers.rs, user_store.rs, "route rail", "speed limit", maxspeed, "driver mode", "POIs along the route", "off route", reroute, "route to", "context menu", arrived, "chase camera", "re-centre", peek, countdown, apply_minimal_mode, "minimal mode", drive_lookahead, pose_before_drive, sky_prefs, "course over ground", DriverArrow, "--ui driver", "--ui overview", OverviewFrame, overview, "trip bar"]
-updated: 2026-11-02
+updated: 2026-11-26
 ---
 
 # The navigation display
@@ -283,19 +283,17 @@ map, and "Create object…" gates on there being a session to create the object 
 
 ## The trip bar stands down behind a panel, and Stop moves onto the card
 
-egui paints floating `Area`s *above* panels — there is no z-order between an `Area`
-and a panel to lose — so the bar, the speed disc and the buttons over the bar all
-stand down while a panel is open (the planner rises from that same bottom edge).
-Stop must stay reachable on a phone, which has no Escape key, so the card — the
-only box always drawn — carries Stop in its last row meanwhile, inside the height
-it always reserves (`CARD_HEIGHT`, which `hud` stacks the compass from). Escape
-still leaves driver mode, gated on `EguiManager::ui_owns_keyboard`.
+The bar, the speed disc and the buttons over the bar all stand down while a
+panel is open (the planner rises from that same bottom edge; they were egui
+`Area`s, which painted over panels). Stop must stay reachable on a phone, which
+has no Escape key, so the card — the only box always drawn — carries Stop in its
+last row meanwhile, inside the height it always reserves (`driver::CARD_HEIGHT`).
+Escape still leaves driver mode (`dismiss`'s ladder). The library draws all of
+it (`lib_driver.rs`) at the widths `driver_layout` works out.
 
-**Every box in this chrome pins its own width** (`set_width` on the card and the
-bar, `set_width` on the speed column). An earlier bottom bar used
-`vertical_centered` inside a size-to-content `Area` and grew to swallow the lower
-third of the window within a few frames — the general egui trap in
-[map-chrome.md](map-chrome.md).
+Until 2026-11-26 every box here pinned its own width: an earlier egui bottom bar
+grew to swallow the lower third of the window within a few frames
+([map-chrome.md](map-chrome.md)).
 
 ## Driver mode owns two platform resources, not just a camera
 

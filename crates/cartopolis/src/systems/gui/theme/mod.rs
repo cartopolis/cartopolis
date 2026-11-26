@@ -1,4 +1,6 @@
-//! The Cartopolis look: one palette, one `egui::Style`, one place to change them.
+//! The Cartopolis look: one palette, one type and size scale, one place to
+//! change them. The component library's screens read it through
+//! [`tokens`]; the web's `theme.css` is written from the same tables.
 //!
 //! **Deep teal.** A teal-grey ramp — `#0F1416` ink, `#141A1C` surface,
 //! `#1F2829` raised, `#2A3536` hover — carries the chrome, and the live things
@@ -35,7 +37,7 @@
 //!     reads for someone who cannot see the hue.
 //!   - **Text on the accent is [`Palette::on_accent`], white** (since 2026-11-10,
 //!     on a deep teal; it was dark ink on a bright one). A pressed button keeps
-//!     its fill [`Palette::accent_muted`] (see [`widgets`]), so its label stays
+//!     its fill [`Palette::accent_muted`], so its label stays
 //!     [`Palette::cream`].
 //!   - **Two constants deliberately share a value.** [`Palette::accent_text`] and
 //!     [`Palette::accent_bright`] are both pure white: one is type, one is a stroke, they
@@ -70,11 +72,7 @@
 //! through [`p`], and `systems::ui_theme` picks it from the app's light
 //! setting (Light, Dark, or Auto by the sun). The map's own labels, the splash,
 //! the call and camera screens and the script editor's code box stay dark in
-//! both ([`dark_here`], [`use_dark_visuals`]).
-//!
-//! [`install`] is called once, from `EguiManager::default`, before the first
-//! pass — early enough that the brand font family is bound on frame one, which
-//! is what lets the splash paint its wordmark immediately.
+//! both.
 //!
 //! **Four scales, and nothing outside them.** Colour was the only axis this file
 //! originally owned, and the drift went where there was no vocabulary to drift
@@ -87,14 +85,7 @@
 //! `SIZE_SUB` tells the next person what the text *is*, and `12.5` tells them
 //! only what someone once liked.
 
-use egui::{
-    style::{Selection, WidgetVisuals, Widgets},
-    Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, TextStyle,
-};
-
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use crate::systems::icons;
 
 mod brand;
 mod color;
@@ -102,8 +93,6 @@ mod frames;
 mod map_controls;
 mod metrics;
 mod palette;
-mod palette32;
-mod style;
 // Read by the web theme's test and by the library's backends (`ui-lib`);
 // in a lane with neither it is the table nothing reads yet.
 #[cfg_attr(not(any(test, feature = "ui-lib")), allow(dead_code))]
@@ -115,8 +104,6 @@ pub use frames::*;
 pub use map_controls::*;
 pub use metrics::*;
 pub use palette::*;
-pub use palette32::*;
-pub use style::*;
 // The site's tokens (`theme.css`, written by the web theme test) and the
 // app's, for the library's screens.
 #[cfg(test)]

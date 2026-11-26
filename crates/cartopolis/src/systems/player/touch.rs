@@ -372,13 +372,13 @@ impl TouchGestures {
         !self.ui_held.is_empty() && self.fingers > 0
     }
 
-    /// Should a world consumer stand down, given egui's own verdict?
+    /// Should a world consumer stand down, given the interface's verdict
+    /// (`UiInput::wants_pointer`)?
     ///
-    /// The gate every camera gesture goes through instead of calling
-    /// `egui_wants_pointer_input()` directly. Takes the verdict as a bool rather
-    /// than an `egui::Context` so the rule stays a pure function.
-    pub fn ui_blocked(&self, egui_wants_pointer: bool) -> bool {
-        egui_wants_pointer && !self.escapes_ui()
+    /// The gate every camera gesture goes through instead of asking the
+    /// verdict alone. Takes it as a bool so the rule stays a pure function.
+    pub fn ui_blocked(&self, ui_wants_pointer: bool) -> bool {
+        ui_wants_pointer && !self.escapes_ui()
     }
 
     /// True when exactly two fingers are down, i.e. the pinch/twist/tilt

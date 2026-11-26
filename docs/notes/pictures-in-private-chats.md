@@ -1,7 +1,7 @@
 ---
 topic: chat
 triggers: [pictures.rs, chat_pictures.rs, pictures, "/api/pictures", chat_pictures, "Payload::Picture", seal_attachment, snapshot, polaroid, send_picture, see_picture, "picture store"]
-updated: 2026-10-01
+updated: 2026-11-26
 ---
 
 # Pictures in private chats
@@ -62,8 +62,8 @@ as a photograph handed over rather than a message in somebody's colour. Tapping
 it opens it full size in the same viewer window as a place's photo.
 
 A **snapshot** reuses the dev panel's screenshot path (`ui::drive_screenshots`,
-`ScreenshotState::chat_snapshot`): egui is suppressed for the one frame that is
-captured, so the picture is the map without the panels, and the pixels go to
+`ScreenshotState::chat_snapshot`): the UI's camera is switched off for the one
+frame that is captured (`lib_host::hide_for_snapshots`), so the picture is the map without the panels, and the pixels go to
 `chat_pictures` raw — encoding a whole window on the main thread would stall the
 frame, and the upload task re-encodes on a worker anyway.
 

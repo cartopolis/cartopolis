@@ -1,7 +1,7 @@
 ---
 topic: module-graph
 triggers: [crate split, circular dependency, systems/, resources.rs, layers_panel.rs, mcp_access.rs, layer_state.rs, module-graph.ts, components.rs, quality.rs, grid.rs, source_rules.rs, hub module, crate naming, core crate]
-updated: 2026-11-20
+updated: 2026-11-26
 ---
 
 # The client's modules are coupled by state, not by behaviour
@@ -88,7 +88,8 @@ list, then computing in-degree and mutual pairs.
 > 4 (the `FreeCamera` marker move worked), and the top two are now `egui_manager`
 > (21) and `theme` (20) — **both outside every cycle**. So the graph's centre of
 > gravity is egui, not Bevy, which is the same conclusion
-> `client-build-cost.md` reaches from the compile side.
+> `client-build-cost.md` reaches from the compile side. (Both 2026-08 figures;
+> egui and `egui_manager` left the client on 2026-11-26.)
 
 **26 mutual dependency cycles** existed between modules when this was written.
 2026-08-06 took it to 17: the `geo` extraction removed four, fixing the tile
@@ -122,7 +123,7 @@ as the systems that drive it:
 | `map_stream` | 24 | `MapStream` (26) |
 | `globe` | 20 | `GlobeState` (34), `HideInSpace` (12) |
 | `data_layers` | 17 | `DataLayers` (18) |
-| `egui_manager` | 16 | `EguiManager` (17) |
+| `egui_manager` (gone 2026-11-26) | 16 | `EguiManager` (17) |
 
 `resources.rs` (28 types) and `components.rs` (10 types) were meant to be the
 state layer, but **33 of the 50 system files also declare `Resource` /

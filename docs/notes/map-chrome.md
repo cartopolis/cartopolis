@@ -1,7 +1,7 @@
 ---
 topic: ui
-triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, welcome.rs, MainMenu, "face sheet", "World | Community", "space switch", chat.rs, splash.rs, systems/gui/theme, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", egui::Area, "size-to-content", set_width, "box grows", "stretches across the screen"]
-updated: 2026-11-10
+triggers: [ui.rs, geo_nav.rs, dock.rs, hud.rs, welcome.rs, MainMenu, "face sheet", "World | Community", "space switch", chat.rs, splash.rs, systems/gui/theme, "top bar", "menu bar", "address bar", "search bar", "main menu", "hamburger", "bottom bar", dock, logo, mark, wordmark, "suggestion", "map controls", compass, "status hud", lib_chrome.rs, lib_main_menu.rs, brand-mark.ts, "box grows", "stretches across the screen"]
+updated: 2026-11-26
 ---
 
 # The map chrome
@@ -17,23 +17,12 @@ wider than that most of the band existed only to hold a background — an opaque
 46 pt slab across the top of the map, permanently, for nothing. It also forced
 every future control to be placed relative to a *bar*, not to a corner.
 
-Note the mechanical trap that kept it wide after the strip was abandoned:
-`egui::MenuBar::ui` ends with `ui.set_min_size(vec2(ui.available_width(), …))`.
-That is correct for a bar that spans a window and exactly wrong for a card that
-sizes to its content — inside an `Area` it stretched the card ~230 pt past the
-last button, which reads as a layout bug and isn't one. A card uses a plain
-`ui.horizontal`; `MenuBar`'s other job (a shared config so hovering slides
-between open menus) is worth nothing with a single menu in the row.
-
-That is one case of the general rule: **an anchored, size-to-content `Area` must
-pin its content width.** Anything inside that reaches for the *available* width —
-a `right_to_left` row, `vertical_centered`, a wrapping label — grows the box a
-little each frame, because this frame's size becomes next frame's available width,
-and the feedback stretches it across the screen. The old status HUD fixed it with
-`HUD_WIDTH` and a `hud_box_does_not_grow` test (both went with the readout,
-2026-09-10); driver mode's first bottom bar hit it again and swallowed the lower
-third of the window in a few frames, which is why every box in `driver.rs` sets its
-own width ([navigation-display.md](navigation-display.md)).
+Until 2026-11-26 egui drew the chrome, and its layout kept boxes wide after the
+strip was gone: `egui::MenuBar` stretched a card to the available width, and any
+anchored size-to-content `Area` holding something that reached for the available
+width grew a little each frame until it spanned the screen (the old status HUD,
+driver mode's first bottom bar). The component library has no such
+frame-to-frame feedback.
 
 ## Rejected: the hover-reveal card
 
@@ -92,8 +81,7 @@ bar and from the Community page's top right (`ui::render_main_menu`; one
 face, not two — on a desktop with Community open the bar drops its own). It
 is a bottom sheet on a phone and a 320 pt card under the face on a desktop:
 who you are (signed out a grey person, "Not signed in", and Sign in…), Your
-profile and Share link (the Community's You page), then list rows (`theme::
-list_row`, 50 pt): Avatar, Saved places, Models · Settings, Admin, About ·
+profile and Share link (the Community's You page), then list rows: Avatar, Saved places, Models · Settings, Admin, About ·
 Developer tools and Share diagnostics with the developer setting · Exit on the
 desktop, and Sign out… last, in red, arming before it acts. Saved places lost
 its dock disc to it: the places are yours, not the map's. Community left it:
@@ -110,15 +98,14 @@ page leaves `reserved_bottom` free under it; inside a chat it stands down, since
 the composer has the bottom edge. Over every other full-screen panel the map's
 chrome drops, as before.
 
-**It is in the panel chain now, at its tail** (`render_dock`, where the old top
-switch was). On a desktop a side panel takes the right of the window, and the
-bar and the switch have to sit over the map that is left — which is the root
-`Ui`'s leftover rect, known only once every panel has drawn. That puts the
-faces *after* the sheet they open in the frame, so a tap on a face is a tap
-outside the sheet when the sheet tests for one: `ui::MainMenu::face` is last
-frame's face rect, which the sheet leaves to the face to answer. (The old order
-— the dock before the menu, and a `toggled` flag — had the same problem the
-other way round.)
+**It places against last frame's map.** On a desktop a side panel takes the
+right of the window, and the bar and the switch have to sit over the map that
+is left — `UiInput::map_rect`, known only once the panels are laid out
+(`lib_host::measure_map_room`), so a frame late. The chrome is drawn by
+`lib_chrome.rs` from what `dock::drive_dock` publishes in `MapChrome`. A tap on
+a face is a tap outside the sheet when the sheet tests for one:
+`ui::MainMenu::face` is last frame's face rect, which the sheet leaves to the
+face to answer.
 
 **Measured fits** (unit tests, the phone being 274 × 600 pt — the shots' 412 ×
 900 px at 1.5 — and the web phone 214 pt wide): the switch and the bar take the
@@ -158,17 +145,16 @@ zoom rail is 300 pt tall over the switch and fits the OnePlus on its side
 (424 pt) but not the 274-pt reference phone on its side.
 
 **Overlays keep off the columns** (2026-11-11): a friend's marker drew over the
-right column in Earth mode, and a pin raised later wins egui's hit test. The
-dock writes both columns' rects into egui memory each frame
-(`place_pins::set_chrome_holes`), and the pins, the people's markers, place
+right column in Earth mode, and a pin over a button takes its taps. The
+dock publishes both columns' rects each frame (`MapChrome::holes`), and the pins, the people's markers, place
 names, the Plans dots and the device arrow cull a tip that falls in one, grown
 by how far a pin hangs above its tip (`place_pins::clear_of_chrome`).
 
 **Your face's sheet stands on the switch** on a phone, a card with the screen's
 margins, not a bottom sheet over it (2026-11-11): the bottom sheet hid the switch
-and put Sign out under the fold. Its rows are 44 pt (`theme::list_row_sized`,
-66 dp) and Exit is a row of the app's group, so the fullest sheet — signed in,
-an admin — fits 600 pt with Sign out in sight (`ui::the_sheet_fits_above_the_switch`).
+and put Sign out under the fold. Its rows were made 44 pt (66 dp) and Exit a row
+of the app's group so the fullest sheet — signed in, an admin — fits 600 pt with
+Sign out in sight.
 
 **Community's + is in its title row**, between the name and your face, since
 2026-11-11: as a floating button at the bottom right it sat over the last
@@ -188,21 +174,18 @@ header has the top.
   else anchors against: the bar's band (68 pt) and the switch's (60 pt, it was
   74 with the dock's words). A second copy of that arithmetic is how the scale
   bar and the thumbstick drift.
-- **Place pins cull against both**, being the one overlay drawn after
-  everything else at the chrome's `Order::Middle`: a pin raised later wins
-  egui's hit test, so a saved place near an edge would take the taps meant for
-  the switch or the search bar.
+- **Place pins cull against both**: a saved place near an edge would otherwise
+  take the taps meant for the switch or the search bar.
 - **The keyboard stands the switch and the bar down**: it docks a slab to the
-  bottom edge (or flips to the top), and an `Area` left underneath is still
-  interactive and eats the taps meant for the keys.
-- **A compact panel is the whole screen**, and egui paints floating `Area`s
-  above panels with no z-order that says otherwise; so the bar and both columns
-  drop while any panel is open on a phone. The columns also drop with a side
+  bottom edge (or flips to the top), and a control left underneath would eat
+  the taps meant for the keys.
+- **A compact panel is the whole screen**, so the bar and both columns drop
+  while any panel is open on a phone. The columns also drop with a side
   panel on a desktop, as the compass always has — the panel docks to the edge
   they stand on.
 - Driver mode and the camera suppress all of it. Anything new that draws over
   the map has to opt out of driver mode explicitly; there is no ambient "driver
-  mode is on" that hides an `Area`.
+  mode is on" that hides a screen.
 
 ## Superseded: the dock owns the chrome (2026-08 → 2026-11-10)
 
@@ -233,41 +216,28 @@ map, signed in only. What it taught, and what the face's sheet kept:
   there.** It is back on the right, now under the search bar in a column of
   map buttons — the place every phone map has taught.
 
-## The mark and the wordmark are drawn, not shipped
+## The mark is the icon's SVG, never the PNG
 
-`theme::paint_mark` is a geometry table in the launcher icon's own 512-unit
-square — the brand pin on Groningen's street plan, as in
-`assets/icon/cartopolis.svg`, the table and the icons all written by
-`tools/brand-mark.ts` (the isometric tower cluster before it was retired
-2026-10-10) — and
-`theme::paint_wordmark` splits the name in two tones (cream `carto`, accent
-`polis`), which is how the account GUI writes it (the atlas web UI's
-`.app-header .wordmark`, in `crates/atlas/web`). Three reasons it is not a PNG:
+The brand pin on Groningen's street plan (`tools/brand-mark.ts` writes
+`assets/icon/cartopolis.svg`, the PNG, the .ico and `index.html`'s loader copy;
+the isometric tower cluster before 2026-10-10). The wordmark is the name in two
+tones (cream `carto`, accent `polis`), as the atlas web UI's `.app-header
+.wordmark` writes it. The splash `include_str!`s the SVG (`lib_splash`; the
+sign-in card leaves the mark out for now): rasterised once with tiny-skia at the window's
+physical pixels on the Bevy backend, a `data:image/svg+xml` source on the web.
+Why not the PNG:
 
-- It is wanted at 84 pt on the splash and 20 pt on a dock disc. egui has no mip
-  chain, so a 256 px image sampled down to a 20 pt button shimmers as the window
-  moves under it.
-- The icon PNG is a **Git LFS** object, and the failure mode of a clone without
-  LFS is a 130-byte pointer file that decodes to nothing. The splash, the sign-in
-  card and the dock each carried a fallback for that; now nothing inside the app
-  depends on the file at all. It is still the OS window icon and the desktop
-  entry, where a file is what the platform wants.
-- `index.html`'s loader owns the first several seconds on the web and is drawn to
-  match the in-app splash. The same shape is inline SVG there — no request, no
-  404, nothing to arrive late. **Keep the two in step**; they are one screen
-  handed over mid-load.
+- The icon PNG is a **Git LFS** object, and a clone without LFS gets a 130-byte
+  pointer that decodes to nothing. Nothing inside the app depends on it; it is
+  the OS window icon and the desktop entry, where a file is what the platform wants.
+- `index.html`'s loader owns the first seconds on the web and is drawn to match
+  the in-app splash, as inline SVG — no request, nothing to arrive late. **Keep
+  the two in step**; they are one screen handed over mid-load.
 
-There are now **three** copies of that shape — the icon SVG, `paint_mark`, and
-the loader's inline SVG — and the app's two are a deliberate reduction of the
-first: a flat tile where the icon has a gradient, one motif per facade where the
-icon collages a different map fragment onto every tower, and a disc-over-triangle
-pin instead of the teardrop path. Painting the full art from egui primitives
-would cost several hundred shapes on the frame the splash has least to spare,
-and none of the detail survives the 44 px the sign-in card draws it at. What is
-*not* reduced is the silhouette, the placement and the palette, which is what a
-mark is recognised by. `cargo test -p cartopolis write_mark_preview -- --ignored`
-rasterises exactly what egui tessellates, at the four sizes the mark is used at,
-which is how the reduction was checked against the icon rather than guessed at.
+Until 2026-11-26 egui painted a reduced mark from a geometry table
+(`theme::paint_mark`: a flat tile, a disc-over-triangle pin), since egui has no
+mip chain and a 256 px image shimmered on a 20 pt disc. The table survives in
+`theme/brand.rs` only as the tool's output its tests check.
 
 ## The suggestion rows carry a distance, and that is the point
 
@@ -285,15 +255,15 @@ Two things about that:
   uses. That one measures tens of metres between route vertices, where the flat
   approximation is sub-millimetre; this one routinely measures thousands of
   kilometres, where it is out by hundreds.
-- **The direction is a letter, not an arrow.** egui's bundled font stack has none
-  of `← → ↑ ↓ ↖ ↗ ↘ ↙` (see `theme::first_drawable`), so an arrow glyph would be
-  a column of empty boxes. "147 km SW" always renders.
+- **The direction is a letter, not an arrow** (`geo_nav::compass_point`):
+  egui's font stack had none of `← → ↑ ↓ ↖ ↗ ↘ ↙`, and "147 km SW" renders in
+  any face.
 
 The bearing is the great-circle initial bearing, so a hit in the American Midwest
 reads NW from the Netherlands rather than W. That is correct and occasionally
 surprising.
 
-In a panel the list is **inline**, not an `Area` under the field, and it does not
+In a panel the list is **inline**, not a dropdown under the field, and it does not
 close when the field loses focus. A dropdown over the map has to disappear the
 moment attention leaves it; a panel has no such duty, and the list is what the
 panel is for. It comes down when a hit is picked, when the query is retyped, or

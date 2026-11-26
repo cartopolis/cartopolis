@@ -595,12 +595,13 @@ struct BoardPainter {
 }
 
 impl BoardPainter {
-    /// Rasterizer over the `Hack` mono font egui embeds (no extra assets).
+    /// Rasterizer over the embedded `Hack` mono face (`theme::MONO_TTF`).
     fn new() -> Option<Self> {
-        let defs = egui::FontDefinitions::default();
-        let data = defs.font_data.get("Hack")?;
-        let font =
-            fontdue::Font::from_bytes(data.font.as_ref(), fontdue::FontSettings::default()).ok()?;
+        let font = fontdue::Font::from_bytes(
+            crate::systems::theme::MONO_TTF,
+            fontdue::FontSettings::default(),
+        )
+        .ok()?;
         Some(Self { font })
     }
 
@@ -928,7 +929,7 @@ mod tests {
     /// the rasteriser puts legible text where the layout says it should).
     #[test]
     fn board_texture_renders_text() {
-        let painter = BoardPainter::new().expect("egui Hack font should rasterize");
+        let painter = BoardPainter::new().expect("the embedded Hack face should rasterize");
         let poi = PoiInstance {
             cell: GridCell::default(),
             anchor: Vec3::ZERO,

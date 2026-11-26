@@ -1,32 +1,31 @@
 ---
 topic: ui
-triggers: [systems/gui/theme, ui_theme.rs, dismiss.rs, UiTheme, ui_theme, "Appearance", map_disc, round_button, "design system", palette, "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, overlay_frame, panel_header, close_button, "RichText::strong", fg_stroke, theme::install, RightPanel, back_title, take_panel_close, wrap_before, secondary_toggle, equal_width, phone-ui-shots]
-updated: 2026-11-22
+triggers: [systems/gui/theme, ui_theme.rs, dismiss.rs, palette.rs, tokens.rs, UiTheme, ui_theme, Rgba8, "Appearance", map_disc, round_button, "design system", "light theme", "dark theme", contrast, tofu, glyph, emoji, icon, accessibility, a11y, WCAG, escape, "empty state", spinner, disabled, confirm, "touch target", systems::theme, app_tokens, RightPanel, phone-ui-shots]
+updated: 2026-11-26
 ---
 
-# The UI vocabulary, and the four things that keep breaking it
+# The UI vocabulary, and the things that keep breaking it
 
-`systems::theme` is the design system: one palette, four scales, and a set of
-widgets. This note holds the facts that a reader of that file cannot derive from
-it — the measurements it was tuned against, the font it is drawn with, and the
-three rules whose violations are invisible until someone runs the app.
+`systems::theme` is the design system: one palette in two themes, the type
+and spacing scales, and the tokens the component library's screens draw with.
+This note holds what a reader of that module cannot derive from it — the
+measurements it was tuned against and the rules whose violations are invisible
+until someone runs the app.
 
-All measurements dated 2026-08-14, taken from a ten-lens sweep of the client.
-Method for each is given inline. Where a number is now a unit test, the test is
-named, because the test is the thing that stays true.
+Measurements dated 2026-08-14 unless marked, from a ten-lens sweep of the
+client. Where a number is now a unit test, the test is named, because the test
+is the thing that stays true.
 
-## `theme.rs` is the only place a colour, a frame or a header comes from
+## `theme` is the only place a chrome colour comes from
 
-UI colour, spacing and type live in `systems::theme` and nowhere else. New UI
-takes its colours from the constants, a box over the map from
-`theme::overlay_frame()`, a panel's title bar from `theme::panel_header()` and
-its close from `theme::close_button`. Each of those exists because the
-alternative already happened: the HUD, the stats readout and the bottom bar were
-three hand-rolled overlay frames with two alphas, two radii and three margins;
-six panels hand-rolled `heading` + `button("✕")`, and since `✕` is in none of
-egui's fonts every one of them closed on an empty box (`close_button` paints two
-line segments instead). A fresh `Color32::from_rgb` in a panel is how the chrome
-drifted last time.
+UI colour, spacing and type live in `systems::theme` and nowhere else; colours
+are `theme::Rgba8`. A screen takes its chrome from `theme::p()` (the palette in
+force) and the library's tokens (`theme::app_tokens()`, from `theme/tokens.rs`,
+the same table `web_theme.rs` writes the site's `theme.css` from). A fresh
+colour literal in a screen is how the chrome drifted before: the HUD, the stats
+readout and the bottom bar were once three hand-rolled boxes with two alphas,
+two radii and three margins. A palette for *content* — people, categories, the
+scenario inks — is a named const in its module.
 
 **Two palettes since 2026-11-10: the colours are `theme::p().field`, not
 constants.** `theme::Palette` has one field per chrome role, `theme::DARK`
@@ -34,194 +33,100 @@ holds the look as it was (value for value, pinned by
 `the_dark_palette_is_the_look_it_was`) and `theme::LIGHT` the midas hub's light
 tokens in the same roles. Read the palette where you paint — never into a
 `const`, `static` or cached field, which keeps the other theme's colour after a
-flip. What switches it is **its own setting since 2026-11-10**,
-`AppPrefs::ui_theme` (Settings ▸ General ▸ Appearance: Auto / Light / Dark,
-saved with the other settings; `systems::ui_theme`, in `ClientPhase::Input`):
-Auto is light while the real sun is above the horizon at the map, whatever the
-sky is set to. Until then it followed the scene's light (`SunMode`, the light
-disc), so a dark UI made the map night; the scene's light now changes only the
-sky. `CARTO_UI_THEME=light|dark` forces one for a capture. On a flip `theme::apply_visuals` replaces only the
-egui visuals, so spacing and the debug switches survive. Brand and data
-colours (`BRAND`, the council, the code colours, the map labels, the call
-buttons, the scenario inks) stay `const`. **What was `INK` is two roles now**:
-`ink` is the deepest background (wells, a segmented track — the hub's sunken
-grey in the light theme) and `on_accent` the ink on an accent plate (`#0F1416`
-in both); `on_status` is the ink on a warning or error plate (white on the
-light theme) and `accent_word` the accent-coloured word on a soft accent tag.
-**The map's round buttons have their own four roles** (2026-11-10):
-`map_fill`, `map_ink`, `map_rim` and `map_mark` — the plate, glyph and rim of
-`map_disc` / `round_button` at rest, the search pill and the World | Community
-track, and the zoom rail's thumb. In the dark theme they are the values those
-controls always had (`overlay`, `text`, `overlay_line`, `cream`; pinned by
-`the_dark_palette_is_the_look_it_was`). In the light theme they are white, the
-deep accent teal `#17696A` and a faint teal rim: the person's "the light
-buttons have no teal theme at all" was black glyphs on white discs, with teal
-left only on the one plate that was on
-(`the_map_buttons_wear_the_teal_in_both_themes`). The compass on the white
-disc has its north half in that teal ink with a white "N" on it (2026-11-11:
-the accent's teal "N" sat on a teal needle and vanished); dark is unchanged.
-Surfaces that are dark in both themes — the splash (it is `index.html`'s
-loader), the call and camera screens, the script editor's code box, anything
-on a `LABEL_CHIP` — draw inside `theme::dark_here` with
-`theme::use_dark_visuals`, or name `theme::DARK` directly.
+flip. What switches it is **its own setting**, `AppPrefs::ui_theme` (Settings ▸
+General ▸ Appearance: Auto / Light / Dark; `systems::ui_theme`, in
+`ClientPhase::Input`, through `theme::set_light`): Auto is light while the real
+sun is above the horizon at the map, whatever the sky is set to. Until then it
+followed the scene's light, so a dark UI made the map night.
+`CARTO_UI_THEME=light|dark` forces one for a capture. Brand and data colours
+(`BRAND`, the council, the map labels, the call buttons, the scenario inks)
+stay `const`.
+
+**A screen dark in both themes draws in `theme::DARK`'s colours rather than
+mounting dark** — the splash, the call and camera screens, the script editor's
+code box, anything on a `LABEL_CHIP`. The host's dark switch is one for every
+screen, so a screen that mounted dark turned every other screen dark with it
+(`lib_camera`, 2026-11-25; `component-library-in-the-client.md`).
+
+**Roles worth knowing.** `ink` is the deepest background (wells, a segmented
+track) and `on_accent` the ink on an accent plate; `on_status` is the ink on a
+warning or error plate and `accent_word` the accent-coloured word on a soft
+tag. **The map's round buttons have their own four roles** (2026-11-10):
+`map_fill`, `map_ink`, `map_rim` and `map_mark` — plate, glyph and rim of the
+round buttons, the search pill, the World | Community track and the zoom
+rail's thumb. In the light theme they are white with the deep accent teal
+`#17696A`: the person's "the light buttons have no teal theme at all" was
+black glyphs on white discs (`the_map_buttons_wear_the_teal_in_both_themes`).
 
 A panel's name and glyph are `RightPanel::label()` and `RightPanel::icon()`, so
-the dock disc, the menu entry and the header medallion read one table. (CLAUDE.md
-said `icons()`: that was the glyph preference list the icon font retired.)
+the dock disc, the menu entry and the header read one table.
 
 **The palette is deep teal, not the logo's slate and orange** — since
-2026-10-10, read off Android's keyboard in its teal dark theme. The logo's orange
-(`theme::BRAND`, `#FD6012`) stays with the mark, the wordmark and the badges.
-`theme.rs`'s module note records the circle it took to get here (slate +
-orange → monochrome on 2026-09-10, `monochrome-chrome.md` → charcoal and ember →
-teal) so nobody walks it again, and the web UI's colours are generated from
-these constants (`atlas-web-ui.md`).
+2026-10-10, read off Android's keyboard in its teal dark theme. The logo's
+orange (`theme::BRAND`, `#FD6012`) stays with the mark, the wordmark and the
+badges. `theme`'s module note records the circle it took to get here (slate +
+orange → monochrome on 2026-09-10, `monochrome-chrome.md` → charcoal and ember
+→ teal) so nobody walks it again.
 
-**Panels are styled after the midas hub's, on the person's word (2026-11-01).**
-Three passes were shown before that landed, and the misses are the useful part:
-making the panel glass at the old density changed nothing visible, and
-re-drawing the buttons alone was "barely better" — what was meant was the
-*panel*, then drawn as the hub's dark teal with a teal rim, "tealer, lighter"
-than the hub's own 7 % mix. **On 2026-11-08 that was taken back**: the person
-called it "a bad implementation of glass, and a try to mimic the web UI" and
-asked for midas's colours as midas lays them out — solid `SURFACE` cards on an
-`INK` page, the hub's `#2A3536` hairline (`PANEL_RIM`), and more room (rows 28
-/ 40 pt, menu rows 36 / 48, `monochrome-chrome.md`). Inside it the widgets follow the
-hub's component library (`@garage44/mithril`): a segmented control's choice is
-the accent plate cartopolis.org's `depth.css` gives it (the library's own is a
-raised card; the app follows the site, 2026-11-22); section heads are sentence case with the
-count in the faint tone ("Asking to join 1"); a panel title has no medallion; a
-secondary button is a dark surface with an icon in the text tone. One place
-deliberately departs from the hub: a button's hairline is `LINE`, not the hub's
-quieter border, which fails the 3:1 control boundary below. Midas screenshots
-for comparison are in midas's `docs/screens/`, and the mockups in
-`docs/mockups/ui-directions/`.
+**Panels are styled after the midas hub's, on the person's word.** On
+2026-11-08 a glass pass was taken back as "a bad implementation of glass, and a
+try to mimic the web UI": solid cards on an `ink` page, the hub's `#2A3536`
+hairline (`panel_rim`), and more room (rows 28 / 40 pt). One place
+deliberately departs from the hub: a control's hairline is `line`, not the
+hub's quieter border, which fails the 3:1 control boundary below. Midas
+screenshots for comparison are in midas's `docs/screens/`.
 
-**`theme::install` runs once, from `EguiManager::default`, before the first
-pass.** `set_fonts` only takes effect at the next `begin_pass` and painting with
-an unbound `FontFamily::Name` panics in epaint, so installing at construction is
-what lets the splash paint the brand wordmark on frame one. It sets the style
-for both egui themes: this integration feeds egui no `system_theme`, and a
-light-theme context left on stock style is a latent white flash.
+## The controls are the web's
 
-**`RichText::strong()` takes its colour from `widgets.active.fg_stroke`** — the
-pressed-button state. Tune that stroke to suit the pressed fill and every bold
-value in the app changes colour with it. `derived_text_colours_come_from_the_palette`
-pins all three derived colours (plain, weak, strong).
+Decided 2026-11-22, shown egui's Search panel beside the light web build:
+"those buttons and input fields are really badly styled — is egui hard to
+handle?" egui had one look per state for every widget type and no selectors, so
+a focused field wore the pressed button's plate. The answer then was a widget
+set drawn to the web component library's measurements; since 2026-11-26 it is
+the library itself (`@garage44/mithril`'s components, drawn by `mithril_bevy`),
+so the app and cartopolis.org are one design by construction. Judge a screen
+against the web page beside it, both at phone width (`docs/phone-ui-shots.toml`,
+1.5×). Two places where the *web* departs from its own library and the app
+follows the web: a segmented control's chosen option is a teal plate
+(`depth.css`), and the current nav item an accent-soft bar. Type sizes are the
+app's, not the site's (`theme::app_tokens`, `component-library-in-the-client.md`).
 
-## egui's bundled fonts have **no pictographic emoji at all**
+## The palette must be measured on every surface, not on `surface`
 
-> **Since 2026-10-18 the stack ends in a current one-colour Noto Emoji**
-> (`theme::EMOJI_TTF`), because chat is free text and 🙂 or 🕺 from a bot or a
-> person drew as `◻` on the phone. So the emoji below now draw, though in
-> outline and one colour; the lists stay as the history of why the UI's own
-> glyphs come from the icon font (`icon-font.md`) and not from emoji. The probe
-> they came from was also wrong in part: `has_glyphs` reports every Noto Emoji
-> glyph as missing (`theme::tests::no_painted_glyph_is_tofu` measures width).
+Contrast was originally checked against the panel fill and the accent fills.
+That is the easy half. **The overlay's background is not in the theme at all**:
+the imagery is a map, pale beige land on near-white paper, so a translucent box
+over it lands three steps lighter than the panel its colours were picked
+against. At the old 84 % alpha the dim text measured 4.12, the accent text 4.11
+and the error 3.59 — under 4.5 over ordinary daytime map. (Every surface has
+been solid since 2026-11-08, which removed that composite; the rule stands for
+anything translucent.)
 
-Measured by probing `Fonts::has_glyphs` against the stack egui 0.35 installs for
-`FontFamily::Proportional`, which is `["Ubuntu-Light", "NotoEmoji-Regular",
-"emoji-icon-font"]`. Between them those cover the BMP symbol blocks and
-essentially nothing in Miscellaneous Symbols and Pictographs.
-
-Drawable (the useful ones, probed, not assumed):
-
-```
-★ ☆ ☉ ☐ ☘ ☠ ☢ ☣ ☤ ☥ ☦ ☩ ☪ ☬ ☭ ☮ ☯ ☰ ☸ ♀ ♂ ♔ ♕ ♖ ♗ ♘ ♙ ♚ ♛ ♜ ♝ ♞ ♟
-♡ ♩ ♪ ♫ ♬ ♾ ⚐ ⚑ ⚒ ⚔ ⚕ ⚖ ⚘ ⚙ ⚛ ⚜ ⚰ ⛤ ⛧ ⛨ ⛩ ⛱ ✚ ✝ ✟ ✠ ✡ ✪ ✱ ✿ ❀ ❥ € • ○ ◎ ■ ▣
-```
-
-Tofu — and this is the surprising part, because they are the obvious choices:
-
-```
-🍴 ☕ 🛍 🛒 🛏 🏨 🎭 🎓 🚉 ⚽ ⛪ 📍 🚗 🚲 🚶 🔍 🗺 💬 📷 🗑 🤖 🧭 → ← ↑ ↓ ✕ ✓ ⋮ ●
-```
-
-Two consequences, and the second is the one that actually bites:
-
-- **Prefer `theme::first_drawable` to picking a glyph.** It takes a preference
-  ladder and returns the first the font has, so an icon degrades to a worse icon
-  and finally to a letter, instead of to a box. Every icon in the *client* goes
-  through it.
-- **A call site with no egui `Context` cannot run a ladder**, so its glyph has to
-  be right when it is written. `PoiCategory::glyph` and `TravelMode::icon` in
-  `cartopolis_geo` are the two such tables, and both shipped as tofu — ten of
-  twelve POI categories drew an empty box in the interact prompt. The guard,
-  `theme::tests::no_painted_glyph_is_tofu`, walked `cartopolis/src` only; the
-  hole was the crate boundary, not the rule. It scans `crates/geo/src` now.
-  `cartopolis_geo` cannot depend on egui, so it cannot host that test — the test
-  has to come to it, and any third crate that paints a glyph needs adding to the
-  same walk.
-
-`KNOWN_TOFU` is the excuse list. An entry there is a claim that the codepoint is
-retained intent with no call site; it is not a way to ship a box.
-
-## The palette must be measured on every surface, not on `SURFACE`
-
-Contrast was originally checked against the panel fill and the accent fills. That
-is the easy half. Two things put a colour somewhere else without anyone choosing
-it:
-
-- **egui's own widget table.** `weak_text_color` inside an *open* menu button is
-  `TEXT_DIM` on `SURFACE_HOVER` — at rest, not as a transient a mouse passes
-  through. That pair measured 4.40:1.
-- **`OVERLAY`'s background is not in `theme.rs` at all.** The imagery is a map,
-  not a satellite photo — pale beige land on near-white paper, which is the same
-  fact `globe::GLOBE_DEEP_ALBEDO` exists to deal with. So the composite an
-  overlay box actually lands on is `SURFACE` over *white*, three steps lighter
-  than the panel its colours were picked against. At the old 84% alpha that is
-  `#404B51`, on which `TEXT_DIM` measured 4.12, `ACCENT_TEXT` 4.11 and `ERROR`
-  3.59 — the HUD's coordinates, every value in an overlay and the driver's
-  failure text, all under 4.5 over ordinary daytime map.
-
-`theme::tests::text_clears_every_surface_it_can_land_on` pins the whole matrix,
-including the translucent composites over a bright and a dark basemap. **Add a
-colour, add its row**; a colour tested only against `SURFACE` has been tested
-against the one background it will not always have.
-
-Two further rules the same sweep established, both now tests:
+`text_clears_every_surface_it_can_land_on` pins the matrix. **Add a colour, add
+its row**; a colour tested only against `surface` has been tested against the
+one background it will not always have. Two further rules, both tests:
 
 - **A control has to be findable before its label matters** (WCAG 1.4.11, 3:1).
-  A button at rest is `SURFACE_RAISED` on `SURFACE`, which is **1.24:1** of fill
-  difference — so the hairline is the only channel identifying the control, and
-  `LINE` was 1.92:1. What had been carrying the UI is that panels are dense
-  enough for position to do the work; a control on its own had no boundary.
-  `a_control_is_distinguishable_from_the_surface_it_sits_on`.
-- **Prose does not recompute.** Three ratios written in `theme.rs` were wrong,
-  and a fourth was found by writing the test that checks them: `INK` on `ACCENT`
-  was given as 5.9 in one place and 6.0 in another, the alternative it argues
-  against ("only 3.1:1") is *white*'s ratio and not `CREAM`'s — cream on the
-  full accent is 2.67, under the 3:1 floor the argument rests on — and `TEXT` on
-  `SURFACE` had been documented as 11.9 since the file was created when it is
-  11.85. `the_documented_ratios_are_the_measured_ones` makes a stale paragraph a
-  failing test.
+  A button at rest is `surface_raised` on `surface`, 1.24:1 of fill difference,
+  so the hairline is the only channel identifying it
+  (`a_control_is_distinguishable_from_the_surface_it_sits_on`).
+- **Prose does not recompute.** Three ratios written in the theme were wrong and
+  a fourth was found by writing the test that checks them
+  (`the_documented_ratios_are_the_measured_ones`).
 
-### Rejected: stopping down the camera instead of fixing the colours
-
-Considered and dropped for the overlay contrast problem specifically. It is the
-same argument the globe albedo note makes: the near-white map sits on the
-tonemapper's shoulder, where exposure barely darkens the surface but does dim
-the limb and the stars. Contrast between chrome and its own fill is not a
-lighting problem and cannot be fixed by a lighting knob.
+**Rejected: stopping down the camera instead of fixing the colours.** The
+near-white map sits on the tonemapper's shoulder, where exposure barely darkens
+it but dims the limb and the stars. Contrast between chrome and its fill is not
+a lighting problem.
 
 ## A tooltip is a sentence addressed to nobody on a touchscreen
 
-`on_disabled_hover_text` never appears under a finger. Every disabled-state
-explanation in the client was one — `bookmarks` even records the fact in a
-comment about long-press hints and then uses one anyway, to explain a control
-disabled during world load, i.e. in the first thirty seconds a phone user ever
-spends in the app.
-
-So the reason a control cannot act goes through `theme::action_enabled_because`,
-which draws a note under the control on the touch tier and a tooltip under a
-pointer. **This is a class, not a site**: the answer has to be changeable in one
-place, which means it has to be in one place.
-
-The same argument produced `theme::kebab_button` earlier (a long press
-advertises itself nowhere) and is why `theme::action_button` exists at all:
-`egui::Button::small()` is not a smaller button — it zeroes the vertical padding
-*and* skips the `interact_size` floor, so the widget collapses to its glyph, at
-about 20 dp against a 48 dp guideline.
+A hover text never appears under a finger, and every disabled-state
+explanation in the client once was one — including the one explaining a
+control disabled during world load, i.e. the first thirty seconds a phone user
+spends in the app. The reason a control cannot act is drawn under it on the
+touch tier. A long press advertises itself nowhere either, which is why a row
+with more actions carries a ⋯ menu.
 
 **Unit conversion for this codebase:** Android is 1.5 dp/pt (`phone_ui_scale`),
 the web phone tier ≈1.83 (dpr 2.75 ÷ `WEB_PHONE_MAX_DPR`). Android binds, so a
@@ -229,150 +134,37 @@ control needs **≥ 32 pt** to clear `MIN_TOUCH_TARGET_DP`. Documented phone
 viewports are 274 pt (Android) and ≈214 pt (web) — test against both; the web
 one is narrower and is the one layout tests keep forgetting.
 
-## Every page title carries the panel's close
-
-`theme::back_title` draws a close on the right as well as the chevron on the
-left, and so does the contacts' `title_row`. Until 2026-10-31 only the panel's
-top page had a close: Community ▸ You ▸ Settings ▸ Graphics fills a phone, and
-getting back to the map from there was one chevron per level. A page does not
-know which panel it is drawn in, so the close is a request
-(`theme::request_panel_close`) that the panel owning the page reads after its
-body (`theme::take_panel_close` — Community, Settings and Admin do). It is keyed
-to the pass, so a page drawn somewhere that never reads it cannot close the
-next panel that does. **A new panel that hosts `back_title` pages has to read
-it**, or its pages draw a close that does nothing.
-
-## A row of frames does not wrap, and a row of shares must not widen
-
-Two ways a phone panel's content grew past the screen, found together on
-2026-10-31 at 275 pt:
-
-- **`horizontal_wrapped` wraps widgets, not `Frame`s.** A widget knows its size
-  before it is placed; a frame is placed and then measured, so a row of framed
-  chips runs off the side. The person card's facts made it 456 pt wide, half
-  off each edge. `theme::wrap_before(ui, width)` before each chip.
-- **A button given an `equal_width` share has to fit in it.** `secondary_toggle`
-  used to widen to its content, so the community page's People · Topic · 5 ·
-  Edit took 290 pt of 250, and since a `ScrollArea` takes its widest child's
-  width every card below was cut off on the right. It now drops its padding,
-  then its icon, before it widens.
-
-`docs/phone-ui-shots.toml` photographs every panel at phone width
-(`CARTO_UI_SCALE=1.5 cargo run -p cartopolis -- --shots docs/phone-ui-shots.toml`).
-
 ## One dismissal ladder, and adding a surface means adding a rung
 
-`systems::dismiss` owns Escape and Android Back. The rule is that **one press
-dismisses exactly one thing, the innermost**, and the order lives in one enum
-whose variant order *is* the specification.
-
-Why it cannot go back to being per-panel handlers: the Bevy→egui key bridge
-forwards a key only while a text field has focus, which is right for activation
-keys (Space would otherwise fire the last-clicked widget from across the map) and
-was applied to every key. That made three of the four `Key::Escape` handlers in
-the client unreachable code — and the moment Escape *is* forwarded, four
-independent reads of one key with no order between them close two things per
-press. Escape and Tab are now the two keys exempt from that gate.
+`systems::dismiss` owns Escape and Android Back. **One press dismisses exactly
+one thing, the innermost**, and the order lives in one enum (`Rung`) whose
+variant order *is* the specification. Per-panel handlers are what it replaced:
+four independent reads of one key with no order between them closed two things
+per press.
 
 **A page inside a panel is a rung, and so is each card on the map** (since
-2026-11-04). The pages kept their own state, out of the ladder's sight, so a
-press on Community ▸ You ▸ Contacts closed all three; and the place, building
-and person cards were not on it at all, so Back with only a card up found
-nothing open and sent the app to the background. A page with a back chevron
-is `Rung::PanelPage`, before `RightPanel`; the cards come after the panel,
-since on a phone the panel covers them. Since egui's pages went (2026-11-26)
-the one such page is a chat's World view, which `dismiss` reads from
-`ChatsView::lib_world` and steps back through `ChatsView::world_back` (egui's
-`theme::page_back` handshake is gone). A new library page with its own
-chevron has to be added to that rung the same way, or Back skips it.
-
-One subtlety that is not obvious and will bite anyone reordering the ladder:
-**egui's `Memory` consumes Escape to clear widget focus whatever this code
-decides.** So "a text field had focus when the frame began" is a rung the ladder
-*declines* to act on. Without it, one press blurs the search box and closes the
-panel the box lives in.
-
-## The controls are the web's
-
-Decided 2026-11-22, shown the Search panel in the light web build: "those
-buttons and input fields are really badly styled — is egui hard to handle?"
-Half yes. egui has **one `WidgetVisuals` per state for every widget type**
-(a button, a text field, a checkbox and a slider share one fill, one stroke,
-one radius), no per-widget styling and no selectors, measure-after-place
-layout, and a scroll bar that floats over the content by default. A focused
-`TextEdit` therefore wore the pressed button's dark plate and `expansion`
-(the thick black rim in the screenshot), a row's right-hand button sat under
-the scroll bar, and every raw `ui.button` beside the painted ones was egui's
-grey pill. The other half was ours: 73 raw `egui::Button` sites beside 172
-`theme::` ones, every text field egui's own.
-
-The answer is **one widget set, in `theme::controls`, drawn to the web
-component library's measurements** (`@garage44/mithril/components`, what
-cartopolis.org is built from — `atlas-web-ui.md`), so the app and the site
-are one design. The table at the top of `theme/controls.rs` maps each web
-component to its function here; the numbers are the web's `--m-control-height`
-(38 px, 44 under a finger → `control_height()`, 40 / 40), radius 8, padding 16
-(12 in a field), a 1 px hairline, a 3 px soft focus ring, `size=sm` 30 px
-(`control_height_small()`, 30 / the 40 pt touch row — this app's floor is
-`MIN_TOUCH_TARGET_DP`, not the web's 36).
-
-- **`theme::text_field`** is the field: a card well with a hairline, the
-  control height, 12 pt of side padding; the hairline firms on hover, takes
-  the accent and the ring with focus. It hands egui a whole `Frame`
-  (`TextEdit::frame`), which egui paints as given and never restyles — that
-  is the only way past the shared pressed-plate visuals.
-- **Four buttons**: `primary_button_sized`, `secondary_button`,
-  `ghost_button` (the web's most used, 97 of 280: no frame at rest),
-  `danger_button` (the error tone's soft fill; `confirm_button` arms into
-  it); `icon_button` / `icon_button_small` for an icon alone. `action_button`
-  and `action_enabled` are the small ghost, painted; a one-glyph label in the
-  icon font's private-use block is drawn as the icon.
-- **Scroll bars are solid** (`ScrollStyle::solid()`): they take their own
-  column and rows are laid out beside them, as the web's are.
-- **`theme::labelled`** is the web's `Field`: label over the control, help
-  under it.
-- **Three source rules hold it** (`source_rules.rs`): a `TextEdit` within
-  three lines of `text_field(`, no `ui.button` / `egui::Button::new` /
-  `small_button`, no `ui.checkbox`, outside `theme/` and the controls that
-  are custom by design (`EGUI_OWN_FILES`; a line earns an exception with an
-  `// egui's own:` comment saying why). `systems/dev/` is exempt until it is
-  touched.
-
-Judge a panel against the web page beside it, both at phone width
-(`docs/phone-ui-shots.toml`, 1.5×). Two places where the *web* departs from
-its own library and the app follows the web: a segmented control's chosen
-option is a teal plate (`depth.css`), and the current nav item an accent-soft
-bar.
-
-## A menu row is not a button
-
-`theme::menu_entry` is the app menu's row: full width, an icon column, a hover
-highlight, the accent when what it opens is open — and no frame. It exists
-because the menu was `ui.button` in a `top_down_justified` layout, which egui
-draws as a full-width plate; a dozen of those read as a form of primary actions
-rather than as a list, and the entries that *were* `selectable_label` drew nothing
-at all, so one card carried two vocabularies and neither said which entries were
-lit. The rank ladder now reads: `primary_button` (one per surface) → `action_button`
-→ `chip` (a switcher segment, which is a plate on purpose) → `menu_entry` → plain
-label.
+2026-11-04). The place, building and person cards were once not on it, so Back
+with only a card up found nothing open and sent the app to the background. A
+page with a back chevron is `Rung::PanelPage`, before `RightPanel`; the cards
+come after the panel, since on a phone the panel covers them. The one such page
+now is a chat's World view (`ChatsView::lib_world`). **A new library page with
+its own chevron has to be added to that rung**, or Back skips it.
 
 ## Where the vocabulary is thin
 
-Recorded so the next person does not re-derive it:
-
-- **There is no toast, snackbar or undo anywhere**, and a toast is the wrong
-  shape here — a floating `Area` paints over panels (see `map-chrome.md`), the
-  bottom edge belongs to the dock and, on a phone, to the on-screen keyboard.
-  The idiom that works is a 1.5 s glyph swap on the control itself (the Search
-  panel's Set Home / Copy link) for a synchronous act whose result is off-screen, and
-  a status line inside the owning panel for anything that can fail or take time.
-  Destructive actions arm in place (`theme::confirm_button`) for the same reason.
-- **The `Layers` panel's order is declaration order, not a decision** — the
-  `LAYER_DEFS` loop runs first because that const was the module's original
-  subject, and Buildings, Map and Height were appended below it. Two layers that
-  are off by default own the first screen on a phone.
+- **There is no toast, snackbar or undo anywhere.** The bottom edge belongs to
+  the dock and, on a phone, to the on-screen keyboard. The idiom that works is a
+  1.5 s glyph swap on the control itself (Search's Set Home / Copy link) for a
+  synchronous act whose result is off-screen, and a status line inside the
+  owning panel for anything that can fail or take time. Destructive actions arm
+  in place for the same reason.
 - **`map_enabled` is not the parent of the toggles indented under it.** It
   reaches the raster clipmap only; Trees, Street furniture, Road textures and
-  Water shading act on the *vector* surfaces, which it does not touch. Street
-  labels is the one genuine child. The panel draws a hierarchy the code does not
-  have.
+  Water shading act on the *vector* surfaces. Street labels is the one genuine
+  child.
+
+Until 2026-11-26 this note also held egui's traps — `theme::install` before the
+first pass, `RichText::strong` taking the pressed stroke, bundled fonts with no
+emoji (`icon-font.md` keeps the glyph story), frames that do not wrap,
+`Button::small()`, `back_title`'s close handshake, and the Escape egui's
+`Memory` ate. They went with egui.

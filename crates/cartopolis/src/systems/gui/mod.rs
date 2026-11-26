@@ -41,7 +41,6 @@ pub mod design_room;
 pub mod discs;
 pub mod dismiss;
 pub mod dock;
-pub mod egui_manager;
 #[cfg(feature = "comms")]
 pub mod external_signin;
 pub mod facade_check;

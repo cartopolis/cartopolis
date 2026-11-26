@@ -1,12 +1,9 @@
 use super::*;
-use crate::systems::egui_manager::UnpaintedPasses as _;
 
 /// Relative luminance per WCAG 2.x, on a colour's sRGB bytes. Every colour
 /// these tests measure is opaque (translucent ones go through [`over`]
-/// first), so taking a [`Color32`] — what egui's visuals hand back — or an
-/// [`Rgba8`] reads the same bytes.
-fn luminance(c: impl Into<Color32>) -> f64 {
-    let c: Color32 = c.into();
+/// first).
+fn luminance(c: Rgba8) -> f64 {
     let ch = |v: u8| {
         let v = v as f64 / 255.0;
         if v <= 0.03928 {
@@ -18,7 +15,7 @@ fn luminance(c: impl Into<Color32>) -> f64 {
     0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
 }
 
-fn contrast(a: impl Into<Color32>, b: impl Into<Color32>) -> f64 {
+fn contrast(a: Rgba8, b: Rgba8) -> f64 {
     let (x, y) = (luminance(a), luminance(b));
     let (hi, lo) = if x > y { (x, y) } else { (y, x) };
     (hi + 0.05) / (lo + 0.05)
@@ -61,16 +58,11 @@ fn text_colours_clear_their_backgrounds() {
     }
 }
 
-/// Composite a translucent colour over an opaque one, as egui paints it.
-///
-/// Done on the [`Color32`] egui is handed, which stores its channels
-/// **premultiplied** (`from_rgba_unmultiplied` multiplies on construction),
-/// so the source term is already `rgb·a` and this is plain
-/// `src + dst·(1 − a)`. The result is opaque.
-fn over(fg: impl Into<Color32>, bg: impl Into<Color32>) -> Rgba8 {
-    let (fg, bg): (Color32, Color32) = (fg.into(), bg.into());
-    let inv = 1.0 - f32::from(fg.a()) / 255.0;
-    let ch = |f: u8, b: u8| (f32::from(f) + f32::from(b) * inv).round() as u8;
+/// Composite a translucent colour over an opaque one in sRGB bytes:
+/// `src·a + dst·(1 − a)` on straight alpha. The result is opaque.
+fn over(fg: Rgba8, bg: Rgba8) -> Rgba8 {
+    let a = f32::from(fg.a()) / 255.0;
+    let ch = |f: u8, b: u8| (f32::from(f) * a + f32::from(b) * (1.0 - a)).round() as u8;
     Rgba8::from_rgb(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
 }
 
@@ -327,38 +319,37 @@ fn the_state_ladder_rises() {
 #[test]
 fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
     for (theme, c) in BOTH {
-        let v = visuals_of(&Palette32::of(c));
-        // A button at rest is edged in the hub's soft border, not a 3:1
-        // line: the person called a page of 3:1-edged buttons "cheap"
-        // (2026-11-10), and the hub tells its buttons by plate, shape and
-        // word. The edge must still be there, so it is held to a floor.
+        // A button at rest is edged in the hub's soft border
+        // ([`Palette::control_edge`]), not a 3:1 line: the person called a
+        // page of 3:1-edged buttons "cheap" (2026-11-10), and the hub tells
+        // its buttons by plate, shape and word. The edge must still be
+        // there, so it is held to a floor.
         for (name, got) in [
             (
                 "a button's border on a panel",
-                contrast(v.widgets.inactive.bg_stroke.color, c.surface),
+                contrast(c.control_edge, c.surface),
             ),
             (
                 "a button's border on the page",
-                contrast(v.widgets.inactive.bg_stroke.color, c.panel),
+                contrast(c.control_edge, c.panel),
             ),
         ] {
             assert!(got >= 1.3, "{theme}: {name}: contrast {got:.2} < 1.3");
         }
+        // Hover and pressed are ringed in [`Palette::accent_word`]; a
+        // pressed control is filled [`Palette::accent_muted`].
         for (name, got) in [
             (
                 "the hover ring against the fill it encloses",
-                contrast(v.widgets.hovered.bg_stroke.color, c.surface_hover),
+                contrast(c.accent_word, c.surface_hover),
             ),
             (
                 "the pressed ring against the fill it encloses",
-                contrast(
-                    v.widgets.active.bg_stroke.color,
-                    v.widgets.active.weak_bg_fill,
-                ),
+                contrast(c.accent_word, c.accent_muted),
             ),
             (
                 "the pressed ring against the panel outside it",
-                contrast(v.widgets.active.bg_stroke.color, c.surface),
+                contrast(c.accent_word, c.surface),
             ),
             (
                 "the engaged plate against the panel it sits on",
@@ -406,7 +397,7 @@ fn a_control_is_distinguishable_from_the_surface_it_sits_on() {
 /// the same pair and none checkable by reading: the ink on the old accent
 /// was written as 5.9 in the module note and 6.0 further down, and the
 /// alternative it was compared against — "only 3.1:1" — was
-/// [`Color32::WHITE`]'s ratio, not cream's. Pin the ratios the file
+/// pure white's ratio, not cream's. Pin the ratios the file
 /// commits to in writing (the dark theme's, which the prose quotes), so
 /// editing a colour and not the paragraph beside it is a failing test
 /// rather than a stale comment.
@@ -438,24 +429,6 @@ fn the_documented_ratios_are_the_measured_ones() {
             (got * 10.0).round() / 10.0 == stated,
             "{claim}: the docs say {stated:.1}:1, the colours measure {got:.2}:1"
         );
-    }
-}
-
-/// egui derives three app-wide text colours from the widget table rather
-/// than exposing them directly — plain text from `noninteractive`, weak text
-/// from `weak_text_color`, and **`RichText::strong()` from `widgets.active`**.
-/// That last one is the trap: `active` is also the pressed-button state, so
-/// picking its `fg_stroke` to suit the fill silently recolours every bold
-/// value in the app. Assert the three land where the palette says, in both
-/// themes.
-#[test]
-fn derived_text_colours_come_from_the_palette() {
-    for (theme, c) in BOTH {
-        let v = visuals_of(&Palette32::of(c));
-        assert_eq!(v.text_color(), c.text.into(), "{theme}");
-        assert_eq!(v.weak_text_color(), c.text_dim.into(), "{theme}");
-        assert_eq!(v.strong_text_color(), c.cream.into(), "{theme}");
-        assert_eq!(v.dark_mode, c.dark, "{theme}");
     }
 }
 
@@ -595,23 +568,41 @@ fn the_plan_stays_inside_the_tile_and_clear_of_the_pin() {
     }
 }
 
-/// The brand family must be bound before anything paints a heading —
-/// `install` exists to guarantee that, and an unbound family is a panic deep
-/// in epaint rather than a missing-font fallback.
+/// The faces the library draws with (`lib_host`'s `FontMap`): body, brand,
+/// monospace, the icons and the emoji fallback. A glyph one of them has is
+/// drawable.
+struct Faces(Vec<fontdue::Font>);
+
+impl Faces {
+    fn load() -> Self {
+        let faces = [
+            BODY_TTF,
+            BRAND_TTF,
+            MONO_TTF,
+            crate::systems::icons::FONT,
+            EMOJI_TTF,
+        ]
+        .into_iter()
+        .map(|bytes| {
+            fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+                .expect("an embedded face parses (is Git LFS fetched?)")
+        })
+        .collect();
+        Self(faces)
+    }
+
+    fn has(&self, ch: char) -> bool {
+        self.0.iter().any(|f| f.lookup_glyph_index(ch) != 0)
+    }
+}
+
+/// Every embedded face parses, and carries the Latin the UI is written in.
 #[test]
-fn install_binds_the_brand_family_for_the_first_frame() {
-    let ctx = egui::Context::default();
-    install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let _ = ctx.run_ui_unpainted(
-        egui::RawInput {
-            screen_rect: Some(screen),
-            ..Default::default()
-        },
-        |ui| {
-            ui.heading("Places");
-        },
-    );
+fn the_embedded_faces_parse() {
+    let faces = Faces::load();
+    for face in &faces.0[..3] {
+        assert!(face.lookup_glyph_index('P') != 0);
+    }
 }
 
 /// Every `RightPanel`, walked by index rather than hand-listed.
@@ -667,29 +658,18 @@ fn panel_at(i: usize) -> Option<crate::resources::RightPanel> {
 /// — fails here rather than on somebody's screen.
 #[test]
 fn every_panel_icon_resolves_to_a_glyph_the_font_has() {
-    let ctx = egui::Context::default();
-    install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let _ = ctx.run_ui_unpainted(
-        egui::RawInput {
-            screen_rect: Some(screen),
-            ..Default::default()
-        },
-        |ui| {
-            let mut seen = 0;
-            while let Some(panel) = panel_at(seen) {
-                seen += 1;
-                let icon = panel.icon();
-                let font = TextStyle::Body.resolve(ui.style());
-                assert!(
-                    ui.ctx().fonts_mut(|f| f.has_glyphs(&font, icon)),
-                    "{}: wears {icon:?}, which the font cannot draw",
-                    panel.label(),
-                );
-            }
-            assert!(seen > 1, "the panel walk found nothing to check");
-        },
-    );
+    let faces = Faces::load();
+    let mut seen = 0;
+    while let Some(panel) = panel_at(seen) {
+        seen += 1;
+        let icon = panel.icon();
+        assert!(
+            icon.chars().all(|ch| faces.has(ch)),
+            "{}: wears {icon:?}, which the font cannot draw",
+            panel.label(),
+        );
+    }
+    assert!(seen > 1, "the panel walk found nothing to check");
 }
 
 // ─── The source-walking tofu test ─────────────────────────────────────────
@@ -876,9 +856,8 @@ const MAX_LABEL_CHARS: usize = 24;
 /// red until the entry is deleted with it — an allowlist that cannot quietly
 /// outlive its reason.
 ///
-/// **Currently empty, and that is the goal state.** All five entries it was
-/// created with were fixed the same day it was written; the const stays so the
-/// next one has an obvious place to be recorded rather than silenced.
+/// Empty is the goal state. All five entries it was created with were fixed
+/// the same day it was written.
 const KNOWN_TOFU: &[(&str, char, &str)] = &[];
 
 /// Walk every `.rs` file under the crate and collect them.
@@ -956,29 +935,6 @@ fn the_wordmark_is_one_orange_on_both_splashes() {
 }
 
 #[test]
-fn the_emoji_people_type_in_chat_are_drawn() {
-    // Chat text is whatever people type, so no ladder can stand in for a
-    // missing glyph there. 🙂 and 🕺 drew as `◻` on the phone until the
-    // current Noto Emoji joined the stack (`EMOJI_TTF`).
-    let ctx = egui::Context::default();
-    install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let _ = ctx.run_ui_unpainted(
-        egui::RawInput {
-            screen_rect: Some(screen),
-            ..Default::default()
-        },
-        |ui| {
-            let font = TextStyle::Body.resolve(ui.style());
-            for ch in ['🙂', '🕺', '🤖', '🛒', '👍', '🥳', '🫠'] {
-                let width = ui.ctx().fonts_mut(|f| f.glyph_width(&font, ch));
-                assert!(width > 0.0, "{ch} (U+{:X}) draws as a box", ch as u32);
-            }
-        },
-    );
-}
-
-#[test]
 fn no_painted_glyph_is_tofu() {
     // **Both crates that put a glyph on screen, not just this one.**
     // `cartopolis_geo` used to own two hard-coded icon tables —
@@ -988,8 +944,8 @@ fn no_painted_glyph_is_tofu() {
     // boxes for as long as they existed: the rule was right and its reach
     // stopped at a crate boundary. Those tables moved to `systems::icons`
     // with the icon font, but the reach is kept — a label written over there
-    // is painted over here just the same, and `cartopolis_geo` cannot depend
-    // on egui, so it cannot host this test itself.
+    // is painted over here just the same, and `cartopolis_geo` does not have
+    // the faces, so it cannot host this test itself.
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let roots = [manifest.join("src"), manifest.join("../geo/src")];
     let mut files = Vec::new();
@@ -1016,76 +972,54 @@ fn no_painted_glyph_is_tofu() {
         literals.extend(literals_of(&name, &src));
     }
 
-    let ctx = egui::Context::default();
-    install(&ctx);
-    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
-    let _ = ctx.run_ui_unpainted(
-        egui::RawInput {
-            screen_rect: Some(screen),
-            ..Default::default()
-        },
-        |ui| {
-            let font = TextStyle::Body.resolve(ui.style());
-            // The width test below must still see a character nothing
-            // draws, or it passes everything.
-            assert_eq!(
-                ui.ctx().fonts_mut(|f| f.glyph_width(&font, '\u{10FFFD}')),
-                0.0,
-                "a character no font has must measure 0 wide"
-            );
-            let mut missing: Vec<(String, usize, char)> = Vec::new();
-            for lit in &literals {
-                if lit.text.chars().count() > MAX_LABEL_CHARS {
-                    continue;
-                }
-                for ch in lit.text.chars() {
-                    if (ch as u32) <= 0xFF {
-                        continue;
-                    }
-                    let glyph = ch.to_string();
-                    // `has_glyphs` answers "not the replacement face", and
-                    // the face epaint draws `◻` from is Noto Emoji — so every
-                    // emoji, though Noto Emoji draws it, read as missing. A
-                    // character no face has measures 0 wide; one the
-                    // replacement face really has does not.
-                    let drawable = ui.ctx().fonts_mut(|f| {
-                        f.has_glyphs(&font, &glyph) || f.glyph_width(&font, ch) > 0.0
-                    });
-                    if !drawable {
-                        missing.push((lit.file.clone(), lit.line, ch));
-                    }
-                }
-            }
-
-            let excused =
-                |file: &str, ch: char| KNOWN_TOFU.iter().any(|(f, c, _)| *f == file && *c == ch);
-            let unexcused: Vec<String> = missing
-                .iter()
-                .filter(|(file, _, ch)| !excused(file.as_str(), *ch))
-                .map(|(file, line, ch)| format!("{file}:{line} draws U+{:04X} {ch:?}", *ch as u32))
-                .collect();
-            assert!(
-                unexcused.is_empty(),
-                "the font cannot draw these, so they paint as empty boxes — if it is \
-                     an icon, take it from `systems::icons`; otherwise use something \
-                     Latin-1, which every font here covers:\n  {}",
-                unexcused.join("\n  ")
-            );
-
-            // …and the other direction: an entry that no longer matches
-            // anything has been fixed, and a stale excuse is how the next one
-            // gets waved through.
-            for &(file, ch, why) in KNOWN_TOFU {
-                assert!(
-                    missing
-                        .iter()
-                        .any(|(f, _, c)| f.as_str() == file && *c == ch),
-                    "KNOWN_TOFU still lists {ch:?} in {file} ({why}), but the scan no \
-                         longer finds it — delete the entry",
-                );
-            }
-        },
+    let faces = Faces::load();
+    // The lookup below must still see a character nothing draws, or it
+    // passes everything.
+    assert!(
+        !faces.has('\u{10FFFD}'),
+        "a character no face has must be missing"
     );
+    let mut missing: Vec<(String, usize, char)> = Vec::new();
+    for lit in &literals {
+        if lit.text.chars().count() > MAX_LABEL_CHARS {
+            continue;
+        }
+        for ch in lit.text.chars() {
+            if (ch as u32) <= 0xFF {
+                continue;
+            }
+            if !faces.has(ch) {
+                missing.push((lit.file.clone(), lit.line, ch));
+            }
+        }
+    }
+
+    let excused = |file: &str, ch: char| KNOWN_TOFU.iter().any(|(f, c, _)| *f == file && *c == ch);
+    let unexcused: Vec<String> = missing
+        .iter()
+        .filter(|(file, _, ch)| !excused(file.as_str(), *ch))
+        .map(|(file, line, ch)| format!("{file}:{line} draws U+{:04X} {ch:?}", *ch as u32))
+        .collect();
+    assert!(
+        unexcused.is_empty(),
+        "the font cannot draw these, so they paint as empty boxes — if it is \
+             an icon, take it from `systems::icons`; otherwise use something \
+             Latin-1, which every font here covers:\n  {}",
+        unexcused.join("\n  ")
+    );
+
+    // …and the other direction: an entry that no longer matches anything
+    // has been fixed, and a stale excuse is how the next one gets waved
+    // through.
+    for &(file, ch, why) in KNOWN_TOFU {
+        assert!(
+            missing
+                .iter()
+                .any(|(f, _, c)| f.as_str() == file && *c == ch),
+            "KNOWN_TOFU still lists {ch:?} in {file} ({why}), but the scan no \
+                 longer finds it — delete the entry",
+        );
+    }
 }
 
 // ─── The scales ───────────────────────────────────────────────────────────
@@ -1113,12 +1047,6 @@ fn the_type_scale_is_a_scale() {
             "{a} ({lo}) and {b} ({hi}) are the same size"
         );
     }
-    // The style's own entries must come off the scale, or the constants
-    // describe a UI the app is not painting.
-    let s = style_for(false);
-    assert_eq!(s.text_styles[&TextStyle::Body].size, SIZE_BODY);
-    assert_eq!(s.text_styles[&TextStyle::Small].size, SIZE_CHIP);
-    assert_eq!(s.text_styles[&TextStyle::Heading].size, SIZE_HEADING);
 }
 
 /// The radius scale, same argument: three values, each visibly a step from
@@ -1126,12 +1054,6 @@ fn the_type_scale_is_a_scale() {
 #[test]
 fn the_radius_scale_is_a_scale() {
     assert!(RADIUS_SM < RADIUS && RADIUS < RADIUS_LG);
-    // The widgets take the default one — this is the value a caller who
-    // needed it used to read back off the widget table instead.
-    assert_eq!(
-        visuals().widgets.inactive.corner_radius,
-        CornerRadius::same(RADIUS)
-    );
 }
 
 /// The touch tier exists to clear [`MIN_TOUCH_TARGET_DP`], and the arithmetic
@@ -1167,29 +1089,9 @@ fn touch_sizes_clear_the_minimum_target() {
         );
         // And the conversion the keyboard needs agrees with the row.
         assert!(min_touch_target_pts(dp_per_pt) <= TOUCH_ROW_PTS + 0.01);
-        // …and why [`action`] refuses `small()` under a finger. egui's small
-        // button zeroes the vertical padding and drops to the `Small` text
-        // style, so its height *is* the glyph — a third of the row it sits
-        // in, on the controls that exist to save you typing an address on a
-        // phone.
-        let small_dp = style_for(true).text_styles[&TextStyle::Small].size * dp_per_pt;
-        assert!(
-            small_dp < MIN_TOUCH_TARGET_DP,
-            "{name}: a small button is {small_dp:.0} dp, so a small egui button \
-                 has nothing left to protect against"
-        );
     }
     // The pointer tier is deliberately *not* held to it — a mouse is not a
-    // finger, and 24 pt rows are what makes a panel of layer toggles readable.
-    let touch = style_for(true);
-    let pointer = style_for(false);
-    assert!(touch.spacing.interact_size.y > pointer.spacing.interact_size.y);
-    assert_eq!(touch.spacing.interact_size.y, TOUCH_ROW_PTS);
-    // Type does not grow with the targets: the phone's UI is already sharp,
-    // and scaling the text too is what pushes the viewport under
-    // the old egui side panel's 240 pt floor.
-    assert_eq!(
-        touch.text_styles[&TextStyle::Body].size,
-        pointer.text_styles[&TextStyle::Body].size
-    );
+    // finger, and shorter rows are what makes a panel of layer toggles
+    // readable.
+    assert!(TOUCH_ROW_PTS > ROW_PTS);
 }

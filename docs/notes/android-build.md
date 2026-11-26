@@ -1,7 +1,7 @@
 ---
 topic: android-build
 triggers: [cartopolis_android, app_update.rs, platform/update.rs, Updater, UpdateReceiver, "self-update", build-apk.sh, AndroidManifest.xml, android_main, NativeActivity, cargo-ndk, deploy-android, apksigner, platform::android, hasCode, classes.dex, JNI, "android", "apk", "phone", "ndk", "intent filter", launch_url, javac, d8, dex, DexProbe, report_dex, "foreground service", Gradle, render_halt.rs, cartopolis/src/cli.rs, utils/cache.rs, crates/cartopolis/Cargo.toml, crates/cartopolis_android/java, open_url, arboard]
-updated: 2026-11-05
+updated: 2026-11-26
 ---
 
 # The Android app is a manifest, a `.so`, the assets directory and one Java class
@@ -55,7 +55,7 @@ project. Rejected for Phase 1, worth revisiting only alongside the item below.
 **The price is the system IME, and that price is still being paid.**
 NativeActivity has no built-in IME integration: `android-activity` exposes
 `show_soft_input()`, but the characters the keyboard produces do not arrive as
-text events the way they do under GameActivity. So no egui text field on the
+text events the way they do under GameActivity. So no text field on the
 phone can ever receive a character from the platform's own keyboard. Everything
 that is a tap, a drag or a pinch works, because the touch bridges
 (`docs/notes/touch-input.md`) were already there.
@@ -169,7 +169,7 @@ swiping the app away is a clean suspend and deletes the breadcrumb.
 
 **And it gives you about nine seconds.** SwiftShader aborts the run with
 `egui-wgpu: Tried to update a texture that has not been allocated yet` shortly
-after the first frames, which is long enough for startup, asset loading and the
+after the first frames (egui left the client 2026-11-26; unmeasured since), which is long enough for startup, asset loading and the
 first `avatar:` lines and *not* long enough to tap a control and capture the
 result — a launch/tap/screencap sequence loses the race more often than it wins
 it. So the emulator answers "what does the app do on its own", and anything that
@@ -979,9 +979,9 @@ reasoning about the wrong quantity. What a report needs is not *n lines*, it is
   consumers read the `Window`). So the platform answers every real touch move
   with an `error!`, and there is no filter level that keeps `bevy_winit` at INFO
   for surface diagnostics while dropping this.
-- `Missing texture: Managed(2)` (`egui_wgpu`, WARN). Undiagnosed. It has been
-  firing continuously since the first run that drew anything, so it is neither
-  new nor the freeze — but it is a real bug and it is still open.
+- `Missing texture: Managed(2)` (`egui_wgpu`, WARN). Undiagnosed. It had been
+  firing continuously since the first run that drew anything, so it was neither
+  new nor the freeze; closed by egui leaving the client on 2026-11-26.
 
 Between them they were ~95% of a 600-line tail. The fix is on the *report*, not
 on the log: ask logd for 8,000 lines, drop the two known repeats
@@ -1054,13 +1054,9 @@ cannot be filtered by level. Turning that module off would also lose
 `Creating new window`, which is the line that says the surface came back on
 resume — a diagnostic this note has been waiting on for three rounds. It stays
 noisy in the log and is dropped from the *report* (`LOG_NOISE`), which is the
-right place for that trade. `egui_wgpu`'s `Missing texture: Managed(2)` is
-likewise still open: the delta ordering in `egui_manager::egui_pass` is correct
-(set → upload → render → free, all gated on the generation actually changing), so
-the cause is upstream of it — most likely a `textures_delta` produced by a
-main-world frame that the render world never applied, since `end_egui_frame`
-*replaces* the delta rather than accumulating it and egui announces a texture
-exactly once. Not fixed blind.
+right place for that trade. `egui_wgpu`'s `Missing texture: Managed(2)` was
+never diagnosed (most likely a `textures_delta` the render world never applied)
+and went with egui on 2026-11-26.
 
 ## The freeze, named: `AndroidApp::set_window_flags` deadlocks against the frame it is called in (2026-08-14, third run)
 

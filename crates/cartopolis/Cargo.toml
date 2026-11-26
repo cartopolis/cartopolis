@@ -42,8 +42,7 @@ test = false
 # every server uses. The simulator crate survives here as a dev-dependency, so
 # the loopback tests still boot the real thing.
 # `ui-probe`: the component library's screens on bevy_ui, the app's interface
-# since 2026-11-25 (egui is on its way out; `CARTO_UI_LIB=0` brings it back
-# until then).
+# since 2026-11-25 and its only one since egui went (2026-11-26).
 default = ["audio", "comms", "ui-probe"]
 # `audio`: the avatar soundscape (`systems::soundscape` — footsteps, landings,
 # wind). On by default, because a city you can walk through in silence reads as a
@@ -137,9 +136,7 @@ perf = [
 scalar-fallback = []
 # Bevy's own UI stack, for the component-library study's phase 0
 # (`docs/mockups/component-library/`): `systems::dev::ui_probe` draws one card
-# with `bevy_ui` beside egui's Settings panel, and a long list for the layout
-# cost. Off by default — nothing in the client reads these crates otherwise,
-# and a shipped build must not carry a second UI toolkit for a measurement.
+# with `bevy_ui`, and a long list for the layout cost.
 # The component library's screens (`systems::lib_settings`), on whichever
 # backend the lane has: `ui-probe` draws them through `bevy_ui` (native),
 # `ui-dom` as DOM over the canvas (the web build, `systems::lib_host`).
@@ -209,7 +206,6 @@ cartopolis_calls = { path = "../calls", features = ["client"], optional = true }
 # The private-chat state blob (`systems::private_chat`); already built for core.
 postcard = { workspace = true }
 bytes.workspace = true
-egui.workspace = true
 # The component library and its Bevy backend, for the `ui-probe` feature
 # (docs/mockups/component-library, phase 3); not in a shipped build yet.
 mithril = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "3dedb903", optional = true }
@@ -222,7 +218,12 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "si
 # are what the web's `theme.css` is written from and what the Bevy backend
 # draws with. Bevy-free and dependency-free, so every lane carries it.
 mithril_style = { git = "https://code.garage44.eu/jeroen/mithril.git", rev = "3dedb903" }
-egui-wgpu.workspace = true
+# wgpu itself, for the adapter's `DeviceType`/`Backend` and the vendored
+# `wgpu::meter` (`upload_meter`, `shot_harness`), which bevy does not
+# re-export. The one bevy links (the `crates/wgpu` patch); `std` and `wgsl`
+# are what egui-wgpu asked of it while it was here, kept so its features do
+# not move.
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl"] }
 # The contact link drawn as a QR code (`systems::contacts`). Pure Rust with no
 # dependencies of its own, so it builds on every lane, Android and wasm included.
 qrcodegen = { version = "1.8", optional = true }

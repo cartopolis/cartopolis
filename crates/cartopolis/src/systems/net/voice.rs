@@ -949,10 +949,8 @@ pub fn read_talk_key(
         voice.talk_held = false;
         return;
     }
-    // `ui_owns_keyboard`, not `egui_wants_keyboard_input` —
-    // `docs/notes/egui-shared-root-ui.md`:
-    // the latter is true whenever any widget holds focus, which would make V
-    // silently dead after clicking a button.
+    // `ui_owns_keyboard` (`docs/notes/ui-input.md`): only a focused text
+    // field takes the keys, so V still talks after a button was clicked.
     if ui_input.ui_owns_keyboard(edit_dialog.visible, &keyboard) {
         return;
     }

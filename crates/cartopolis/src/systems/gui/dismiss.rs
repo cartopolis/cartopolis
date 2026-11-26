@@ -30,16 +30,14 @@
 //!
 //! ## The one rung the text field owns
 //!
-//! A focused text field consumes Escape itself to clear its focus, whatever
-//! this system decides. So "a text field had focus when the frame began"
-//! ([`UiInput`]'s answer) is rung 2 *and this ladder must stop there* —
-//! otherwise a single Escape both blurs the search box and closes the panel
-//! behind it, which is two dismissals for one press and precisely the bug the
-//! single-rung rule exists to prevent.
+//! A text field that consumed Escape itself to clear its focus is rung 2 *and
+//! this ladder must stop there* — otherwise a single Escape both blurs the
+//! search box and closes the panel behind it, which is two dismissals for one
+//! press. Only the old toolkit's fields did; the library's do not take
+//! Escape, so the callers pass `false` and the rung stays for a field that
+//! does.
 
 use bevy::prelude::*;
-
-use crate::systems::ui_input::UiInput;
 
 use crate::resources::{ContextMenuState, EditDialogState, RightPanel};
 use crate::systems::driver::DriverState;
@@ -373,19 +371,14 @@ impl Dismissable<'_> {
 /// Escape walks the ladder and stops. It never quits — that rung belongs to Back
 /// alone, and an Escape that could close the application from a bare map is a
 /// keystroke nobody wants to discover by accident.
-pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, ui: Res<UiInput>, mut d: Dismissable) {
+///
+/// No field takes the `TextFocus` rung from here: a library field does not
+/// blur itself on Escape, so the press goes on to close what the field is in.
+pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, mut d: Dismissable) {
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    let _ = d.dismiss_innermost(text_focused(&ui));
-}
-
-/// Did a text field that blurs itself on Escape hold the keyboard as the
-/// frame began? Only the old toolkit's fields do, as published in
-/// [`UiInput`]; a library field does not take Escape, so it is not this
-/// rung, and the press goes on to close what the field is in.
-fn text_focused(ui: &UiInput) -> bool {
-    ui.egui_verdict().text_focused
+    let _ = d.dismiss_innermost(false);
 }
 
 #[cfg(test)]
@@ -594,7 +587,6 @@ mod tests {
 /// that quits on the first back press while a panel is open would be unusable.
 pub fn handle_back_gesture(
     keys: Res<ButtonInput<KeyCode>>,
-    ui: Res<UiInput>,
     mut dismissable: Dismissable,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -611,7 +603,7 @@ pub fn handle_back_gesture(
     // one ladder now (`systems::dismiss`), and the *only* difference between the
     // two gestures is this last rung, which is why it is the only thing written
     // here.
-    if dismissable.dismiss_innermost(text_focused(&ui)).is_none() {
+    if dismissable.dismiss_innermost(false).is_none() {
         // On the phone the last rung is "to the background", not "quit": quitting
         // ends the process there, so coming back was a cold start that had
         // forgotten the tab, the open chat and any call (`move_task_to_back`).

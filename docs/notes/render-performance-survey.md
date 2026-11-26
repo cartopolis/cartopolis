@@ -1,7 +1,7 @@
 ---
 topic: render-performance-survey
 triggers: [grid.rs, patches.rs, kerb_shadows.rs, KerbPiece, "kerb", split_by_upload_bytes, terrain_refine::weld, "street level is slow", ground_detail.rs, wet_surfaces.rs, street_labels.rs, map_stream.rs, systems/dev/perf.rs, "rotate the camera", "turning", "turn window", material_modified_per_frame, get_mut, StreamCentre, orbit_focus, sample_to_callgrind, kcachegrind, qcachegrind, "sample(1)", CARTO_MSAA, light_shafts, macOS, Metal, Retina, write_buffer, StagingBuffer, "batch set", GLOBE_SKY_SAMPLES, ShotMetrics, render_census, "draw call", "overdraw", "clipmap", "SIMD", big_space, "frame time", "profiling", "perf", "framerate", "fps", occluded_by_finer, "tier", quality.rs, Adreno, "gpu preprocessing", bindless, "task pool", ComputeTaskPool, CARTO_NO_CLOUDS, globe_clouds, "clouds", "slow at altitude", "fps drops when zoomed", fbm3, "shadows", "shadows are slow", ShadowFilteringMethod, NotShadowCaster, NoFrustumCulling, shadow_casters, shadow_distance_m, shadow_cascades, CascadeShadowConfigBuilder, CARTO_NO_SHADOWS, "moon shadow", CARTO_NO_LIGHT_SHAFTS, CARTO_NO_STREET_LABELS, CARTO_OCCLUSION_CULLING, CARTO_DBG_HIDE, StreetLabelSign, street_labels.rs, "mac-2", "M5 Pro", "cascades", "turn is slow", "shadow map size", CARTO_SHADOW_MAP]
-updated: 2026-11-10
+updated: 2026-11-26
 ---
 
 # Where the frames go, and where they do not
@@ -799,13 +799,13 @@ settling it needs a GPU workstation or a `trace_chrome` capture.
 
 No missing `is_changed()` throttle was found, and no unconditional `ResMut` deref
 defeating an existing one. `.chain()` is used exactly twice and both are correct.
-`theme.rs` is not a per-frame cost (`install` runs once from `EguiManager::default`;
-~850 of its 2318 lines are tests). There is no `FixedUpdate` anywhere, so there is
-no timestep death spiral.
+`theme.rs` was not a per-frame cost (its egui style was installed once). There is
+no `FixedUpdate` anywhere, so there is no timestep death spiral.
 
-The real ceiling is **parallelism**: 28 systems take `ResMut<EguiManager>` and ~33
-take `ResMut<Assets<…>>`. Those two disjoint cliques cover ~61 of ~150 Update
-systems, so everything that does real work is at most 2-way parallel. On a 4-core
+The real ceiling was **parallelism**: 28 systems took `ResMut<EguiManager>` and ~33
+`ResMut<Assets<…>>`. Those two disjoint cliques covered ~61 of ~150 Update
+systems, so everything that does real work was at most 2-way parallel (the egui
+clique left with egui on 2026-11-26; the library's screens are uncounted). On a 4-core
 phone that leaves two cores idle for most of Update. Most clique members early-out,
 so the realised cost concentrates in the streamers — but the ceiling is structural
 and no amount of `.after()` tuning moves it.
@@ -995,25 +995,14 @@ keep.
   declaration. And the parking was never only its own stream's problem — a
   `IoTaskPool` thread held for 800 ms a cell is one every other fetch in the app
   queues behind.
-- **egui is a second full-resolution pass over the swapchain** with `LoadOp::Load`
+- **egui was a second full-resolution pass over the swapchain** with `LoadOp::Load`
   — a full tile-memory load and store of the 1080×2340 output, every frame, purely
-  to composite the UI. Merging it into the `upscaling` pass removes the round trip
-  and is the real win here. It means replacing Bevy's `upscaling` node with a local
-  one that blits and then hands the open `RenderPass` to `egui_wgpu`;
-  `render_scale::make_the_blit_filter` shows `BlitPipeline` is reachable from
-  `RenderStartup`, so the pieces exist. The failure mode is a wgpu validation
-  error, and this tree already knows what that costs — a silent mid-stream quit.
-
-  **Clamping `pixels_per_point` is *not* the cheap version of this**, which is
-  worth stating because it looks like it. egui's ppp is the layout unit and the
-  rasterisation density at once: lowering it from 4.1 to 2.0 does not render the
-  same UI more cheaply, it makes every element physically smaller — i.e. it pays
-  for fill with touch-target size, on the platform where touch targets matter
-  most. Raising `ui_scale` to compensate puts the number straight back, because
-  ppp *is* `display_scale × ui_scale`. There is no "lay out large, rasterise
-  small" mode short of rendering egui to a smaller target and upscaling it, which
-  is exactly what `render_scale` deliberately does not do to the chrome so that
-  text stays crisp.
+  to composite the UI; merging it into `upscaling` was the proposed win. egui left
+  on 2026-11-26. Its successor is no cheaper in kind: the library's `LibCamera`
+  (Camera2d, order 100) clears a texture of its own and lays it over the target
+  each frame. Unmeasured. Shrinking the UI's scale is still *not* the cheap
+  version: it is the layout unit and the rasterisation density at once, so it
+  pays for fill with touch-target size.
 - **Nothing prewarms the pipeline cache**, and `StandardMaterial::depth_bias` is
   part of the specialization key, so each of the ~25 depth-bias rungs is a
   distinct shader compile. Adreno compiles run 50–300 ms apiece and geometry whose
@@ -1199,8 +1188,8 @@ work:
 Lavapipe is a CPU rasteriser: geometry, placement, culling and visibility are
 trustworthy, colour and lighting are not (`headless-shots-software-renderer.md`).
 The VPS Android emulator renders on SwiftShader and **aborts after ~9 s**
-(`egui-wgpu: Tried to update a texture that has not been allocated yet`), so it
-cannot hold a steady frame at all — it settles startup order, asset loading,
+(`egui-wgpu: Tried to update a texture that has not been allocated yet`; not
+retried since egui left on 2026-11-26), so it could not hold a steady frame at all — it settles startup order, asset loading,
 lifecycle, memory and panics, not performance. `simpleperf` is worse than useless
 under `ndk-translation`, which executes translated x86_64 and profiles the
 translator.

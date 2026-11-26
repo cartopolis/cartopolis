@@ -14,7 +14,7 @@
 //!
 //! An evicted image's asset is removed from `Assets<Image>` one sweep
 //! later, not in the frame it left: never free a texture in the frame that
-//! may have recorded work on it (`docs/notes/egui-texture-lifetime.md`).
+//! may have recorded work on it (`docs/notes/texture-lifetime.md`).
 //!
 //! So a screen may show pictures — avatars, chats, posts — but as
 //! thumbnails scaled to what it draws: the URL lives in the view and in
