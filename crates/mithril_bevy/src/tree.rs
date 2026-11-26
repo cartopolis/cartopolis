@@ -740,6 +740,7 @@ fn style_node(
         };
         with_host(|host| host.stylist.compute(&chain, parent_computed, &host.env))
     };
+    let computed = inherit_pointer_events(computed, parent_computed);
     let opacity = parent.opacity * computed.opacity;
     Some((computed, opacity, states, node.entity))
 }
@@ -759,6 +760,31 @@ fn inherit_only(parent: &Computed) -> Computed {
         visible: parent.visible,
         custom: parent.custom.clone(),
         ..Default::default()
+    }
+}
+
+/// `pointer-events` is inherited in CSS, and the cascade keeps it in
+/// `other`, which is not: a node that does not say takes its parent's.
+fn inherit_pointer_events(mut c: Computed, parent: &Computed) -> Computed {
+    if !c.other.contains_key(POINTER_EVENTS) {
+        if let Some(v) = parent.other.get(POINTER_EVENTS) {
+            c.other.insert(POINTER_EVENTS.into(), v.clone());
+        }
+    }
+    c
+}
+
+const POINTER_EVENTS: &str = "pointer-events";
+
+/// What a press does over the node. Bevy's picking stops at the first node
+/// under the pointer, so a full-window layer that does not listen covers
+/// every screen under it unless `pointer-events: none` lets the press
+/// through, as a browser does.
+fn pickable(c: &Computed) -> Pickable {
+    if c.other.get(POINTER_EVENTS).is_some_and(|v| v == "none") {
+        Pickable::IGNORE
+    } else {
+        Pickable::default()
     }
 }
 
@@ -869,6 +895,7 @@ fn write_components(
     fonts: Option<&FontMap>,
 ) {
     let is_text = world.get::<Text>(e).is_some();
+    world.entity_mut(e).insert(pickable(c));
     let (tag, classes, props, states) = {
         let tree = world.resource::<UiTree>();
         match tree.nodes.get(&id).map(|n| &n.kind) {
