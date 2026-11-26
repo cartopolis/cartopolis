@@ -16,7 +16,7 @@
 //!  3. **Share.** In World a place's card has one Share, which opens one sheet:
 //!     "Share <name> — Sends the place to a chat or community", the recent
 //!     chats and the communities you can post in, and Copy link
-//!     ([`render_share_sheet`]). The search panel's "Send this view to a chat"
+//!     ([`drive_share_sheet`]). The search panel's "Send this view to a chat"
 //!     and "Post this view to a community" and the ring's "Post here" lead
 //!     here now.
 //!
@@ -29,8 +29,7 @@ use cartopolis_core::point::{Point, PointView};
 use uuid::Uuid;
 
 use crate::resources::RightPanel;
-use crate::systems::egui_manager::EguiRef;
-use crate::systems::{icons, theme};
+use crate::systems::theme;
 
 // The two a place card carries live with it (`place_card`), so the web
 // build, which has no bridges, still has the card.
@@ -134,19 +133,15 @@ pub struct Bridges {
     pub back_pressed: bool,
     /// The Share sheet is up for this place.
     pub share: Option<SharePlace>,
-    /// When Copy link last fired, for its ✓.
+    /// When Copy link last fired (`Time<Real>` seconds), for its ✓.
     copied_at: Option<f64>,
-    /// The component library draws the Share sheet (`lib_share`): egui's
-    /// [`render_share_sheet`] draws nothing, publishes [`Bridges::lib_view`]
-    /// and does the taps handed back in [`Bridges::lib_acts`].
-    pub lib: bool,
-    /// The Share sheet as the library draws it, while it is up.
+    /// The Share sheet as the library draws it (`lib_share`), while it is up.
     pub lib_view: Option<ShareView>,
-    /// The library's taps, done by [`render_share_sheet`] next frame.
+    /// The library's taps, done by [`drive_share_sheet`] next frame.
     pub lib_acts: Vec<ShareAct>,
 }
 
-/// The Share sheet as the library draws it (`lib_share`): what egui's draws.
+/// The Share sheet as the library draws it (`lib_share`).
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct ShareView {
@@ -345,49 +340,39 @@ fn back_label(to: &Return, s: &Screens, point: &Point) -> String {
 /// The Share sheet (bridge 3): one sheet over the map that says what it does,
 /// the recent chats and the communities to send the place to, and Copy link.
 /// A card standing on the World | Community switch, as your face's sheet is.
+/// Decides what it offers and where it stands, publishes it for the library
+/// (`lib_share`) and does the taps handed back.
 #[allow(clippy::too_many_arguments)]
-pub fn render_share_sheet(
-    egui: EguiRef,
+pub fn drive_share_sheet(
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
+    ui_input: Res<crate::systems::ui_input::UiInput>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    time: Res<Time<Real>>,
     mut bridges: ResMut<Bridges>,
     mut right_panel: ResMut<RightPanel>,
     mut s: Screens,
     online: Option<Res<crate::resources::OnlineSession>>,
     // Whether the pointer is over one of the library's screens, for the
-    // library's sheet's tap-outside test (`ui::render_main_menu`'s).
+    // sheet's tap-outside test (`ui::drive_main_menu`'s).
     #[cfg(feature = "ui-probe")] lib_pointer: Option<Res<mithril_bevy::UiPointer>>,
 ) {
     let lib_acts = std::mem::take(&mut bridges.lib_acts);
-    // It rises and fades as the cards do (`motion`), drawing the place it was
-    // about while it leaves, and taking no taps then. The library's edition
-    // (`lib_share`) comes and goes with `share`.
-    let shown = if bridges.lib {
-        bridges.share.clone().map(|place| (place, None))
-    } else {
-        crate::systems::motion::linger(
-            egui.ctx(),
-            egui::Id::new("share_sheet"),
-            bridges.share.clone(),
-        )
-        .map(|(place, pres)| (place, Some(pres)))
-    };
-    let Some((place, pres)) = shown else {
+    let Some(place) = bridges.share.clone() else {
         if bridges.lib_view.is_some() {
             bridges.lib_view = None;
         }
         return;
     };
     let signed_in = online.is_some() || s.view.demo;
-    let viewport = egui.viewport_pts();
-    let compact = egui.compact();
-    let width = if compact {
+    let viewport = metrics.viewport_pts();
+    let width = if metrics.compact() {
         viewport.x - 2.0 * theme::OSD_MARGIN
     } else {
         340.0_f32.min(viewport.x - 2.0 * theme::OSD_MARGIN)
     };
     let bottom = crate::systems::dock::reserved_bottom() + 8.0;
     let max_h = (viewport.y - bottom - theme::OSD_MARGIN).max(160.0);
-    let ctx = egui.ctx();
-    let now = ctx.input(|i| i.time);
+    let now = time.elapsed_secs_f64();
     let copied = bridges.copied_at.is_some_and(|t| now - t < 1.5);
 
     // The chats to send to: the private ones (people and groups, and a
@@ -422,72 +407,50 @@ pub fn render_share_sheet(
         .map(|c| (c.id, c.settings.name.clone()))
         .collect();
 
+    let view = ShareView {
+        spot: crate::systems::ui::SheetSpot::Bottom {
+            left: ((viewport.x - width) / 2.0).max(0.0),
+            bottom,
+            width,
+            max_height: max_h,
+        },
+        name: place.name.clone(),
+        signed_in,
+        chats: chats
+            .into_iter()
+            .map(|(key, name, topic, _)| (key, name, topic))
+            .collect(),
+        communities,
+        copied,
+    };
+    // The tap that put it up (a card's Share) is not a tap off it.
+    let fresh = bridges.lib_view.is_none();
+    if bridges.lib_view.as_ref() != Some(&view) {
+        bridges.lib_view = Some(view);
+    }
+
     let mut close = false;
     let mut send_to: Option<String> = None;
     let mut post_in: Option<Uuid> = None;
     let mut copy = false;
-    // A tap off the sheet puts it away, as off your face's sheet.
-    let clicked_out = match pres {
-        // The library draws it (`lib_share`): egui publishes what it shows,
-        // and does its taps of the frame before below, as its own.
-        None => {
-            let view = ShareView {
-                spot: crate::systems::ui::SheetSpot::Bottom {
-                    left: ((viewport.x - width) / 2.0).max(0.0),
-                    bottom,
-                    width,
-                    max_height: max_h,
-                },
-                name: place.name.clone(),
-                signed_in,
-                chats: chats
-                    .iter()
-                    .map(|(key, name, topic, _)| (key.clone(), name.clone(), *topic))
-                    .collect(),
-                communities: communities.clone(),
-                copied,
-            };
-            // The tap that put it up (a card's Share) is not a tap off it.
-            let fresh = bridges.lib_view.is_none();
-            if bridges.lib_view.as_ref() != Some(&view) {
-                bridges.lib_view = Some(view);
-            }
-            for a in lib_acts {
-                match a {
-                    ShareAct::Close => close = true,
-                    ShareAct::Send(key) => send_to = Some(key),
-                    ShareAct::Post(id) => post_in = Some(id),
-                    ShareAct::Copy => copy = true,
-                }
-            }
-            // Outside is on none of the library's screens: the sheet is one.
-            #[cfg(feature = "ui-probe")]
-            let over_lib = lib_pointer.is_some_and(|p| p.owns_pointer());
-            #[cfg(not(feature = "ui-probe"))]
-            let over_lib = false;
-            !fresh && !over_lib && ctx.input(|i| i.pointer.any_click())
+    for a in lib_acts {
+        match a {
+            ShareAct::Close => close = true,
+            ShareAct::Send(key) => send_to = Some(key),
+            ShareAct::Post(id) => post_in = Some(id),
+            ShareAct::Copy => copy = true,
         }
-        Some(pres) => share_sheet_egui(
-            ctx,
-            pres,
-            &place,
-            ShareIn {
-                signed_in,
-                compact,
-                viewport,
-                width,
-                bottom,
-                max_h,
-                copied,
-                chats: &chats,
-                communities: &communities,
-            },
-            &mut close,
-            &mut send_to,
-            &mut post_in,
-            &mut copy,
-        ),
-    };
+    }
+    // A tap off the sheet puts it away, as off your face's sheet. Outside is
+    // on none of the library's screens: the sheet is one. A touch arrives as
+    // the emulated mouse (`touch-input.md`).
+    #[cfg(feature = "ui-probe")]
+    let over_lib = lib_pointer.is_some_and(|p| p.owns_pointer());
+    #[cfg(not(feature = "ui-probe"))]
+    let over_lib = ui_input.overlay_owns_pointer();
+    #[cfg(feature = "ui-probe")]
+    let _ = &ui_input;
+    let clicked_out = !fresh && !over_lib && mouse.just_pressed(MouseButton::Left);
 
     if copy {
         crate::utils::clipboard::set_text(&place.link());
@@ -518,201 +481,6 @@ pub fn render_share_sheet(
     if close || clicked_out {
         bridges.share = None;
     }
-}
-
-/// What egui's edition of the Share sheet draws, read before it is drawn.
-struct ShareIn<'a> {
-    signed_in: bool,
-    compact: bool,
-    viewport: egui::Vec2,
-    width: f32,
-    bottom: f32,
-    max_h: f32,
-    copied: bool,
-    chats: &'a [(String, String, bool, u64)],
-    communities: &'a [(Uuid, String)],
-}
-
-/// egui's edition of the Share sheet. Answers whether a tap landed off it.
-#[allow(clippy::too_many_arguments)]
-fn share_sheet_egui(
-    ctx: &egui::Context,
-    pres: crate::systems::motion::Presence,
-    place: &SharePlace,
-    s: ShareIn<'_>,
-    close: &mut bool,
-    send_to: &mut Option<String>,
-    post_in: &mut Option<Uuid>,
-    copy: &mut bool,
-) -> bool {
-    let ShareIn {
-        signed_in,
-        compact,
-        viewport,
-        width,
-        bottom,
-        max_h,
-        copied,
-        chats,
-        communities,
-    } = s;
-    let id = egui::Id::new((
-        "share_sheet",
-        compact,
-        viewport.x as i32,
-        chats.len(),
-        communities.len(),
-    ));
-    let area = egui::Area::new(id)
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .default_size(egui::vec2(width, max_h))
-        .interactable(pres.open)
-        .show(ctx, |ui| {
-            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
-            egui::Frame::NONE
-                .fill(theme::p32().panel)
-                .stroke(egui::Stroke::new(1.0, theme::p32().panel_rim))
-                .shadow(theme::card_shadow())
-                .corner_radius(egui::CornerRadius::same(theme::RADIUS_LG))
-                .inner_margin(egui::Margin::same(14))
-                .show(ui, |ui| {
-                    let inner = width - 28.0;
-                    ui.set_width(inner);
-                    // The title and the close on one line, what it does under
-                    // them (N4).
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            *close = theme::close_button(ui).clicked();
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!("Share {}", place.name))
-                                                .font(egui::FontId::new(
-                                                    theme::SIZE_HEADING,
-                                                    theme::brand_family(),
-                                                ))
-                                                .color(theme::p32().cream),
-                                        )
-                                        .truncate(),
-                                    );
-                                },
-                            );
-                        });
-                    });
-                    ui.label(
-                        egui::RichText::new("Sends the place to a chat or community")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p32().text_dim),
-                    );
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_h - 150.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_width(inner);
-                            if !signed_in {
-                                theme::note(ui, "Sign in to send it to people and communities.");
-                            } else if chats.is_empty() && communities.is_empty() {
-                                theme::note(ui, "No chats or communities to send it to yet.");
-                            } else {
-                                theme::section(ui, "Send to");
-                                theme::list_group(ui, |ui| {
-                                    for (key, name, topic, _) in chats {
-                                        if theme::list_row_sized(
-                                            ui,
-                                            Some(52.0),
-                                            icons::CHAT,
-                                            name,
-                                            Some(if *topic { "Topic" } else { "Chat" }),
-                                            theme::RowEnd::Chevron,
-                                            theme::p32().accent,
-                                        )
-                                        .clicked()
-                                        {
-                                            *send_to = Some(key.clone());
-                                        }
-                                    }
-                                    for (id, name) in communities {
-                                        if theme::list_row_sized(
-                                            ui,
-                                            Some(52.0),
-                                            icons::GROUP,
-                                            name,
-                                            Some("Community · as a post"),
-                                            theme::RowEnd::Chevron,
-                                            theme::p32().accent,
-                                        )
-                                        .clicked()
-                                        {
-                                            *post_in = Some(*id);
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    ui.add_space(6.0);
-                    let (icon, word) = if copied {
-                        (icons::CHECK, "Link copied")
-                    } else {
-                        (icons::COPY, "Copy link")
-                    };
-                    *copy = theme::secondary_button(ui, icon, word, inner).clicked();
-                });
-        });
-    let rect = area.response.rect;
-    pres.open
-        && !rect.is_negative()
-        && ctx.input(|i| {
-            i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
-        })
-}
-
-/// The ‹ Back chip where the search bar was (`dock`): a pill with the way
-/// back and what it goes back to. Answers whether it was tapped.
-pub(crate) fn back_chip(ui: &mut egui::Ui, width: f32, height: f32, label: &str) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click());
-    let resp = theme::named(ui, resp, &format!("Back to {label}"));
-    let pill = egui::CornerRadius::same(theme::RADIUS_PILL);
-    let p = ui.painter();
-    p.add(theme::card_shadow().as_shape(rect, pill));
-    let fill = if resp.hovered() {
-        theme::p32().surface_hover
-    } else {
-        theme::p32().map_fill
-    };
-    p.rect(
-        rect,
-        pill,
-        fill,
-        egui::Stroke::new(1.5, theme::p32().accent),
-        egui::StrokeKind::Inside,
-    );
-    let y = rect.center().y;
-    p.text(
-        egui::pos2(rect.left() + 22.0, y),
-        egui::Align2::CENTER_CENTER,
-        icons::CHEVRON_LEFT,
-        egui::FontId::proportional(20.0),
-        theme::p32().map_ink,
-    );
-    let mut job = egui::text::LayoutJob::simple_singleline(
-        format!("Back to {label}"),
-        egui::FontId::new(theme::SIZE_VALUE, theme::brand_family()),
-        theme::p32().map_ink,
-    );
-    job.wrap = egui::text::TextWrapping::truncate_at_width((rect.width() - 52.0).max(20.0));
-    let g = p.layout_job(job);
-    let gh = g.size().y;
-    p.galley(
-        egui::pos2(rect.left() + 38.0, y - gh / 2.0),
-        g,
-        theme::p32().map_ink,
-    );
-    resp.on_hover_text("Back to where you were in Community")
-        .clicked()
 }
 
 #[cfg(test)]

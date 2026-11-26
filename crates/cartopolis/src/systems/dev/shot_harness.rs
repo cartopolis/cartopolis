@@ -2413,7 +2413,7 @@ pub fn shot_in_progress(harness: Option<Res<ShotHarness>>, progress: Res<ShotPro
 ///
 /// It was found the way these things are: a `--shot-mode earth` capture from
 /// 14,000 km carried a scale bar reading "200 m", the altitude the camera had on
-/// frame 2 of the run, while `render_map_controls` had correctly drawn no bar at
+/// frame 2 of the run, while `drive_map_controls` had correctly drawn no bar at
 /// all for the twenty seconds since. Anything read off the world and drawn into
 /// the overlay could be that stale — the clock, the coordinates, the compass
 /// needle, an open panel's contents — and nothing about the image says so.
@@ -2542,7 +2542,7 @@ const UI_ELEMENTS: &[&str] = &[
     "switches",
     "precision",
     "midas",
-    // Your face's sheet (`ui::render_main_menu`): `face`, or `menu`, its name
+    // Your face's sheet (`ui::drive_main_menu`): `face`, or `menu`, its name
     // while it was the ☰ menu.
     "menu",
     "face",

@@ -564,6 +564,7 @@ pub fn render_plans(
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<crate::resources::RightPanel>,
+    chrome: Res<crate::systems::dock::MapChrome>,
 ) {
     let mut anchored = WorldAnchored::new(egui.ctx(), "plans");
     plans.shown = (0, 0, 0);
@@ -626,7 +627,7 @@ pub fn render_plans(
                 }
                 works += 1;
                 work_shape(&painter, w, &project);
-                if !crate::systems::place_pins::clear_of_chrome(&ctx, pin) {
+                if !crate::systems::place_pins::clear_of_chrome(&chrome.holes, pin) {
                     continue;
                 }
                 anchored.at(pin);
@@ -646,7 +647,9 @@ pub fn render_plans(
             let Some(tip) = project(n.lat, n.lng) else {
                 continue;
             };
-            if !map_rect.contains(tip) || !crate::systems::place_pins::clear_of_chrome(&ctx, tip) {
+            if !map_rect.contains(tip)
+                || !crate::systems::place_pins::clear_of_chrome(&chrome.holes, tip)
+            {
                 continue;
             }
             let is_open = n.open_on(&today);
@@ -686,7 +689,7 @@ pub fn render_plans(
                         continue;
                     };
                     if !map_rect.contains(at)
-                        || !crate::systems::place_pins::clear_of_chrome(&ctx, at)
+                        || !crate::systems::place_pins::clear_of_chrome(&chrome.holes, at)
                     {
                         continue;
                     }

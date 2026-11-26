@@ -267,6 +267,8 @@ pub struct PinsFrame<'w> {
     driver: Res<'w, crate::systems::driver::DriverState>,
     route: Res<'w, crate::systems::navigation::RouteState>,
     lib: Option<ResMut<'w, PlacePins>>,
+    /// The map's buttons, which the pins keep off ([`clear_of_chrome`]).
+    chrome: Res<'w, crate::systems::dock::MapChrome>,
 }
 
 /// Beyond this ground distance a pin is dropped below the space tier. The
@@ -408,6 +410,7 @@ pub fn render_place_pins(
     };
 
     let map_rect = map_area(&mut egui, &frame.keyboard, &frame.route, &frame.lens);
+    let holes = frame.chrome.holes.clone();
     // Projection answers in window points; the pins are drawn in egui's. Bound
     // once here rather than called per pin, so the `ResMut` isn't re-borrowed
     // inside the loop that owns `ctx`.
@@ -444,7 +447,7 @@ pub fn render_place_pins(
         let delta = place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)?;
         let screen = cam.world_to_viewport(&cam_view, delta.as_vec3()).ok()?;
         let tip = to_ui(screen);
-        shown(&ctx, map_rect, tip).then_some(tip)
+        shown(&holes, map_rect, tip).then_some(tip)
     };
     // The library's edition centres its labels by egui's measure of them
     // (`text_width`); egui's own needs none.
@@ -596,7 +599,7 @@ pub fn render_place_pins(
                     continue;
                 };
                 let tip = to_ui(screen);
-                if !shown(&ctx, map_rect, tip) {
+                if !shown(&holes, map_rect, tip) {
                     continue;
                 }
                 placed.push((
@@ -635,7 +638,7 @@ pub fn render_place_pins(
                             .ok()
                     })
                     .map(to_ui)
-                    .filter(|tip| shown(&ctx, map_rect, *tip));
+                    .filter(|tip| shown(&holes, map_rect, *tip));
                 if let Some(tip) = tip {
                     placed.push((
                         PinItem {
@@ -859,6 +862,36 @@ fn marker_card(
     }
 }
 
+/// Whether an overlay anchored at `tip` stays clear of the map's buttons.
+/// `holes` are the map's round buttons and their columns
+/// (`dock::MapChrome::holes`, UI points — egui's points), as the dock placed
+/// them: a world-anchored overlay culls itself against them as against the
+/// edges in [`map_area`], or a marker paints over a button and takes its tap
+/// (2026-11-11, a friend's marker over the right column in Earth mode). The
+/// dock writes them in `ClientPhase::Present` before the overlays that read
+/// them. A pin or a marker hangs *above* its tip, by up to [`PIN_REACH`], so
+/// a tip that far under a column still draws on it.
+pub(crate) fn clear_of_chrome(holes: &[Rect], tip: egui::Pos2) -> bool {
+    let tip = Vec2::new(tip.x, tip.y);
+    !holes.iter().any(|h| {
+        Rect::from_corners(
+            h.min - Vec2::new(PIN_SIDE, 0.0),
+            h.max + Vec2::new(PIN_SIDE, PIN_REACH),
+        )
+        .contains(tip)
+    })
+}
+
+/// How far above its tip a pin or a person's marker reaches, and how far to
+/// either side: a head and its stem.
+const PIN_REACH: f32 = 56.0;
+const PIN_SIDE: f32 = 22.0;
+
+/// Inside the map, and clear of its buttons.
+fn shown(holes: &[Rect], map_rect: egui::Rect, tip: egui::Pos2) -> bool {
+    map_rect.contains(tip) && clear_of_chrome(holes, tip)
+}
+
 /// The part of the viewport a world-anchored overlay may paint on: the free
 /// central area, minus every floating `Area` that reserves nothing in the root
 /// `Ui` and would otherwise be painted over.
@@ -878,45 +911,6 @@ fn marker_card(
 ///
 /// Read off the shared root `Ui` *before* the caller borrows the context, so the
 /// two borrows of `egui` don't overlap (the context is a cheap `Arc` clone).
-/// The map's round buttons and their columns (`dock::render_dock`), as they
-/// were drawn this frame: a world-anchored overlay culls itself against
-/// them as against the edges in [`map_area`], or a marker paints over a
-/// button and takes its tap (2026-11-11, a friend's marker over the right
-/// column in Earth mode). Written by the dock, which runs earlier in the
-/// panel chain than every overlay that reads it.
-pub(crate) fn set_chrome_holes(ctx: &egui::Context, holes: Vec<egui::Rect>) {
-    ctx.data_mut(|d| d.insert_temp(chrome_holes_id(), holes));
-}
-
-fn chrome_holes_id() -> egui::Id {
-    egui::Id::new("map_chrome_holes")
-}
-
-/// Whether an overlay anchored at `tip` stays clear of the map's buttons. A
-/// pin or a marker hangs *above* its tip, by up to [`PIN_REACH`], so a tip
-/// that far under a column still draws on it.
-pub(crate) fn clear_of_chrome(ctx: &egui::Context, tip: egui::Pos2) -> bool {
-    let holes: Vec<egui::Rect> = ctx
-        .data(|d| d.get_temp(chrome_holes_id()))
-        .unwrap_or_default();
-    !holes.iter().any(|h| {
-        egui::Rect::from_min_max(
-            h.min - egui::vec2(PIN_SIDE, 0.0),
-            h.max + egui::vec2(PIN_SIDE, PIN_REACH),
-        )
-        .contains(tip)
-    })
-}
-
-/// How far above its tip a pin or a person's marker reaches, and how far to
-/// either side: a head and its stem.
-const PIN_REACH: f32 = 56.0;
-const PIN_SIDE: f32 = 22.0;
-
-/// Inside the map, and clear of its buttons.
-fn shown(ctx: &egui::Context, map_rect: egui::Rect, tip: egui::Pos2) -> bool {
-    map_rect.contains(tip) && clear_of_chrome(ctx, tip)
-}
 
 pub(crate) fn map_area(
     egui: &mut EguiManager,

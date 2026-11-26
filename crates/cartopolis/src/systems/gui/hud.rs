@@ -20,7 +20,6 @@
 //! no panel that could hold them without making a camera turn a trip into a
 //! menu.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 use big_space::prelude::GridCell;
 
@@ -30,8 +29,8 @@ use crate::systems::driver::GpsQuality;
 use crate::systems::theme;
 
 /// What the view controls show this frame, for the library's edition
-/// (`lib_chrome`, through `dock::ChromeLib`): egui's system decides all of
-/// it and draws none of it then. Points from the screen's edges (the
+/// (`lib_chrome`, through `dock::ChromeLib`): [`drive_map_controls`]
+/// decides all of it. Points from the screen's edges (the
 /// library's px on the Bevy backend); `None` is a control not shown.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
@@ -56,7 +55,7 @@ pub struct CompassView {
     pub hover: &'static str,
 }
 
-/// How the locate disc's ring reads ([`locate_overlay`]'s `tone`).
+/// How the locate disc's ring reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub enum LocateTone {
@@ -127,7 +126,9 @@ pub fn light_hint(mode: crate::resources::SunMode) -> &'static str {
 /// ragged: the compass bulged 3 pt past the layers disc above it and the locate
 /// button below, and the two of them were each centred on a different axis.
 /// `theme::ROUND_BUTTON_SIZE`'s own doc claimed it "matches the compass disc"
-/// while they were six points apart; now it does.
+/// while they were six points apart; now it does. (The library draws it at
+/// that size, `lib_chrome::DISC`; the tests hold the column to it.)
+#[cfg_attr(not(test), allow(dead_code))]
 const COMPASS_SIZE: f32 = theme::ROUND_BUTTON_SIZE;
 
 /// How the rose behaves this frame — one compass with three jobs.
@@ -146,140 +147,6 @@ struct Compass {
     /// bare compass.
     caption: Option<&'static str>,
     hover: &'static str,
-}
-
-/// Draws the top-left compass rose (Organic-Maps style): the accent needle and
-/// the "N" point to geographic north as it appears on screen. In globe (Orbit)
-/// mode it is a toggle — clicking locks the view north-up (and unlocking
-/// releases it); while driving it steps through the map orientations; in the
-/// free-form fly/avatar modes it is a passive indicator. Returns true when the
-/// user clicked it (only possible when `cfg.interactive`).
-fn compass_overlay(ctx: &egui::Context, heading_deg: f32, cfg: &Compass) -> bool {
-    let (interactive, locked) = (cfg.interactive, cfg.locked);
-    let mut clicked = false;
-    // The brightest rim in the palette, which is how a *held* control is drawn
-    // everywhere in the app now that there is no second accent to reserve for it.
-    // What separates it from an ordinary engaged control is weight, not colour:
-    // the lock draws a second ring at 2 pt over the disc's own 1.5 pt one.
-    let lock_color = theme::p32().accent_bright;
-    egui::Area::new(egui::Id::new("compass_overlay"))
-        // Top-left: the status HUD moved into the top-right corner, so the compass
-        // takes the opposite one to keep both clear of the docked panels.
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(cfg.left, cfg.top))
-        .show(ctx, |ui| {
-            let sense = if interactive {
-                egui::Sense::click()
-            } else {
-                egui::Sense::hover()
-            };
-            // The plate is `theme::map_disc`'s: the same fill, ring, hover and
-            // focus states the dock discs and the on-screen controls wear.
-            //
-            // `on` is deliberately false even when locked. The engaged plate is
-            // the *light* one a panel's dock disc wears when it is open, and the
-            // needle it has to carry is the accent — on that plate the rose would
-            // lose the one thing that makes it a rose. North-up keeps the
-            // treatment it was designed with instead: the brightest ring in the
-            // palette, drawn a second time at 2 pt, plus the padlock below.
-            let (resp, face) = theme::map_disc(ui, COMPASS_SIZE, false, lock_color, sense);
-            let resp = theme::named(ui, resp, "Compass");
-            let p = ui.painter();
-            let c = face.center;
-            let r = face.radius;
-            if locked {
-                p.circle_stroke(c, r, egui::Stroke::new(2.0, lock_color));
-            }
-            // Screen direction of north when screen-up is the view heading.
-            let th = heading_deg.to_radians();
-            let north = egui::vec2(-th.sin(), -th.cos());
-            let side = egui::vec2(north.y, -north.x); // 90° clockwise from north
-            let w = side * (r * 0.24);
-            // Every dimension is a fraction of the disc, so [`COMPASS_SIZE`] is
-            // the one knob — the offsets used to be absolute points tuned to a
-            // 46 pt rose and would have crowded the needle into the "N" the
-            // moment the disc joined the rest of the family at 40.
-            //
-            // North half: the accent; south half: the muted body tone. The
-            // needle used to be argued for as "red by convention, and the brand's
-            // warm end is the closest thing we own" — the chrome has no warm end
-            // any more, and what actually makes a needle readable is that its two
-            // halves differ, which they still do by two full steps of the ramp.
-            //
-            // On the light theme's white disc the north half is the deep teal
-            // ink of every map glyph, with the "N" white on it: the accent's
-            // N in the same teal sat on the needle and vanished (2026-11-11).
-            let light = theme::is_light();
-            let (north_ink, south_ink, n_ink) = if light {
-                (
-                    theme::p32().map_ink,
-                    theme::p32().line,
-                    theme::p32().on_accent,
-                )
-            } else {
-                (theme::p32().accent, theme::p32().text_dim, face.ink)
-            };
-            p.add(egui::Shape::convex_polygon(
-                vec![c + north * (r * 0.86), c + w, c - w],
-                north_ink,
-                egui::Stroke::NONE,
-            ));
-            p.add(egui::Shape::convex_polygon(
-                vec![c - north * (r * 0.64), c + w, c - w],
-                south_ink,
-                egui::Stroke::NONE,
-            ));
-            // "N" over the north tip.
-            p.text(
-                c + north * (r * 0.47),
-                egui::Align2::CENTER_CENTER,
-                "N",
-                if light {
-                    egui::FontId::new(theme::SIZE_TINY, theme::brand_family())
-                } else {
-                    egui::FontId::proportional(theme::SIZE_TINY)
-                },
-                n_ink,
-            );
-            // Locked: a small padlock at the south edge, clear of the needle.
-            // Drawn from primitives rather than an emoji — egui's bundled font
-            // only carries a subset of them, and a missing glyph reads as tofu.
-            if locked {
-                let lc = egui::pos2(c.x, c.y + r - 7.0);
-                p.rect_filled(
-                    egui::Rect::from_center_size(lc, egui::vec2(7.0, 5.0)),
-                    1.0,
-                    lock_color,
-                );
-                // Shackle: half-circle rising out of the body.
-                let shackle: Vec<egui::Pos2> = (0..=8)
-                    .map(|i| {
-                        let a = std::f32::consts::PI * (i as f32) / 8.0;
-                        egui::pos2(lc.x - a.cos() * 2.3, lc.y - 2.5 - a.sin() * 2.3)
-                    })
-                    .collect();
-                p.add(egui::Shape::line(
-                    shackle,
-                    egui::Stroke::new(1.2, lock_color),
-                ));
-            }
-            // Orientation name under the rose while driving: the three views
-            // differ by tilt as much as by heading, and "which one am I in" is not
-            // a question a needle can answer.
-            if let Some(caption) = cfg.caption {
-                p.text(
-                    egui::pos2(c.x, c.y + r + 9.0),
-                    egui::Align2::CENTER_CENTER,
-                    caption,
-                    egui::FontId::proportional(theme::SIZE_TINY),
-                    theme::p32().text_dim,
-                );
-            }
-            if interactive {
-                resp.clone().on_hover_text(cfg.hover);
-            }
-            clicked = resp.clicked();
-        });
-    clicked
 }
 
 /// Diameter (points) of the GPS / locate button, stacked under the compass —
@@ -309,7 +176,7 @@ fn column_x(x: f32, size: f32) -> f32 {
 /// **The signal is a separate axis and deliberately not a third variant here.**
 /// What the button *does* is a two-state toggle; how well the receiver is doing
 /// is a report, carried by [`crate::systems::driver::GpsQuality`] and passed to
-/// [`locate_overlay`] beside this. Folding them into one enum would put "the user
+/// [`LocateView`] beside this. Folding them into one enum would put "the user
 /// pressed it" and "a satellite answered" on the same ladder, and the click
 /// handler would then have to pick which rungs mean *on*.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -321,127 +188,6 @@ pub enum LocateState {
     /// position and facing, which is the same promise against the only sensors
     /// that exist there.
     Tracking,
-}
-
-/// Draws the GPS/locate button beneath the compass (Organic-Maps style) and
-/// returns true when clicked. The icon is a navigation "location arrow", drawn
-/// from primitives like the compass — egui's bundled font carries few emoji, so a
-/// glyph would risk rendering as tofu.
-///
-/// **Three looks, from two inputs.** `state` is the toggle and decides lit or
-/// unlit; `gps` is the report and decides everything else — the arrow is hollow
-/// with a travelling arc while the receiver is searching, filled once a position
-/// is in hand, and the ring turns from amber to the warning ochre when the fix is
-/// poor, stale or refused. Before that split the button filled on the *press*,
-/// so a phone still waiting out a permission dialog and a phone locked onto six
-/// satellites were the same picture.
-///
-/// **The caption under the disc is the half that reaches a phone.** `hover` says
-/// all of this in a sentence and no touch device can ever read it: there is no
-/// hover on a phone, and this is the platform the feature exists for. So
-/// [`GpsQuality::caption`] repeats the essential word or two under the button,
-/// where a thumb can see it without pressing anything.
-///
-/// **It is about where you are, and nothing else.** Its long-press menu used to
-/// hold the high-precision camera mode, which follows the phone in your hand;
-/// that is the hand button's now (`map_osd`, `docs/mockups/hand-tracking/`).
-fn locate_overlay(
-    ctx: &egui::Context,
-    at: egui::Vec2,
-    lying: bool,
-    state: LocateState,
-    gps: GpsQuality,
-    hover: &str,
-) -> bool {
-    let mut clicked = false;
-    let on = matches!(state, LocateState::Tracking);
-    // Amber while the receiver is behaving, the warning ochre while it is not.
-    // The ring is the right carrier for this and the arrow is not: the arrow says
-    // *what the button does*, and a control whose icon changed shape with the
-    // signal would read as a different button every time you walked into a
-    // tunnel. `WARN` rather than a red — a poor fix is a caveat, not a fault, and
-    // the map is still usable throughout.
-    let tone = match (on, gps) {
-        (false, _) => theme::p32().accent_ring,
-        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => theme::p32().warn,
-        (true, _) => theme::p32().accent_bright,
-    };
-    // Read before the `Area`'s closure, not inside it: `Context::input` takes the
-    // context lock, and taking it again from within a closure the context is
-    // already running is the shape that deadlocks.
-    let time = ctx.input(|i| i.time);
-    egui::Area::new(egui::Id::new("locate_overlay"))
-        // In the right-hand column under the search bar, at the slot
-        // `dock::right_column` keeps for it (2026-11-10; it was under the
-        // compass on the left).
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            egui::vec2(-column_x(at.x, LOCATE_SIZE), at.y),
-        )
-        .show(ctx, |ui| {
-            // Tracking is an engaged state, so it takes the plate the dock's
-            // open panels and every other engaged control take, and the reserved
-            // amber ring — which is exactly how the compass says "north-up held"
-            // one disc above. Both are states the app is *holding* for you.
-            let (resp, face) = theme::map_disc(ui, LOCATE_SIZE, on, tone, egui::Sense::click());
-            let resp = theme::named(ui, resp, "Locate me");
-            let p = ui.painter();
-            let c = face.center;
-            // Navigation "location arrow" (a kite), pointing up.
-            let s = LOCATE_SIZE * 0.30;
-            let arrow = vec![
-                c + egui::vec2(0.0, -s),
-                c + egui::vec2(-0.62 * s, 0.72 * s),
-                c + egui::vec2(0.0, 0.30 * s),
-                c + egui::vec2(0.62 * s, 0.72 * s),
-            ];
-            // **Filled means a fix is in hand.** Lit-and-hollow is the searching
-            // state, and giving it a look of its own is the whole point: the
-            // button used to fill on the *press*, which is before the permission
-            // dialog and before a cold GNSS start, so the one moment a person is
-            // asking "is this working?" was the one moment the button could not
-            // answer.
-            if gps.has_position() {
-                p.add(egui::Shape::convex_polygon(
-                    arrow,
-                    face.ink,
-                    egui::Stroke::NONE,
-                ));
-            } else {
-                let mut outline = arrow;
-                outline.push(outline[0]);
-                p.add(egui::Shape::line(outline, egui::Stroke::new(1.6, face.ink)));
-            }
-            if matches!(gps, GpsQuality::Waiting) {
-                paint_search_sweep(p, c, face.radius, time);
-                // The sweep reads the clock; without this it stands still on
-                // every frame nobody touches the screen.
-                p.ctx().request_repaint();
-            }
-            // The caption, and it is the half that reaches a phone at all: every
-            // other report this button can make is in `hover`, and a touch device
-            // has no hover. To the left of the disc, over the map, since
-            // 2026-11-10: the disc is at the screen's right margin in a column
-            // that has no room under it (`dock::right_column`). In a lying row
-            // it goes under, as the mode's word does: beside is a neighbour.
-            if let Some(caption) = gps.caption().filter(|_| on) {
-                let (pos, align) = if lying {
-                    (
-                        egui::pos2(c.x, c.y + face.radius + 2.0),
-                        egui::Align2::CENTER_TOP,
-                    )
-                } else {
-                    (
-                        egui::pos2(c.x - face.radius - 6.0, c.y),
-                        egui::Align2::RIGHT_CENTER,
-                    )
-                };
-                theme::halo_text_aligned(p, pos, align, &caption, tone);
-            }
-            let resp = resp.on_hover_text(hover);
-            clicked = resp.clicked();
-        });
-    clicked
 }
 
 /// The three lights the disc offers, in the order a theme switcher lists them.
@@ -461,204 +207,6 @@ fn light_hover(mode: crate::resources::SunMode) -> &'static str {
         SunMode::Night => "Light: Dark, night all round",
         SunMode::Manual => "Light: a time you set (Settings ▸ World)",
     }
-}
-
-/// A light setting's icon, drawn from primitives as the locate arrow is (the
-/// icon font has no sun or moon): Auto a half-filled circle, Light a sun, Dark
-/// a crescent, a set time a clock face.
-fn paint_light_icon(
-    p: &egui::Painter,
-    c: egui::Pos2,
-    r: f32,
-    mode: crate::resources::SunMode,
-    ink: egui::Color32,
-    behind: egui::Color32,
-) {
-    use crate::resources::SunMode;
-    let stroke = egui::Stroke::new(1.6, ink);
-    match mode {
-        SunMode::Auto => {
-            p.circle_stroke(c, r * 0.62, stroke);
-            let half: Vec<egui::Pos2> = (0..=16)
-                .map(|i| {
-                    let a = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * i as f32 / 16.0;
-                    c + egui::vec2(a.cos(), a.sin()) * r * 0.62
-                })
-                .collect();
-            p.add(egui::Shape::convex_polygon(half, ink, egui::Stroke::NONE));
-        }
-        SunMode::Day => {
-            p.circle_filled(c, r * 0.34, ink);
-            for i in 0..8 {
-                let a = std::f32::consts::TAU * i as f32 / 8.0;
-                let d = egui::vec2(a.cos(), a.sin());
-                p.line_segment([c + d * r * 0.55, c + d * r * 0.78], stroke);
-            }
-        }
-        SunMode::Night => {
-            p.circle_filled(c, r * 0.6, ink);
-            p.circle_filled(c + egui::vec2(r * 0.3, -r * 0.24), r * 0.5, behind);
-        }
-        SunMode::Manual => {
-            p.circle_stroke(c, r * 0.62, stroke);
-            p.line_segment([c, c + egui::vec2(0.0, -r * 0.42)], stroke);
-            p.line_segment([c, c + egui::vec2(r * 0.3, 0.0)], stroke);
-        }
-    }
-}
-
-/// The light disc under the locate button: it wears the current light's icon,
-/// and a press opens Auto · Light · Dark beside it, as a theme switcher does.
-/// Returns the light chosen, if one was.
-fn light_overlay(
-    ctx: &egui::Context,
-    at: egui::Vec2,
-    lying: bool,
-    mode: crate::resources::SunMode,
-    open: &mut bool,
-) -> Option<crate::resources::SunMode> {
-    let size = theme::ROUND_BUTTON_SIZE;
-    let x = column_x(at.x, size);
-    let top = at.y;
-    let mut chosen = None;
-    egui::Area::new(egui::Id::new("light_disc"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(x, top))
-        .show(ctx, |ui| {
-            let (resp, face) = theme::map_disc(
-                ui,
-                size,
-                *open,
-                theme::p32().accent_ring,
-                egui::Sense::click(),
-            );
-            let resp = theme::named(ui, resp, "Light");
-            let behind = if *open {
-                theme::p32().accent
-            } else {
-                theme::p32().map_fill
-            };
-            paint_light_icon(
-                ui.painter(),
-                face.center,
-                face.radius,
-                mode,
-                face.ink,
-                behind,
-            );
-            if resp.on_hover_text(light_hover(mode)).clicked() {
-                *open = !*open;
-            }
-        });
-    if !*open {
-        return None;
-    }
-    let pill_h = size - 8.0;
-    // Beside the disc in a column; under it in a lying row, where beside is
-    // Say's disc.
-    let choices = if lying {
-        egui::vec2(x, top + size + theme::OSD_GAP)
-    } else {
-        egui::vec2(x + size + theme::OSD_GAP, top + 1.0)
-    };
-    egui::Area::new(egui::Id::new("light_choices"))
-        .anchor(egui::Align2::LEFT_TOP, choices)
-        .show(ctx, |ui| {
-            theme::overlay_frame()
-                .corner_radius(theme::RADIUS_PILL)
-                .inner_margin(egui::Margin::same(3))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.horizontal(|ui| {
-                        for (choice, label) in LIGHT_CHOICES {
-                            let on = mode == choice;
-                            let font = egui::FontId::proportional(theme::SIZE_SUB);
-                            let text_w = ui
-                                .painter()
-                                .layout_no_wrap(label.to_string(), font.clone(), theme::p32().text)
-                                .size()
-                                .x;
-                            let (rect, resp) = ui.allocate_exact_size(
-                                egui::vec2(pill_h + text_w + 12.0, pill_h),
-                                egui::Sense::click(),
-                            );
-                            resp.widget_info(|| {
-                                egui::WidgetInfo::selected(
-                                    egui::WidgetType::Button,
-                                    ui.is_enabled(),
-                                    on,
-                                    label,
-                                )
-                            });
-                            let (fill, ink) = match (on, resp.hovered()) {
-                                (true, _) => (theme::p32().cream, theme::p32().ink),
-                                (false, true) => (theme::p32().surface_hover, theme::p32().cream),
-                                (false, false) => {
-                                    (egui::Color32::TRANSPARENT, theme::p32().text_dim)
-                                }
-                            };
-                            let p = ui.painter();
-                            p.rect_filled(rect, egui::CornerRadius::same(theme::RADIUS_PILL), fill);
-                            let behind = if fill == egui::Color32::TRANSPARENT {
-                                theme::p32().map_fill
-                            } else {
-                                fill
-                            };
-                            let icon_c =
-                                egui::pos2(rect.left() + pill_h * 0.5 + 2.0, rect.center().y);
-                            paint_light_icon(p, icon_c, pill_h * 0.36, choice, ink, behind);
-                            p.text(
-                                egui::pos2(rect.left() + pill_h + 2.0, rect.center().y),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                font,
-                                ink,
-                            );
-                            if resp.clicked() {
-                                chosen = Some(choice);
-                            }
-                        }
-                    });
-                });
-        });
-    if chosen.is_some() {
-        *open = false;
-    }
-    chosen
-}
-
-/// How long one turn of the searching sweep takes, in seconds. Slow enough to
-/// read as "working on it" rather than as a spinner demanding attention — this
-/// wait is routinely thirty seconds and occasionally two minutes.
-const SEARCH_SWEEP_PERIOD_S: f64 = 2.4;
-/// The arc's length, as a fraction of the full circle.
-const SEARCH_SWEEP_ARC: f32 = 0.22;
-
-/// A short arc travelling round the disc's ring while the receiver is searching.
-///
-/// **Motion, because stillness is what the old button got wrong.** A static
-/// hollow arrow is a perfectly good "no fix yet" and is indistinguishable from a
-/// button that has hung — which, for a feature whose failure mode has been a
-/// permission dialog that never appeared, is the exact ambiguity to remove. A
-/// thing that is moving is a thing that is still trying.
-///
-/// Drawn as line segments rather than an arc primitive because epaint has no
-/// stroked-arc shape, and as a *ring* rather than a rotating icon so the arrow
-/// underneath keeps pointing up: the icon states what the button is for, and only
-/// the chrome around it reports on the sensor.
-fn paint_search_sweep(painter: &egui::Painter, centre: egui::Pos2, radius: f32, time: f64) {
-    use std::f32::consts::TAU;
-    const STEPS: usize = 12;
-    let phase = ((time / SEARCH_SWEEP_PERIOD_S).fract() as f32) * TAU;
-    let points: Vec<egui::Pos2> = (0..=STEPS)
-        .map(|i| {
-            let a = phase + TAU * SEARCH_SWEEP_ARC * (i as f32 / STEPS as f32);
-            centre + egui::vec2(a.cos(), a.sin()) * radius
-        })
-        .collect();
-    painter.add(egui::Shape::line(
-        points,
-        egui::Stroke::new(2.2, theme::p32().accent),
-    ));
 }
 
 /// The locate button's caption: what pressing it will do, or — while it is lit —
@@ -727,9 +275,8 @@ fn locate_hover(state: LocateState, tracking: &crate::systems::locate::LocateTra
                 // Appended rather than replacing: the mode really is on, and a
                 // caption that said only "denied" over a lit button would leave
                 // nothing to explain what the button is still doing. The warning
-                // sign in front of it had to wait for the icon font — `⚠` was in
-                // none of the fonts egui ships, and a tofu box is a worse sign of
-                // trouble than none.
+                // sign in front of it is the icon font's: a missing glyph is a
+                // tofu box, a worse sign of trouble than none.
                 s.push('\n');
                 s.push_str(crate::systems::icons::WARNING);
                 s.push(' ');
@@ -819,66 +366,6 @@ pub fn format_scale(metres: f32) -> String {
     }
 }
 
-/// Draw the bar in the bottom-left corner: a bracket and its length.
-///
-/// It was bottom-**right**, and that corner is the on-screen controls' — the
-/// climb/zoom pair and the jump/flight pair both stack up from the dock line
-/// there, and the bar was drawn 10 pt into the lowest of them. Two overlapping
-/// `Area`s is not merely untidy: the bar is `interactable(false)`, so the
-/// collision was invisible until a thumb landed on the overlap and pressed a
-/// button it could not see the bottom of.
-///
-/// Bottom-left is where a web map has always put a scale, and it is free at
-/// both tiers: the dock is *centred* on the bottom edge, so a desktop has the
-/// whole corner, and on the touch tier `bottom_left_reserved` lifts the bar over
-/// the thumbstick rather than guessing at it.
-fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved: f32) {
-    egui::Area::new(egui::Id::new("scale_bar"))
-        .anchor(
-            egui::Align2::LEFT_BOTTOM,
-            egui::vec2(theme::OSD_MARGIN, -(bottom_reserved + theme::OSD_GAP)),
-        )
-        // `Sense::hover` only: a scale bar is a readout, and an `Area` that
-        // senses clicks over the map would eat taps meant for the world.
-        .interactable(false)
-        .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(pts, theme::SIZE_TINY + 10.0),
-                egui::Sense::hover(),
-            );
-            let p = ui.painter();
-            let base = rect.bottom();
-            let ink = theme::p32().cream;
-            // A halo under the rule, not a filled box: the bar has to be legible
-            // over both dark water and white paper, and a plate this small reads
-            // as a piece of chrome that has come loose.
-            let halo = egui::Stroke::new(3.0, theme::p32().overlay);
-            let rule = egui::Stroke::new(1.5, ink);
-            for stroke in [halo, rule] {
-                p.line_segment(
-                    [
-                        egui::pos2(rect.left(), base),
-                        egui::pos2(rect.right(), base),
-                    ],
-                    stroke,
-                );
-                for x in [rect.left(), rect.right()] {
-                    p.line_segment([egui::pos2(x, base), egui::pos2(x, base - 5.0)], stroke);
-                }
-            }
-            // The label sits over the left end now that the bar is anchored
-            // there — over the *far* end it reads as belonging to whatever is
-            // beyond it rather than to the rule under it.
-            p.text(
-                egui::pos2(rect.left(), base - 6.0),
-                egui::Align2::LEFT_BOTTOM,
-                format_scale(metres),
-                egui::FontId::proportional(theme::SIZE_TINY),
-                ink,
-            );
-        });
-}
-
 /// The left-hand map controls: the compass rose, and the GPS/locate button under
 /// it.
 ///
@@ -888,8 +375,8 @@ fn scale_bar_overlay(ctx: &egui::Context, metres: f32, pts: f32, bottom_reserved
 /// navigating. The readout is gone now (see the module note) and this is what
 /// the module is.
 #[allow(clippy::too_many_arguments)]
-pub fn render_map_controls(
-    egui: EguiRef,
+pub fn drive_map_controls(
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
     mut camera_state: ResMut<CameraState>,
     mut driver: ResMut<crate::systems::driver::DriverState>,
     globe: Res<crate::systems::globe::GlobeState>,
@@ -905,11 +392,10 @@ pub fn render_map_controls(
     room: Res<crate::systems::design_room::DesignRoom>,
     // Whether the light disc's three choices are open beside it.
     mut light_open: Local<bool>,
-    // The library's edition (`lib_chrome`): with `lib.on` egui draws none of
-    // this, publishes what to draw in `lib.hud`, and acts on `lib.acts`.
+    // What the library draws (`lib_chrome`) goes in `lib.hud`; its taps come
+    // back in `lib.acts`.
     mut chrome: ResMut<crate::systems::dock::MapChrome>,
 ) {
-    let lib = chrome.lib.on;
     let acts = chrome
         .lib
         .take_acts(crate::systems::dock::ChromeAct::is_hud);
@@ -929,10 +415,9 @@ pub fn render_map_controls(
         if camera_open && !driver.active {
             break 'draw;
         }
-        // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map. egui
-        // always paints floating Areas on top of panels (panels live on the bottom-most
-        // background layer, and even `Order::Background` Areas paint above it), so the
-        // only way to keep these *behind* one is to drop them while it is open. Driver
+        // A right-docked panel (Layers, Bookmarks, AI) sits opaque over the map, and
+        // the chrome is drawn over panels, so the only way to keep these *behind*
+        // one is to drop them while it is open. Driver
         // mode is the exception: the compass is part of its chrome, and the planner it
         // was started from is closed anyway.
         //
@@ -971,7 +456,7 @@ pub fn render_map_controls(
                 Projection::Perspective(p) => Some(p.fov),
                 _ => None,
             };
-            let viewport_h = egui.viewport_pts().y;
+            let viewport_h = metrics.viewport_pts().y;
             // `-forward.y` is the sine of the view's depression below horizontal —
             // 1 looking straight down, 0 at the horizon.
             let depression = -(tf.rotation * Vec3::NEG_Z).normalize().y;
@@ -1000,36 +485,29 @@ pub fn render_map_controls(
                         theme::touch_layout() || touch.ever(),
                     ),
                 );
-                if lib {
-                    out.scale = Some(ScaleView {
-                        left: theme::OSD_MARGIN,
-                        bottom: reserved + theme::OSD_GAP,
-                        pts,
-                        label: format_scale(metres),
-                    });
-                } else {
-                    scale_bar_overlay(egui.ctx(), metres, pts, reserved);
-                }
+                // Bottom-left, where a web map has always put a scale: the
+                // bottom-right corner is the on-screen controls'.
+                out.scale = Some(ScaleView {
+                    left: theme::OSD_MARGIN,
+                    bottom: reserved + theme::OSD_GAP,
+                    pts,
+                    label: format_scale(metres),
+                });
             }
         }
 
-        // One compass, either edition: what it shows in `out`, or drawn by
-        // egui; answers whether it was pressed.
+        // The compass: what it shows in `out`; answers whether it was pressed.
         let compass = |cfg: &Compass, out: &mut HudView| -> bool {
-            if lib {
-                out.compass = Some(CompassView {
-                    left: cfg.left,
-                    top: cfg.top,
-                    heading: (heading * 2.0).round() / 2.0,
-                    interactive: cfg.interactive,
-                    locked: cfg.locked,
-                    caption: cfg.caption,
-                    hover: cfg.hover,
-                });
-                cfg.interactive && tapped(crate::systems::dock::ChromeAct::Compass)
-            } else {
-                compass_overlay(egui.ctx(), heading, cfg)
-            }
+            out.compass = Some(CompassView {
+                left: cfg.left,
+                top: cfg.top,
+                heading: (heading * 2.0).round() / 2.0,
+                interactive: cfg.interactive,
+                locked: cfg.locked,
+                caption: cfg.caption,
+                hover: cfg.hover,
+            });
+            cfg.interactive && tapped(crate::systems::dock::ChromeAct::Compass)
         };
 
         if driver.active {
@@ -1055,7 +533,7 @@ pub fn render_map_controls(
         // free-form, so there the rose is a passive indicator.
         let orbit = matches!(camera_state.mode, crate::resources::CameraMode::Orbit);
         let locked = orbit && camera_state.orbit_north_lock;
-        let view = egui.viewport_pts();
+        let view = metrics.viewport_pts();
         let slot = crate::systems::dock::left_slot(view, 0);
         let cfg = Compass {
             interactive: orbit,
@@ -1095,31 +573,30 @@ pub fn render_map_controls(
                 LocateState::Off
             };
             let hover = locate_hover(state, &tracking);
-            let toggled = if lib {
-                let on = matches!(state, LocateState::Tracking);
-                let gps = tracking.gps;
-                out.locate = Some(LocateView {
-                    right: column_x(at.x, LOCATE_SIZE),
-                    top: at.y,
-                    lying: col.lying,
-                    on,
-                    tone: match (on, gps) {
-                        (false, _) => LocateTone::Ring,
-                        (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => {
-                            LocateTone::Warn
-                        }
-                        (true, _) => LocateTone::Bright,
-                    },
-                    filled: gps.has_position(),
-                    searching: matches!(gps, GpsQuality::Waiting),
-                    caption: gps.caption().filter(|_| on),
-                    hover,
-                });
-                tapped(crate::systems::dock::ChromeAct::Locate)
-            } else {
-                locate_overlay(egui.ctx(), at, col.lying, state, tracking.gps, &hover)
-            };
-            if toggled {
+            let on = matches!(state, LocateState::Tracking);
+            let gps = tracking.gps;
+            out.locate = Some(LocateView {
+                right: column_x(at.x, LOCATE_SIZE),
+                top: at.y,
+                lying: col.lying,
+                on,
+                // The ring: amber while the receiver is behaving, the warning
+                // ochre while it is not (a poor fix is a caveat, not a fault).
+                tone: match (on, gps) {
+                    (false, _) => LocateTone::Ring,
+                    (true, GpsQuality::Error | GpsQuality::Stale | GpsQuality::Poor(_)) => {
+                        LocateTone::Warn
+                    }
+                    (true, _) => LocateTone::Bright,
+                },
+                // Filled means a fix is in hand, never the press.
+                filled: gps.has_position(),
+                searching: matches!(gps, GpsQuality::Waiting),
+                // The caption is the half that reaches a phone: no hover there.
+                caption: gps.caption().filter(|_| on),
+                hover,
+            });
+            if tapped(crate::systems::dock::ChromeAct::Locate) {
                 match state {
                     // Recenter, in the view the user is already in. The button used to
                     // force Follow on the way in, which made "where am I" a one-way
@@ -1147,35 +624,24 @@ pub fn render_map_controls(
         // Dark, as a theme switcher offers them (`docs/mockups/zoom-ladder/`,
         // v2). The same setting as Settings ▸ World's Light row, which also holds
         // a set time.
-        let chosen = if lib {
-            if tapped(crate::systems::dock::ChromeAct::LightDisc) {
-                *light_open = !*light_open;
-            }
-            let chosen = acts.iter().find_map(|a| match a {
-                crate::systems::dock::ChromeAct::Light(m) => Some(*m),
-                _ => None,
-            });
-            if chosen.is_some() {
-                *light_open = false;
-            }
-            let at = crate::systems::dock::left_slot(view, 2);
-            out.light = Some(LightView {
-                left: column_x(at.x, theme::ROUND_BUTTON_SIZE),
-                top: at.y,
-                lying: crate::systems::dock::lying(view),
-                mode: chosen.unwrap_or(dev.sun_mode),
-                open: *light_open,
-            });
-            chosen
-        } else {
-            light_overlay(
-                egui.ctx(),
-                crate::systems::dock::left_slot(view, 2),
-                crate::systems::dock::lying(view),
-                dev.sun_mode,
-                &mut light_open,
-            )
-        };
+        if tapped(crate::systems::dock::ChromeAct::LightDisc) {
+            *light_open = !*light_open;
+        }
+        let chosen = acts.iter().find_map(|a| match a {
+            crate::systems::dock::ChromeAct::Light(m) => Some(*m),
+            _ => None,
+        });
+        if chosen.is_some() {
+            *light_open = false;
+        }
+        let at = crate::systems::dock::left_slot(view, 2);
+        out.light = Some(LightView {
+            left: column_x(at.x, theme::ROUND_BUTTON_SIZE),
+            top: at.y,
+            lying: crate::systems::dock::lying(view),
+            mode: chosen.unwrap_or(dev.sun_mode),
+            open: *light_open,
+        });
         if let Some(mode) = chosen {
             if dev.sun_mode != mode {
                 dev.sun_mode = mode;
@@ -1367,7 +833,7 @@ mod tests {
     #[test]
     fn the_view_controls_take_their_slots() {
         let dock = crate::systems::dock::reserved_top();
-        let view = egui::vec2(274.0, 600.0);
+        let view = Vec2::new(274.0, 600.0);
         let compass = crate::systems::dock::left_slot(view, 0).y;
         let light = crate::systems::dock::left_slot(view, 2).y;
         assert!(compass >= dock);
@@ -1378,7 +844,7 @@ mod tests {
         assert!(col.camera.unwrap().y >= locate + LOCATE_SIZE + theme::OSD_GAP);
         // Lying, the same slots along a row, Locate's beside the mode's with
         // room for both their words under them.
-        let view = egui::vec2(924.0, 424.0);
+        let view = Vec2::new(924.0, 424.0);
         let col = crate::systems::dock::right_column(view, true, true);
         let locate = col.locate.unwrap();
         assert!(col.lying && locate.y == col.mode.y);

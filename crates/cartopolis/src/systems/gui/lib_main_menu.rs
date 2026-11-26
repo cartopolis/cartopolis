@@ -1,19 +1,17 @@
-//! Your face's sheet drawn by the component library (`lib_host`), beside
-//! egui's (`ui::render_main_menu`): who you are, your profile and your link
-//! (or Sign in…), your avatar, places and models, Settings, Admin, About,
-//! Exit, the developer rows, and Sign out.
+//! Your face's sheet drawn by the component library (`lib_host`): who you
+//! are, your profile and your link (or Sign in…), your avatar, places and
+//! models, Settings, Admin, About, Exit, the developer rows, and Sign out.
 //!
-//! On with `CARTO_UI_LIB=main_menu` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`MainMenu::lib`) but keeps every decision — whether
-//! the sheet is open, where it stands (on the World | Community switch on a
-//! phone, under your face on a desktop), what it offers, whether Sign out is
-//! armed, a tap outside it — and publishes it in `MainMenu::lib_view`. A tap
-//! here is a `ui::SheetAct`, handed back in `MainMenu::lib_acts` and done by
-//! the code egui's rows run.
+//! `ui::drive_main_menu` keeps every decision — whether the sheet is open,
+//! where it stands (on the World | Community switch on a phone, under your
+//! face on a desktop), what it offers, whether Sign out is armed, a tap
+//! outside it — and publishes it in `MainMenu::lib_view`. A tap here is a
+//! `ui::SheetAct`, handed back in `MainMenu::lib_acts` and done by it next
+//! frame.
 //!
-//! **Placement.** As egui's (`ui::SheetSpot`), in egui points times the
-//! library's px per point. Your face is its initial on its colour: the
-//! library has no image node.
+//! **Placement.** At `ui::SheetSpot`, in ui points times the library's px
+//! per point. Your face is its initial on its colour: the library has no
+//! image node.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,9 +76,6 @@ pub fn drive_lib_main_menu(
     if !lib.main_menu {
         return;
     }
-    if !menu.lib {
-        menu.lib = true;
-    }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
@@ -89,7 +84,7 @@ pub fn drive_lib_main_menu(
     };
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `ui::drive_main_menu` next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<SheetAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {
@@ -190,7 +185,7 @@ fn frame_style(spot: SheetSpot, k: f32) -> String {
 }
 
 /// The sheet: its frame at its spot, and what is in it, both following the
-/// view egui publishes.
+/// view `ui::drive_main_menu` publishes.
 fn view_of(l: &Live) -> View {
     let frame = {
         let (v, k) = (l.view.clone(), l.k);
@@ -284,7 +279,7 @@ fn panel_row(l: &Live, panel: RightPanel) -> View {
     }
 }
 
-/// Everything in the sheet, in egui's order (`ui::sheet_body`).
+/// Everything in the sheet, in order.
 fn body(l: &Live, v: &MenuView) -> View {
     let comms = cfg!(feature = "comms");
 

@@ -403,6 +403,13 @@ impl UiInput {
         self.ui_animating
     }
 
+    /// The map: what the side panels left at the end of the last frame, in
+    /// **window** logical points, or `None` before the first frame.
+    #[must_use]
+    pub fn map_rect(&self) -> Option<Rect> {
+        self.egui.map_rect
+    }
+
     /// egui's verdict for this frame, as written.
     #[must_use]
     pub fn egui_verdict(&self) -> EguiVerdict {

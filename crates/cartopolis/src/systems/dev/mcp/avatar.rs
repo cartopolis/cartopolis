@@ -1,6 +1,6 @@
 //! The avatar's look, read and changed by an agent: `avatar` lists the look
 //! and every choice, `set_avatar` changes it as the Appearance panel's Apply
-//! does (`ui::render_avatar_chooser`).
+//! does (`ui::drive_avatar_chooser`).
 //!
 //! **Why this exists (2026-11-05).** The person asked that an agent driving
 //! the phone can model the avatar on a photo. Working the designer through

@@ -27,7 +27,6 @@
 //! It needs an avatar, which only a session has; the planner says so instead of
 //! offering a Walk that cannot move anything.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::components::Avatar;
@@ -79,8 +78,8 @@ pub(crate) const TURN_WIDTH: f32 = 260.0;
 /// How far below the top edge the "Walking you there" chip stands.
 pub(crate) const AUTO_TOP: f32 = theme::OSD_MARGIN + 52.0;
 
-/// A tap on the walking chrome: one set, for egui's buttons and the
-/// library's (`lib_walk_guide`), done by [`WalkGuide::apply`].
+/// A tap on the walking chrome (`lib_walk_guide`), done by
+/// [`WalkGuide::apply`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WalkAct {
     /// Stop, or Done once arrived.
@@ -104,8 +103,7 @@ pub struct WalkTurn {
 }
 
 /// What the walking chrome shows this frame, published by
-/// [`render_walk_guide`] for the library's edition (`lib_walk_guide`) while
-/// [`WalkGuide::lib`] is on.
+/// [`publish_walk_guide`] for the library to draw (`lib_walk_guide`).
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct WalkView {
@@ -143,15 +141,11 @@ pub struct WalkGuide {
     cooldown: f32,
     stuck_s: f32,
     last_along: f64,
-    /// The library draws the walking chrome (`lib_walk_guide`):
-    /// [`render_walk_guide`] draws nothing and publishes
-    /// [`lib_view`](Self::lib_view) instead. Kept across a start and a stop,
-    /// which are the library's switch, not the walk's.
-    pub lib: bool,
-    /// What the library's edition shows, while `lib` is on.
+    /// What the library's walking chrome (`lib_walk_guide`) shows, published
+    /// by [`publish_walk_guide`].
     pub lib_view: Option<WalkView>,
-    /// Taps on the library's edition, done by [`render_walk_guide`] next
-    /// frame.
+    /// Taps on the library's walking chrome, done by [`publish_walk_guide`]
+    /// next frame.
     pub lib_acts: Vec<WalkAct>,
 }
 
@@ -161,7 +155,6 @@ impl WalkGuide {
         *self = Self {
             active: true,
             auto,
-            lib: self.lib,
             ..Self::default()
         };
     }
@@ -171,20 +164,15 @@ impl WalkGuide {
     pub fn arm(&mut self, auto: bool) {
         *self = Self {
             armed: Some(auto),
-            lib: self.lib,
             ..Self::default()
         };
     }
 
     pub fn stop(&mut self) {
-        *self = Self {
-            lib: self.lib,
-            ..Self::default()
-        };
+        *self = Self::default();
     }
 
-    /// Do a tap on the walking chrome: egui's buttons and the library's
-    /// (`lib_walk_guide`) both come here.
+    /// Do a tap on the walking chrome (`lib_walk_guide`).
     pub fn apply(&mut self, act: WalkAct, nav: &mut GeoNavState) {
         match act {
             WalkAct::Stop => self.stop(),
@@ -316,22 +304,18 @@ pub fn drive_walk_guide(
     };
 }
 
-/// The walking chrome: the next turn at the top left, and the bar above the
-/// dock with what is left and what to do about it.
-///
-/// With [`WalkGuide::lib`] on (`lib_walk_guide`, `CARTO_UI_LIB=walk_guide`)
-/// it draws nothing: it does the taps the library handed back, through
-/// [`WalkGuide::apply`] as egui's buttons do, and publishes what to show in
-/// [`WalkGuide::lib_view`].
-pub fn render_walk_guide(
-    egui: EguiRef,
+/// The walking chrome's state (`lib_walk_guide` draws it): the next turn at
+/// the top left, and the bar above the dock with what is left and what to do
+/// about it. Does the taps the library handed back, through
+/// [`WalkGuide::apply`], and publishes what to show in [`WalkGuide::lib_view`].
+pub fn publish_walk_guide(
     mut guide: ResMut<WalkGuide>,
     route: Res<RouteState>,
     right_panel: Res<RightPanel>,
     mut nav: ResMut<GeoNavState>,
 ) {
     // The library's taps of last frame, before anything is worked out.
-    if guide.lib && !guide.lib_acts.is_empty() {
+    if !guide.lib_acts.is_empty() {
         let acts = std::mem::take(&mut guide.lib_acts);
         if guide.active {
             for a in acts {
@@ -372,169 +356,20 @@ pub fn render_walk_guide(
         format_distance(progress.remaining_m)
     );
 
-    // The library's edition is showing: hand it what to draw, draw nothing.
-    if guide.lib {
-        let view = WalkView {
-            turn,
-            auto_chip: guide.auto,
-            arrived: guide.arrived,
-            auto: guide.auto,
-            left,
-            destination,
-            note: guide.note,
-            skip: (guide.skip_open && !guide.arrived)
-                .then(|| skip_targets(r, &guide, progress))
-                .flatten(),
-        };
-        if guide.lib_view.as_ref() != Some(&view) {
-            guide.lib_view = Some(view);
-        }
-        return;
-    }
-
-    let ctx = egui.ctx();
-    let viewport = egui.viewport_pts();
-    let mut act: Option<WalkAct> = None;
-
-    // The next turn, top left — clear of the map controls column.
-    if let Some(WalkTurn {
-        glyph,
-        countdown: count,
-        street,
-    }) = turn
-    {
-        egui::Area::new(egui::Id::new("walk_guide_turn"))
-            .anchor(
-                egui::Align2::LEFT_TOP,
-                egui::vec2(TURN_INSET, theme::OSD_MARGIN),
-            )
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                theme::overlay_frame().show(ui, |ui| {
-                    // Between the two columns of round buttons that come down
-                    // the edges under it (`dock`): the search bar stands down
-                    // while a walk is guided, and this takes its place.
-                    let between = viewport.x - 2.0 * TURN_INSET;
-                    ui.set_max_width(TURN_WIDTH.min(between - 24.0));
-                    ui.horizontal(|ui| {
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());
-                        ui.painter()
-                            .rect_filled(rect, egui::CornerRadius::same(9), theme::BRAND);
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            glyph,
-                            egui::FontId::proportional(24.0),
-                            egui::Color32::WHITE,
-                        );
-                        ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(count)
-                                    .size(theme::SIZE_HEADING)
-                                    .color(theme::p().cream),
-                            );
-                            ui.label(
-                                egui::RichText::new(street)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().text_dim),
-                            );
-                        });
-                    });
-                });
-            });
-    }
-
-    if guide.auto {
-        egui::Area::new(egui::Id::new("walk_guide_auto"))
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, AUTO_TOP))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                theme::overlay_frame().show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new("Walking you there · any key takes over")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text),
-                    );
-                });
-            });
-    }
-
-    // The bar above the dock.
-    let width = (viewport.x - 2.0 * theme::OSD_MARGIN).min(BAR_WIDTH);
-    let bottom = crate::systems::dock::reserved_bottom() + BAR_GAP;
-    let skip = (guide.skip_open && !guide.arrived)
-        .then(|| skip_targets(r, &guide, progress))
-        .flatten();
-    egui::Area::new(egui::Id::new("walk_guide_bar"))
-        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                ui.set_width(width - 24.0);
-                if let Some(targets) = &skip {
-                    skip_list(ui, targets, &mut act);
-                    ui.add_space(6.0);
-                }
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        if guide.arrived {
-                            ui.label(
-                                egui::RichText::new("You've arrived")
-                                    .size(theme::SIZE_TITLE)
-                                    .color(theme::p().cream),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new(&left)
-                                    .size(theme::SIZE_VALUE)
-                                    .color(theme::p().cream),
-                            );
-                        }
-                        ui.label(
-                            egui::RichText::new(&destination)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p().text_dim),
-                        );
-                        if let Some(note) = guide.note {
-                            ui.label(
-                                egui::RichText::new(note)
-                                    .size(theme::SIZE_SUB)
-                                    .color(theme::p().warn),
-                            );
-                        }
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let stop = if guide.arrived { "Done" } else { "Stop" };
-                        if theme::action_button(ui, stop).clicked() {
-                            act = Some(WalkAct::Stop);
-                        }
-                        if !guide.arrived {
-                            let auto = if guide.auto {
-                                "Pause".to_string()
-                            } else {
-                                format!("{}  Auto", icons::PLAY)
-                            };
-                            if theme::action_button(ui, auto)
-                                .on_hover_text("Walk me there: the avatar follows the route")
-                                .clicked()
-                            {
-                                act = Some(WalkAct::ToggleAuto);
-                            }
-                            if theme::action_button(ui, format!("{}  Skip", icons::FORWARD))
-                                .on_hover_text("Jump ahead along the route")
-                                .clicked()
-                            {
-                                act = Some(WalkAct::ToggleSkip);
-                            }
-                        }
-                    });
-                });
-            });
-        });
-
-    if let Some(a) = act {
-        guide.apply(a, &mut nav);
+    let view = WalkView {
+        turn,
+        auto_chip: guide.auto,
+        arrived: guide.arrived,
+        auto: guide.auto,
+        left,
+        destination,
+        note: guide.note,
+        skip: (guide.skip_open && !guide.arrived)
+            .then(|| skip_targets(r, &guide, progress))
+            .flatten(),
+    };
+    if guide.lib_view.as_ref() != Some(&view) {
+        guide.lib_view = Some(view);
     }
 }
 
@@ -583,20 +418,6 @@ fn skip_targets(
             })
             .collect(),
     )
-}
-
-/// The Skip list in egui's bar: its heading, and a row per target.
-fn skip_list(ui: &mut egui::Ui, targets: &[(String, f64)], act: &mut Option<WalkAct>) {
-    ui.label(
-        egui::RichText::new("Skip ahead to…")
-            .size(theme::SIZE_SUB)
-            .color(theme::p().text_dim),
-    );
-    for (line, along) in targets {
-        if theme::ghost_button_wide(ui, "", line, ui.available_width()).clicked() {
-            *act = Some(WalkAct::SkipTo(*along));
-        }
-    }
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ const CARD_WIDTH: f32 = 300.0;
 #[derive(Resource, Default)]
 pub struct Welcome {
     pub capture: Option<bool>,
-    /// Community was chosen signed out (`dock::render_dock`): this card is
+    /// Community was chosen signed out (`dock::drive_dock`): this card is
     /// what Community is without an account (`docs/mockups/redesign`,
     /// v2-account, A1), whether or not it has been answered before. Signing
     /// in opens the Community page; "Not now" and World go back to the map.

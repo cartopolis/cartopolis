@@ -315,14 +315,6 @@ pub fn secondary_toggle(
     resp
 }
 
-/// The width each of `n` buttons gets to share a row equally: a row of
-/// controls that are one choice each reads as a set, sized to their words it
-/// reads as a pile.
-pub fn equal_width(ui: &egui::Ui, n: usize) -> f32 {
-    let n = n.max(1) as f32;
-    ((ui.available_width() - ui.spacing().item_spacing.x * (n - 1.0)) / n).floor()
-}
-
 /// Diameter of a round icon button, in points. Matches the compass disc in the
 /// opposite corner — the map's floating controls are one family. Already 60 dp on
 /// the touch tier, so it needs no finger-sized variant.
@@ -583,7 +575,7 @@ pub(super) fn shadow(offset: [i8; 2], blur: u8, alpha: u8) -> Shadow {
     }
 }
 
-/// The shadow under a card in a panel ([`list_group`], a chat row, a community
+/// The shadow under a card in a panel (a list group, a chat row, a community
 /// row): the midas hub's `--lift-2`, as near as one egui shadow comes — a few
 /// points down, soft, darker than the page, so a card on a panel reads as
 /// lying on it rather than printed into it.
@@ -592,14 +584,14 @@ pub fn card_shadow() -> Shadow {
     shadow([0, 4], 14, 150)
 }
 
-/// The shadow under the chosen option of a [`segmented`] control and under a
+/// The shadow under the chosen option of a segmented control and under a
 /// button at rest: the hub's `--m-shadow`, close and small.
 pub(super) fn segment_shadow() -> Shadow {
     shadow([0, 1], 4, 120)
 }
 
 /// The chosen option of a segmented control, painted: a raised card with the
-/// small shadow ([`segmented`], the Community | World switch).
+/// small shadow (a segmented control, the Community | World switch).
 pub fn paint_raised(painter: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
     painter.add(segment_shadow().as_shape(rect, corner));
     painter.rect_filled(rect, corner, p32().surface_raised);

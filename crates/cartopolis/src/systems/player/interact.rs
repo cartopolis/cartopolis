@@ -9,21 +9,17 @@
 //! `world_places` holds the result per cell. This module is only the proximity
 //! test, the prompt and the key.
 //!
-//! **The prompt is world-anchored but drawn in screen space**, so it obeys the
-//! same rule the place pins do: it must cull itself against the map area, because
-//! egui paints floating `Area`s above panels (see
-//! `docs/notes/egui-shared-root-ui.md`). It is ordered with the panel chain for
-//! that reason.
+//! **The prompt stands over the map, not the window**: its place is the map
+//! area's bottom centre, so a side panel never sits on top of it. The library
+//! draws it (`lib_interact`); [`drive_interaction_prompt`] decides what it says.
 
-use crate::systems::egui_manager::EguiMut;
-use crate::systems::ui_input::UiInput;
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use bevy::prelude::*;
 use cartopolis_core::msg;
 
 use crate::grid::world_to_lat_lng;
 use crate::resources::{AvatarState, CameraMode, CameraState, MapAnchor, RightPanel, Seated};
 use crate::systems::geo_nav::GeoNavState;
-use crate::systems::theme;
 use crate::systems::world_places::{Interactable, SeatSpot, WorldPlaces};
 use cartopolis_core::{carry, Emote};
 
@@ -81,21 +77,18 @@ pub struct InteractState {
     /// A signal button pressed at the prompt (its pole, world XZ), for
     /// `give_way::press_buttons` to take.
     pub pressed_button: Option<Vec2>,
-    /// The library draws the prompt (`lib_interact`,
-    /// `CARTO_UI_LIB=interact`): [`render_interaction_prompt`] draws nothing
-    /// and publishes [`lib_view`](Self::lib_view) instead.
-    pub lib: bool,
-    /// What the library's prompt shows, while `lib` is on.
+    /// What the library's prompt (`lib_interact`) shows, published by
+    /// [`drive_interaction_prompt`].
     pub lib_view: Option<PromptView>,
-    /// Taps on the library's prompt, done by [`render_interaction_prompt`]
-    /// next frame through the code egui's buttons run.
+    /// Taps on the library's prompt, done by [`drive_interaction_prompt`]
+    /// next frame.
     pub lib_acts: Vec<PromptAct>,
     /// Offer to call this person's own car: on foot, with none of their cars
     /// near (`systems::driving`).
     pub call_car: bool,
 }
 
-/// A tap on the prompt: one set, for egui's buttons and the library's.
+/// A tap on the prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptAct {
     /// Take the greeting offered.
@@ -132,11 +125,11 @@ pub enum PromptItem {
     },
 }
 
-/// What the prompt shows this frame, for the library's edition.
+/// What the prompt shows this frame, for the library to draw.
 #[derive(Clone, Debug, PartialEq, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct PromptView {
-    /// Where the prompt's bottom centre stands, egui points: the map area's
+    /// Where the prompt's bottom centre stands, UI points: the map area's
     /// centre, [`PROMPT_BOTTOM_MARGIN`] above its bottom.
     pub x: f32,
     pub y: f32,
@@ -1066,26 +1059,22 @@ pub fn handle_interaction_input(
     }
 }
 
-/// Draw the prompt over the map, and let it be *pressed*.
+/// Decide what the prompt over the map offers, publish it for the library
+/// (`lib_interact`), and do what was tapped on it last frame.
 ///
-/// Anchored to the bottom-centre of the *map area* rather than the window, and
-/// culled to it, for the reason `place_pins` documents: the shared root `Ui`'s
-/// leftover rect is exactly the map, and drawing outside it puts an interactive
-/// overlay on top of a panel. This runs inside the panel chain so that rect is
-/// the real one.
+/// Anchored to the bottom-centre of the *map area* rather than the window:
+/// the rect the panels left at the end of the last pass
+/// (`EguiVerdict::map_rect`), so a side panel never covers it.
 ///
-/// It used to read `Sit at Bench   [E]` and be `interactable(false)` — a keyboard
+/// It used to read `Sit at Bench   [E]` and not be pressable — a keyboard
 /// hint on the one platform with no keyboard, advertising an action the prompt
 /// itself could not take. The line is a button now, and the key hint only appears
 /// on a viewport wide enough to imply a keyboard. The second button is the one
 /// this module could not offer at all: a POI you walked up to is a *destination*,
 /// and there was no way to make it one.
-///
-/// Only the buttons sense the pointer — the frame around them does not — so the
-/// prompt still cannot eat a click meant for the map it floats over, which is the
-/// property that made it non-interactive in the first place.
-pub fn render_interaction_prompt(
-    mut egui_manager: EguiMut,
+pub fn drive_interaction_prompt(
+    ui_input: Res<UiInput>,
+    metrics: Res<UiMetrics>,
     camera_state: Res<CameraState>,
     mut state: ResMut<InteractState>,
     mut avatar_state: ResMut<AvatarState>,
@@ -1096,13 +1085,9 @@ pub fn render_interaction_prompt(
     mut greetings: ResMut<crate::systems::greet::Greetings>,
     edges: Res<crate::systems::climb::Edges>,
 ) {
-    // A tap on the library's prompt last frame (`lib_interact`), done below
-    // by the code egui's buttons run. One a frame, as a pointer gives.
-    let lib_asked = if state.lib && !state.lib_acts.is_empty() {
-        std::mem::take(&mut state.lib_acts).pop()
-    } else {
-        None
-    };
+    // A tap on the library's prompt last frame (`lib_interact`), done below.
+    // One a frame, as a pointer gives.
+    let asked = std::mem::take(&mut state.lib_acts).pop();
     // Driver mode sets `CameraMode::Avatar` itself, so the mode test below is
     // true throughout a trip and this prompt kept appearing — "Sit at Bench" at
     // bottom-centre, in the speed pill's band, while driving past one.
@@ -1143,13 +1128,18 @@ pub fn render_interaction_prompt(
         return;
     }
 
-    let compact = egui_manager.compact();
-    let map = egui_manager.ui_mut().available_rect_before_wrap();
+    let compact = metrics.compact();
+    // The map in UI points: what the panels left at the end of the last pass
+    // (window points), or the whole viewport before there is one.
+    let map = ui_input.map_rect().map_or_else(
+        || Rect::from_corners(Vec2::ZERO, metrics.viewport_pts()),
+        |r| Rect::from_corners(metrics.window_to_ui(r.min), metrics.window_to_ui(r.max)),
+    );
     if map.width() < 1.0 || map.height() < 1.0 {
         hide_lib_prompt(&mut state);
         return;
     }
-    let pos = egui::pos2(map.center().x, map.bottom() - PROMPT_BOTTOM_MARGIN);
+    let pos = Vec2::new(map.center().x, map.max.y - PROMPT_BOTTOM_MARGIN);
     let items = prompt_items(
         compact,
         target.as_ref(),
@@ -1161,57 +1151,17 @@ pub fn render_interaction_prompt(
         Cars { driving, call_car },
     );
 
-    let asked = if state.lib {
-        // The library's edition is showing: hand it what to draw, draw nothing.
-        let view = PromptView {
-            x: pos.x,
-            y: pos.y,
-            receipt: if items.is_empty() { receipt } else { None },
-            items,
-        };
-        if state.lib_view.as_ref() != Some(&view) {
-            state.lib_view = Some(view);
-        }
-        lib_asked
-    } else {
-        let mut asked: Option<PromptAct> = None;
-        egui::Area::new(egui::Id::new("interact_prompt"))
-            .order(egui::Order::Background)
-            // A live prompt is a control; the receipt left behind after acting is not.
-            .interactable(!items.is_empty())
-            .fixed_pos(pos)
-            .pivot(egui::Align2::CENTER_BOTTOM)
-            .show(&egui_manager.ctx.clone(), |ui| {
-                theme::overlay_frame().show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if items.is_empty() {
-                            // Nothing in range: what is left is the line naming
-                            // what was last acted on, which is a receipt and not
-                            // a button.
-                            if let Some(last) = &receipt {
-                                ui.label(egui::RichText::new(last).color(theme::p().text).strong());
-                            }
-                            return;
-                        }
-                        for item in &items {
-                            match item {
-                                PromptItem::Button { glyph, label, act } => {
-                                    if theme::secondary_button(ui, glyph, label, 0.0).clicked() {
-                                        asked = Some(*act);
-                                    }
-                                }
-                                PromptItem::Icon { glyph, hint, act } => {
-                                    if theme::icon_button_small(ui, glyph, hint).clicked() {
-                                        asked = Some(*act);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                });
-            });
-        asked
+    // Nothing in range: what is left is the line naming what was last acted
+    // on, which is a receipt and not a button.
+    let view = PromptView {
+        x: pos.x,
+        y: pos.y,
+        receipt: if items.is_empty() { receipt } else { None },
+        items,
     };
+    if state.lib_view.as_ref() != Some(&view) {
+        state.lib_view = Some(view);
+    }
 
     match asked {
         Some(PromptAct::Greet) => {

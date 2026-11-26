@@ -1,21 +1,19 @@
-//! The walking chrome drawn by the component library (`lib_host`), beside
-//! egui's (`walk_guide::render_walk_guide`): the next turn at the top left,
-//! "Walking you there" under it while the avatar walks itself, and the bar
-//! above the dock with what is left and what to do about it.
+//! The walking chrome drawn by the component library (`lib_host`): the next
+//! turn at the top left, "Walking you there" under it while the avatar walks
+//! itself, and the bar above the dock with what is left and what to do about
+//! it.
 //!
-//! On with `CARTO_UI_LIB=walk_guide` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`WalkGuide::lib`) but still works out what shows —
-//! the turn only with no panel open and before arriving, the Skip list's
-//! targets from the route's geometry — and publishes it in
-//! `WalkGuide::lib_view`. A tap here goes back in `WalkGuide::lib_acts` and
-//! is done by `WalkGuide::apply`, the code egui's buttons call.
+//! `walk_guide::publish_walk_guide` works out what shows — the turn only
+//! with no panel open and before arriving, the Skip list's targets from the
+//! route's geometry — and publishes it in `WalkGuide::lib_view`. A tap here
+//! goes back in `WalkGuide::lib_acts` and is done by `WalkGuide::apply`.
 //!
-//! **Placement.** As egui's: the turn card `walk_guide::TURN_INSET` in from
-//! the left and `OSD_MARGIN` down, no wider than the band between the two
-//! columns of round buttons; the chip centred `walk_guide::AUTO_TOP` down;
-//! the bar centred over the bottom edge, `BAR_GAP` above the dock
-//! (`dock::reserved_bottom`), as wide as 420 or the screen less its margins.
-//! Each frame is egui's `overlay_frame`: 14 × 12 inside, a 1 px rim.
+//! **Placement.** The turn card `walk_guide::TURN_INSET` in from the left and
+//! `OSD_MARGIN` down, no wider than the band between the two columns of round
+//! buttons; the chip centred `walk_guide::AUTO_TOP` down; the bar centred
+//! over the bottom edge, `BAR_GAP` above the dock (`dock::reserved_bottom`),
+//! as wide as 420 or the screen less its margins. Each frame is the overlay
+//! frame: 14 × 12 inside, a 1 px rim.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -144,13 +142,10 @@ pub fn drive_lib_walk_guide(
     if !lib.walk_guide {
         return;
     }
-    if !guide.lib {
-        guide.lib = true;
-    }
     let placement = Placement::of(metrics.viewport_pts().x, metrics.ui_scale());
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `publish_walk_guide` next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<WalkAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {

@@ -1,16 +1,13 @@
 //! The object editor and its texture picker drawn by the component library
-//! (`lib_host`), beside egui's (`ui::render_edit_dialog`): the Basics,
-//! Shape and Surface tabs of a built object, Save · Cancel · Delete under
-//! them, and the texture library's grid that Surface ▸ Pick… opens.
+//! (`lib_host`): the Basics, Shape and Surface tabs of a built object,
+//! Save · Cancel · Delete under them, and the texture library's grid that
+//! Surface ▸ Pick… opens.
 //!
-//! On with `CARTO_UI_LIB=object_editor` (or `1`), on the web `?ui=lib`.
-//! egui's system steps aside (`ui::ObjectEditorLib::lib`). The editor's
-//! state stays `EditDialogState`, which the live preview
+//! The editor's state is `EditDialogState`, which the live preview
 //! (`ui::apply_live_prim_edits`), the gizmo and the save all read: each field
 //! here is bridged to its value both ways — an edit here is written there,
 //! and a change made elsewhere (the gizmo's drag, another selection) shows
-//! here — and every button goes through `ui::apply_edit_act`, the code
-//! egui's buttons run.
+//! here — and every button goes through `ui::apply_edit_act`.
 //!
 //! **Numbers are typed or slid, not dragged.** egui's drag-to-change values
 //! became the library's number boxes where a value has no natural range
@@ -47,9 +44,7 @@ use crate::resources::{EditDialogState, GameState, PrimTextureCache, TextureLibr
 use crate::systems::gizmo::{GizmoMode, GizmoState};
 use crate::systems::lib_place_card::{header, icon};
 use crate::systems::lib_settings::LibScreens;
-use crate::systems::ui::{
-    apply_edit_act, dialog_width, EditAct, ObjectEditorLib, SHAPES, SHEET_HEIGHT,
-};
+use crate::systems::ui::{apply_edit_act, dialog_width, EditAct, SHAPES, SHEET_HEIGHT};
 use crate::systems::ui_input::UiMetrics;
 use crate::systems::{icons, theme};
 
@@ -560,7 +555,6 @@ thread_local! {
 pub fn drive_lib_object_editor(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    bridge: Option<ResMut<ObjectEditorLib>>,
     mut edit_dialog: ResMut<EditDialogState>,
     mut game_state: ResMut<GameState>,
     mut gizmo: ResMut<GizmoState>,
@@ -575,12 +569,6 @@ pub fn drive_lib_object_editor(
 ) {
     if !lib.object_editor {
         return;
-    }
-    let Some(mut bridge) = bridge else {
-        return;
-    };
-    if !bridge.lib {
-        bridge.lib = true;
     }
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()

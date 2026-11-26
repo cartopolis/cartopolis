@@ -137,10 +137,9 @@ impl Plugin for UiProbePlugin {
                 .after(crate::systems::lib_places::drive_lib_places)
                 .before(crate::systems::lib_host::bridge_input),
         );
-        // The object editor and the builder's marquee: their switches are
-        // resources the egui systems take as an `Option`.
-        app.init_resource::<crate::systems::ui::ObjectEditorLib>()
-            .init_resource::<crate::systems::picking::MarqueeLib>();
+        // The builder's marquee: the rectangle `picking::publish_marquee`
+        // hands the library, a resource it takes as an `Option`.
+        app.init_resource::<crate::systems::picking::MarqueeLib>();
         // The developer's tools over the app, native only.
         #[cfg(not(target_arch = "wasm32"))]
         app.add_systems(

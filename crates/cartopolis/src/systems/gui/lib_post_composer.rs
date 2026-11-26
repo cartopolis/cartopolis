@@ -206,11 +206,11 @@ struct Pic {
     h: f32,
 }
 
-/// The widest a polaroid is drawn while it is written, points (egui's 300);
-/// its height follows its frame, up to [`POLAROID_MAX_H`].
+/// The widest a polaroid is drawn while it is written, points; its height
+/// follows its frame, up to [`POLAROID_MAX_H`].
 const POLAROID_MAX_W: f32 = 300.0;
 const POLAROID_MAX_H: f32 = 520.0;
-/// The tallest the post's picture is drawn, points (egui's 200).
+/// The tallest the post's picture is drawn, points.
 const PICTURE_MAX_H: f32 = 200.0;
 
 /// The draft's picture `hash` fitted into `max_w` × `max_h` points and
@@ -454,14 +454,16 @@ fn view_of(l: &Live) -> View {
             }
         }
     };
-    // Where: one line, and the one thing to do about it.
+    // Where: the place and its note across the whole width, and under them
+    // the one thing to do about it. A button beside them left the name a
+    // few letters and wrapped the note word by word.
     let place = {
         let l = l.clone();
         move || -> View {
             let what: View = match l.place.get() {
                 Some(name) => view! {
                     <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
-                        <span style="overflow: hidden; white-space: nowrap; color: var(--m-text-strong)">{name}</span>
+                        <span style="overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--m-text-strong)">{name}</span>
                         <span style="color: var(--m-text-dim); font-size: var(--m-font-size-sm)">"Pinned where you are looking"</span>
                     </div>
                 },
@@ -472,10 +474,12 @@ fn view_of(l: &Live) -> View {
                 },
             };
             view! {
-                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border-radius: var(--m-radius); background: var(--m-surface-raised)">
-                    <span style="flex: none; color: var(--m-accent)">{icon(icons::PIN)}</span>
-                    {what}
-                    <Button icon={icon(icons::HERE)} onclick={l.act(ComposerAction::UseView)} title="Close the panel, look somewhere else, come back and press this">"Use view"</Button>
+                <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 12px 12px 16px; border-radius: var(--m-radius); background: var(--m-surface-raised)">
+                    <div style="align-self: stretch; display: flex; align-items: center; gap: 12px">
+                        <span style="flex: none; color: var(--m-accent)">{icon(icons::PIN)}</span>
+                        {what}
+                    </div>
+                    <Button size=Size::Sm icon={icon(icons::HERE)} onclick={l.act(ComposerAction::UseView)} title="Close the panel, look somewhere else, come back and press this">"Use view"</Button>
                 </div>
             }
         }

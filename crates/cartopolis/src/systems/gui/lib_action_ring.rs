@@ -1,28 +1,25 @@
-//! The ring of actions drawn by the component library (`lib_host`), beside
-//! egui's (`action_ring::show`): round buttons around what was tapped, the
-//! primary one in brand orange at the top, ✕ in the middle, and a pill
-//! underneath saying what was tapped. This module draws the map's ring
-//! (`ui::render_context_menu`: a point, an object, a place's name);
-//! `lib_satellite_menu` draws the satellite's through the same [`RingMount`].
+//! The ring of actions drawn by the component library (`lib_host`): round
+//! buttons around what was tapped, the primary one in brand orange at the
+//! top, ✕ in the middle, and a pill underneath saying what was tapped. This
+//! module draws the map's ring (`ui::drive_context_menu`: a point, an object,
+//! a place's name); `lib_satellite_menu` draws the satellite's through the
+//! same [`RingMount`].
 //!
-//! On with `CARTO_UI_LIB=action_ring` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`action_ring::RingLib::on`) but keeps every decision —
-//! which actions, where the ring stands (`action_ring::clamp_centre`), and
-//! whether a press off it or Escape closes it, read from egui's input as
-//! before — and publishes the open ring in `RingLib::view`. A tap here goes
-//! back in `RingLib::acts`, tagged with the ring it was on, and is acted on
-//! by the code egui's buttons run, next frame.
+//! The caller keeps every decision — which actions, where the ring stands
+//! (`action_ring::clamp_centre`), and whether a press off it or Escape closes
+//! it (`action_ring::run`) — and publishes the open ring in `RingLib::view`.
+//! A tap here goes back in `RingLib::acts`, tagged with the ring it was on,
+//! and is acted on by the caller next frame.
 //!
-//! **Built from boxes**, as egui paints it (`action_ring::show`): the orbit a
-//! bordered circle, each button a circle with its icon and word placed where
-//! egui sets them (6 above and 12 below the button's centre), the ✕ two thin
-//! boxes turned ±45°, the pill centred in a band under the ring that does not
-//! listen. The ring's colours are egui's (`theme::p()`, `theme::BRAND`,
-//! `theme::LABEL_CHIP`), set as custom properties on the root when it mounts.
+//! **Built from boxes**: the orbit a bordered circle, each button a circle
+//! with its icon and word (6 above and 12 below the button's centre), the ✕
+//! two thin boxes turned ±45°, the pill centred in a band under the ring that
+//! does not listen. The ring's colours are the theme's (`theme::p()`,
+//! `theme::BRAND`, `theme::LABEL_CHIP`), set as custom properties on the root
+//! when it mounts.
 //!
-//! What differs from egui's: the library has no hover, so a button's hint is
-//! its `title` and its fill does not change under the pointer; a ring does
-//! not pop as it arrives.
+//! The library has no hover, so a button's hint is its `title` and its fill
+//! does not change under the pointer; a ring does not pop as it arrives.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -34,7 +31,7 @@ use mithril::prelude::Event;
 use mithril::prelude::*;
 
 use crate::systems::action_ring::{
-    self, MapRingLib, RingLib, RingOutcome, RingView, BUTTON_R, CLOSE_R, PILL_GAP, RADIUS,
+    self, MapRingLib, RingId, RingLib, RingOutcome, RingView, BUTTON_R, CLOSE_R, PILL_GAP, RADIUS,
 };
 use crate::systems::lib_pins::{boxed, css, px_scale};
 use crate::systems::lib_settings::LibScreens;
@@ -44,12 +41,12 @@ use crate::systems::ui_input::UiMetrics;
 /// The map's ring's name in the library's host.
 const KEY: &str = "action_ring";
 
-/// The arm of egui's ✕, from its centre to a tip along each axis, points.
+/// The arm of the ✕, from its centre to a tip along each axis, points.
 const CROSS_K: f32 = 5.5;
 /// The ✕'s stroke, points.
 const CROSS_W: f32 = 1.8;
 
-type Acts = Rc<RefCell<Vec<(egui::Id, RingOutcome)>>>;
+type Acts = Rc<RefCell<Vec<(RingId, RingOutcome)>>>;
 
 /// One ring mounted in the library's host: what it was mounted for, the ring
 /// it shows, and its taps.
@@ -78,15 +75,9 @@ pub fn drive_lib_action_ring(
         return;
     }
     let Some(mut ring) = ring else {
-        commands.insert_resource(MapRingLib(RingLib {
-            on: true,
-            ..Default::default()
-        }));
+        commands.insert_resource(MapRingLib(RingLib::default()));
         return;
     };
-    if !ring.0.on {
-        ring.0.on = true;
-    }
     let k = px_scale(metrics.ui_scale());
     MOUNTED.with(|m| sync_ring(m, KEY, &mut ring.0, k));
 }
@@ -101,9 +92,9 @@ pub(crate) fn sync_ring(
     k: f32,
 ) {
     let mut m = slot.borrow_mut();
-    // The taps of the frame, for egui's system to do next frame.
+    // The taps of the frame, for the caller to do next frame.
     if let Some(live) = m.as_ref() {
-        let acts: Vec<(egui::Id, RingOutcome)> = std::mem::take(&mut *live.acts.borrow_mut());
+        let acts: Vec<(RingId, RingOutcome)> = std::mem::take(&mut *live.acts.borrow_mut());
         if !acts.is_empty() {
             bridge.acts.extend(acts);
         }
@@ -202,7 +193,7 @@ fn px(v: f32, k: f32) -> f32 {
 }
 
 /// A tap that hands `o` back for the ring `id`.
-fn tap(acts: &Acts, id: egui::Id, o: RingOutcome) -> impl Fn(&Event) + 'static {
+fn tap(acts: &Acts, id: RingId, o: RingOutcome) -> impl Fn(&Event) + 'static {
     let acts = acts.clone();
     move |_: &Event| acts.borrow_mut().push((id, o))
 }

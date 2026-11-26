@@ -33,11 +33,16 @@ fn slot(panel: &RightPanel) -> Option<(&'static str, f32)> {
 
 /// An empty, unframed egui panel the width of the library panel that is open.
 pub fn reserve_library_panels(mut egui: EguiMut, right_panel: bevy::prelude::Res<RightPanel>) {
+    let compact = egui.compact();
+    let viewport = egui.viewport_pts();
+    if right_panel.is(RightPanel::Appearance) {
+        reserve_appearance(egui.ui_mut(), compact, viewport);
+        return;
+    }
     let Some((id, width)) = slot(&right_panel) else {
         return;
     };
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
+    let viewport_w = viewport.x;
     let mut open = true;
     let mut strip = responsive_right_panel(id, compact, viewport_w, width)
         .frame(egui::Frame::NONE)
@@ -48,4 +53,30 @@ pub fn reserve_library_panels(mut egui: EguiMut, right_panel: bevy::prelude::Res
         strip = strip.resizable(false).exact_size(width);
     }
     strip.show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
+}
+
+/// The Appearance designer's room (`lib_avatar`): on a phone a sheet across
+/// the bottom `ui::SHEET_SHARE` of the screen, so the avatar it shapes stays
+/// in view above it; else a right panel `LIB_PANEL_WIDTH` across. A helper
+/// on the root `Ui` [`reserve_library_panels`] hands it, so the panel chain's
+/// scan (`egui_manager::tests`) counts the system, not this.
+fn reserve_appearance(root: &mut egui::Ui, compact: bool, viewport: egui::Vec2) {
+    let mut open = true;
+    if compact {
+        let height = viewport.y * crate::systems::ui::SHEET_SHARE;
+        egui::Panel::bottom("appearance_sheet")
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .resizable(false)
+            .exact_size(height)
+            .show_collapsible(root, &mut open, |_ui| {});
+    } else {
+        let width = crate::systems::avatar_designer::LIB_PANEL_WIDTH;
+        responsive_right_panel("appearance_panel", false, viewport.x, width)
+            .frame(egui::Frame::NONE)
+            .show_separator_line(false)
+            .resizable(false)
+            .exact_size(width)
+            .show_collapsible(root, &mut open, |_ui| {});
+    }
 }

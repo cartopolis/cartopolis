@@ -1601,8 +1601,10 @@ pub fn draw_link_button(
     // (`dock::right_column`): the top right corner is your face now.
     // On a phone on its side the column lies down as a row beside the bar,
     // and this takes the margin under the bar.
+    let view = egui.viewport_pts();
     let left_of_column =
-        crate::systems::dock::right_column(egui.viewport_pts(), false, false).beside();
+        crate::systems::dock::right_column(bevy::math::Vec2::new(view.x, view.y), false, false)
+            .beside();
     if link.lib {
         // The repaints egui's card and bubble ask for, so the library's
         // "just now" ages and a timed bubble goes.

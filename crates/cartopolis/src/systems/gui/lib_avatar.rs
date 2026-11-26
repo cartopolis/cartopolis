@@ -1,21 +1,17 @@
 //! The avatar designer (the Appearance panel) drawn by the component library
-//! (`lib_host`), beside egui's (`ui::render_avatar_chooser` with
-//! `avatar_designer::designer`): the starters and "Surprise me", the Body,
-//! Face, Skin & hair and Clothes tabs, Undo, Redo, Back to saved, the view
-//! of the model, and Apply.
+//! (`lib_host`): the starters and "Surprise me", the Body, Face, Skin & hair
+//! and Clothes tabs, Undo, Redo, Back to saved, the view of the model, and
+//! Apply.
 //!
-//! On with `CARTO_UI_LIB=avatar` (or `1`), on the web `?ui=lib`
-//! (`&panel=avatar` opens it). egui's system steps aside
-//! (`AvatarChooserState::lib`) keeping an empty strip — a sheet over the
-//! bottom half on a phone — and still seeds the draft, dresses the avatar in
-//! it (`HumanDraft`) and aims the camera, which it takes from
-//! `AvatarChooserState::lib_close_up` and `lib_turn`. Every change goes
-//! through the same functions and `DesignerState` methods egui's edition
-//! calls (`avatar_designer`), so the two cannot drift apart.
+//! `ui::drive_avatar_chooser` seeds the draft, dresses the avatar in it
+//! (`HumanDraft`) and aims the camera, which it takes from
+//! `AvatarChooserState::lib_close_up` and `lib_turn`; `panel_slots` keeps
+//! the panel's room in the map's layout — a sheet over the bottom half on a
+//! phone. Every change goes through the `DesignerState` methods of
+//! `avatar_designer`.
 //!
 //! Drawn differently, because the library has no widget for them: a colour
-//! is picked from the palette only (egui's offers its free colour picker
-//! beside it), and a skin, an eye colour or a colour is a round swatch
+//! is picked from the palette only, and a skin, an eye colour or a colour is a round swatch
 //! button rather than a painted disc.
 
 use std::cell::{Cell, RefCell};
@@ -292,16 +288,12 @@ pub fn drive_lib_avatar(
     time: Res<Time>,
     mouse: Option<Res<ButtonInput<MouseButton>>>,
     touches: Option<Res<Touches>>,
-    // The designer's tab, view and undo history: this edition's own, as
-    // egui's keeps its in a `Local` of its system.
+    // The designer's tab, view and undo history.
     mut state: Local<DesignerState>,
     mut opened: Local<bool>,
 ) {
     if !lib.avatar {
         return;
-    }
-    if !chooser.lib {
-        chooser.lib = true;
     }
     if lib.open_avatar && !*opened {
         *opened = true;
@@ -312,7 +304,7 @@ pub fn drive_lib_avatar(
         chooser.open_tab = None;
         state.tab = tab;
     }
-    // egui's system seeds the draft in `Update`, before this.
+    // `ui::drive_avatar_chooser` seeds the draft in `Update`, before this.
     let open =
         right_panel.is(RightPanel::Appearance) && chooser.seeded && chooser.draft.human.is_some();
     // A drag is one undo step, recorded when the pointer lets go.
@@ -413,7 +405,7 @@ pub fn drive_lib_avatar(
             }
         }
     });
-    // Where the camera looks, for egui's system to aim by.
+    // Where the camera looks, for `ui::drive_avatar_chooser` to aim by.
     let close_up = state.close_up();
     if chooser.lib_close_up != close_up {
         chooser.lib_close_up = close_up;

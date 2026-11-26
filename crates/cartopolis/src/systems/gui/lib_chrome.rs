@@ -1,21 +1,19 @@
-//! The map's chrome drawn by the component library (`lib_host`), beside
-//! egui's: the World | Community switch and the search bar with your face
-//! (`dock`), the round buttons down both edges (`dock`), the compass, the
-//! locate and light discs and the scale bar (`hud`), and the floor picker
-//! (`floor_picker`). One module because they share one bridge
-//! (`dock::ChromeLib`), one placement arithmetic (`dock::right_column`,
-//! `left_slot`, `reserved_top`/`reserved_bottom`) and one disc.
+//! The map's chrome drawn by the component library (`lib_host`): the
+//! World | Community switch and the search bar with your face (`dock`), the
+//! round buttons down both edges (`dock`), the compass, the locate and light
+//! discs and the scale bar (`hud`), and the floor picker (`floor_picker`).
+//! One module because they share one bridge (`dock::ChromeLib`), one
+//! placement arithmetic (`dock::right_column`, `left_slot`,
+//! `reserved_top`/`reserved_bottom`) and one disc.
 //!
-//! On with `CARTO_UI_LIB=chrome` (or `1`), on the web `?ui=lib`. egui's
-//! systems step aside (`MapChrome::lib.on`) but keep every decision — what
-//! shows (a panel, the keyboard, driving, the camera, the design room), where
-//! (the map's rect, lying or standing), in which state — and publish it each
-//! frame in `MapChrome::lib`; they also keep the work only they can do
-//! (`place_pins::set_chrome_holes`, `ui::MainMenu::face`, `MapChrome::
-//! right_bottom`), so `dock::reserved_top`/`reserved_bottom` and the slots
-//! other screens read are the same numbers in both editions. A tap here is a
-//! `dock::ChromeAct`, handed back and acted on next frame by the same code
-//! egui's buttons run.
+//! The state systems (`dock::drive_dock`, `hud::drive_map_controls`,
+//! `floor_picker::drive_floor_picker`) keep every decision — what shows (a
+//! panel, the keyboard, driving, the camera, the design room), where (the
+//! map's rect, lying or standing), in which state — and publish it each frame
+//! in `MapChrome::lib`, with what other screens read beside it
+//! (`MapChrome::holes`, `ui::MainMenu::face`, `MapChrome::right_bottom`). A
+//! tap here is a `dock::ChromeAct`, handed back and acted on next frame by
+//! those systems.
 //!
 //! **Drawn from boxes.** What egui paints — the discs, the compass needle,
 //! the locate arrow, the light icons, the scale bar — is built from nodes:
@@ -104,9 +102,6 @@ pub fn drive_lib_chrome(
 ) {
     if !lib.chrome {
         return;
-    }
-    if !chrome.lib.on {
-        chrome.lib.on = true;
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {

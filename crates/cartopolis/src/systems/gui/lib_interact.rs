@@ -1,23 +1,21 @@
 //! The avatar's prompts over the map drawn by the component library
-//! (`lib_host`), beside egui's: the interaction prompt near something to
-//! use (`interact::render_interaction_prompt` — "Sit at Bench", "Route
-//! here", a greeting, Throw and Put down, Climb up), and the chip that says
-//! what the camera follows (`camera_attach::render_attach_chip`).
+//! (`lib_host`): the interaction prompt near something to use
+//! (`interact::drive_interaction_prompt` — "Sit at Bench", "Route here", a
+//! greeting, Throw and Put down, Climb up), and the chip that says what the
+//! camera follows (`camera_attach::drive_attach_chip`).
 //!
-//! On with `CARTO_UI_LIB=interact` and `CARTO_UI_LIB=attach_chip` (or `1`),
-//! on the web `?ui=lib`. egui's systems step aside (`InteractState::lib`,
-//! `CameraAttach::lib`) but keep every decision — whether the prompt shows
+//! Those state systems keep every decision — whether the prompt shows
 //! (driving, the camera, the map's rect), which controls it carries and
 //! their key hints, where the map's bottom centre is — and publish it in
 //! `InteractState::lib_view` and `CameraAttach::lib_view`. A tap here goes
 //! back (`InteractState::lib_acts`, `CameraAttach::lib_release`) and is done
-//! by the code egui's buttons run, next frame.
+//! by them, next frame.
 //!
-//! **Placement.** As egui's. The prompt's bottom centre is the map area's
-//! centre, `PROMPT_BOTTOM_MARGIN` above its bottom: a band centred there,
-//! listening nowhere, holds the frame. Under the panels and cards, as egui's
-//! `Order::Background` area is (`z-index: -1`, as `lib_chrome`). The chip
-//! is centred over the top edge, `dock::reserved_top` down.
+//! **Placement.** The prompt's bottom centre is the map area's centre,
+//! `PROMPT_BOTTOM_MARGIN` above its bottom: a band centred there, listening
+//! nowhere, holds the frame. Under the panels and cards (`z-index: -1`, as
+//! `lib_chrome`). The chip is centred over the top edge, `dock::reserved_top`
+//! down.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -91,9 +89,6 @@ pub fn drive_lib_interact(
     if !lib.interact {
         return;
     }
-    if !state.lib {
-        state.lib = true;
-    }
     let size = metrics.viewport_pts();
     let viewport = Viewport {
         w: size.x,
@@ -102,7 +97,7 @@ pub fn drive_lib_interact(
     };
     PROMPT.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `drive_interaction_prompt` next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<PromptAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {
@@ -272,9 +267,6 @@ pub fn drive_lib_attach_chip(
     if !lib.attach_chip {
         return;
     }
-    if !attach.lib {
-        attach.lib = true;
-    }
     let k = px_per_point(metrics.ui_scale());
     let placement = ChipPlacement {
         top: crate::systems::dock::reserved_top() * k,
@@ -282,7 +274,7 @@ pub fn drive_lib_attach_chip(
     };
     CHIP.with(|m| {
         let mut m = m.borrow_mut();
-        // The ✕ of the frame, for egui's system to do next frame.
+        // The ✕ of the frame, for `drive_attach_chip` next frame.
         if let Some(live) = m.as_ref() {
             if std::mem::take(&mut *live.release.borrow_mut()) {
                 attach.lib_release = true;

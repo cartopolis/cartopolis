@@ -304,7 +304,7 @@ impl Plugin for PlayerPlugin {
                     systems::human_avatar::finish_rebuilds
                         .after(systems::human_avatar::rebuild_on_look_change),
                     systems::human_avatar::send_avatar_look,
-                    systems::picking::render_marquee.after(systems::picking::update_marquee),
+                    systems::picking::publish_marquee.after(systems::picking::update_marquee),
                     systems::gizmo::render_gizmo_visuals,
                     // The first-person twin of the driver arrow: take the avatar's
                     // model out of shot while the camera is inside its head. After the

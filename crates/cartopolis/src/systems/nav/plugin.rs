@@ -248,9 +248,9 @@ impl Plugin for NavPlugin {
                 // and before the chrome that reads it.
                 systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
                 systems::driver::render_driver_hud
-                    .after(systems::ui::render_main_menu)
+                    .after(systems::ui::drive_main_menu)
                     .after(systems::route_ahead::drive_route_ahead),
-                systems::walk_guide::render_walk_guide.after(systems::ui::render_main_menu),
+                systems::walk_guide::publish_walk_guide.after(systems::ui::drive_main_menu),
                 // Transit in-world rendering. Both run after the camera has moved
                 // this frame: boards billboard toward it, vehicles interpolate
                 // relative to it.

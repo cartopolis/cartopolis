@@ -13,13 +13,11 @@ use super::*;
 // | `Button variant=primary`            | [`primary_button_sized`]               |
 // | `Button variant=secondary`          | [`secondary_button`]                   |
 // | `Button variant=ghost`              | [`ghost_button`]                       |
-// | `Button variant=danger`             | [`danger_button`]                      |
 // | `Button iconOnly`                   | [`icon_button`]                        |
 // | `Button size=sm`                    | the `_small` forms                     |
 // | `.m-input` (`FieldText`, textarea)  | [`text_field`]                         |
 // | `Field` (label · control · help)    | [`labelled`]                           |
 // | `FieldCheckbox`                     | [`checkbox`]                           |
-// | `FieldSegmented`                    | [`segmented`]                          |
 // | `NavItem`, a list row               | [`list_row`], [`menu_entry`]           |
 //
 // The web's numbers: a control is 38 px tall (44 under a finger), radius 8,
@@ -70,45 +68,6 @@ pub(super) enum Dress {
 /// Under the pointer it gets a soft plate; `icon` may be empty.
 pub fn ghost_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
     flat_button(ui, icon, label, control_height(), 0.0, false, Dress::Ghost)
-}
-
-/// [`ghost_button`] holding a stated width, its word cut with an ellipsis to
-/// fit: the name of a list row that is itself the row's action (a saved
-/// place), where a button sized to a long name would push the row's other
-/// controls off the panel.
-pub fn ghost_button_wide(ui: &mut egui::Ui, icon: &str, label: &str, width: f32) -> egui::Response {
-    flat_button(
-        ui,
-        icon,
-        label,
-        control_height(),
-        width,
-        false,
-        Dress::Ghost,
-    )
-}
-
-/// A destructive action: the web's `variant=danger`, the error tone's soft
-/// fill with the error ink. Pair it with [`confirm_button`] for anything
-/// without an undo.
-pub fn danger_button(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
-    flat_button(ui, icon, label, control_height(), 0.0, false, Dress::Danger)
-}
-
-/// A square button of one icon at the small height, frameless: an icon action in a list
-/// row (a bookmark's rename and delete), where four outlined squares beside a
-/// name read as a toolbar.
-pub fn icon_button_small(ui: &mut egui::Ui, icon: &str, name: &str) -> egui::Response {
-    let resp = flat_button(
-        ui,
-        icon,
-        "",
-        control_height_small(),
-        0.0,
-        false,
-        Dress::Ghost,
-    );
-    named(ui, resp, name).on_hover_text(name)
 }
 
 /// `min_width` 0 sizes the button to its word; wider, the word is cut with an

@@ -1,47 +1,41 @@
-//! Prim UI system (Phase 5 - ADR-017).
-//!
-//! Renders context menus and edit dialogs using egui.
+//! The state behind your face's sheet, the Appearance panel, the map's ring
+//! and the object editor, which the component library draws (`lib_main_menu`,
+//! `lib_avatar`, `lib_action_ring`, `lib_object_editor`); and the prim edits
+//! they lead to — the live preview, the saves and the deletes.
 
 use crate::components::{NeedsMeshRebuild, Prim, PrimShape, Selected};
 use crate::resources::OnlineSession;
 use crate::resources::RightPanel;
-use crate::resources::{
-    ContextMenuState, EditDialogState, GameState, PrimTextureCache, TextureLibrary,
-};
-use crate::systems::egui_manager::EguiMut;
+use crate::resources::{ContextMenuState, EditDialogState, GameState, PrimTextureCache};
 use crate::systems::icons;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 use bevy::pbr::StandardMaterial;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
 use cartopolis_core::msg;
 use cartopolis_core::NetMessage;
-use egui::Window;
 
 /// Your face's sheet: whether it is showing, and where the face that toggles
 /// it was drawn.
 ///
 /// A resource because three systems share it: the search bar's face
-/// (`dock::render_dock`) and the Community page's (`chats`) open it, and
-/// [`render_main_menu`] draws it. Both faces are drawn *after* the sheet in the
-/// frame (they sit at the tail of the panel chain), so a tap on a face is a
-/// tap outside the sheet when the sheet looks for one; `face` is the face's
-/// rect from the frame before, which the sheet leaves to the face to answer.
+/// (`dock`) and the Community page's (`lib_chats`) open it, and
+/// [`drive_main_menu`] runs it. A tap on a face is a tap outside the sheet
+/// when the sheet looks for one; `face` is the face's rect from the frame
+/// before, which the sheet leaves to the face to answer.
 #[derive(Resource, Default)]
 pub struct MainMenu {
     pub open: bool,
-    /// Where a face was drawn last frame. Taken by the sheet each frame and
-    /// written again by whichever face draws.
-    pub face: Option<egui::Rect>,
-    /// When Sign out was first tapped (egui's clock): a second tap within
-    /// [`SIGN_OUT_ARMED_S`] signs out ([`MainMenu::tap_sign_out`]).
+    /// Where a face was drawn last frame, ui points. Taken by the sheet each
+    /// frame and written again by whichever face draws.
+    pub face: Option<Rect>,
+    /// When Sign out was first tapped (`Time<Real>`'s clock): a second tap
+    /// within [`SIGN_OUT_ARMED_S`] signs out ([`MainMenu::tap_sign_out`]).
     sign_out_at: Option<f64>,
-    /// The component library draws the sheet (`lib_main_menu`): egui's
-    /// system draws nothing, publishes [`MainMenu::lib_view`] and does the
-    /// taps handed back in [`MainMenu::lib_acts`].
-    pub lib: bool,
-    /// The sheet as the library draws it, while it is open.
+    /// The sheet as the library draws it (`lib_main_menu`), while it is open.
     pub lib_view: Option<MenuView>,
-    /// The library's taps, done by [`render_main_menu`] next frame.
+    /// The library's taps, done by [`drive_main_menu`] next frame.
     pub lib_acts: Vec<SheetAct>,
 }
 
@@ -68,7 +62,7 @@ impl MainMenu {
     }
 }
 
-/// Where a sheet over the map stands, in egui points: standing on the World |
+/// Where a sheet over the map stands, in ui points: standing on the World |
 /// Community switch (a phone, and the Share sheet), or hanging under your
 /// face (a desktop).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -89,8 +83,8 @@ pub enum SheetSpot {
     },
 }
 
-/// Your face's sheet as the library draws it (`lib_main_menu`): what egui's
-/// `sheet_body` reads, read the same way by [`render_main_menu`].
+/// Your face's sheet as the library draws it (`lib_main_menu`), decided by
+/// [`drive_main_menu`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct MenuView {
@@ -134,17 +128,9 @@ fn who_line(signed_in: bool, me: Option<&str>, server: &str) -> (String, String)
 }
 
 /// Width of the sheet on a desktop, where it hangs under your face. Fixed
-/// rather than sized to its content for the reason the driver bar's module
-/// note gives: an anchored, size-to-content `Area` that reaches for the
-/// *available* width grows a little every frame. On a phone it is the screen's
-/// width, as a bottom sheet is.
+/// rather than sized to its content. On a phone it is the screen's width, as
+/// a bottom sheet is.
 const MENU_WIDTH: f32 = 320.0;
-
-/// A row of the sheet: 44 pt, 66 dp on Android — over the 48 dp a finger
-/// needs, and short enough that the whole sheet, Sign out included, stands on
-/// a phone's World | Community switch without scrolling
-/// (`the_sheet_fits_above_the_switch`).
-const SHEET_ROW: f32 = 44.0;
 
 /// The sheet's width on a viewport this wide.
 #[must_use]
@@ -157,7 +143,7 @@ fn sheet_width(viewport_w: f32, compact: bool) -> f32 {
 }
 
 /// The sheet's account half (`systems::session`), bundled into one parameter
-/// because [`render_main_menu`] would otherwise sit at Bevy's 16-parameter
+/// because [`drive_main_menu`] would otherwise sit at Bevy's 16-parameter
 /// ceiling — the same reason `network::AuthWriteback` exists.
 ///
 /// `session` is a `ResMut` because **Sign out happens here**, not on the
@@ -174,8 +160,7 @@ pub struct SignInMenu<'w> {
     contacts: Res<'w, crate::systems::contacts::Contacts>,
 }
 
-/// What a row of the sheet asked for — egui's, or the library's
-/// (`MainMenu::lib_acts`).
+/// What a row of the library's sheet asked for (`MainMenu::lib_acts`).
 #[derive(Clone, Copy, PartialEq)]
 pub enum SheetAct {
     Panel(RightPanel),
@@ -209,9 +194,17 @@ pub enum SheetAct {
 /// **Who you are comes first**, written out — it was the hover text of a "Log
 /// out" row once, which a phone never shows. Signing out is last, in red, and
 /// arms before it acts (`docs/mockups/ux-review`).
+///
+/// This decides all of it — where the sheet stands, what it offers, whether
+/// Sign out is armed, a tap outside it — publishes it in
+/// [`MainMenu::lib_view`] and does the taps handed back in
+/// [`MainMenu::lib_acts`].
 #[allow(clippy::too_many_arguments)]
-pub fn render_main_menu(
-    mut egui: EguiMut,
+pub fn drive_main_menu(
+    metrics: Res<UiMetrics>,
+    time: Res<Time<Real>>,
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     mut menu: ResMut<MainMenu>,
     mut dev_state: ResMut<crate::resources::DevPanelState>,
     mut store: ResMut<crate::systems::user_store::UserStore>,
@@ -225,25 +218,19 @@ pub fn render_main_menu(
     // library's sheet's tap-outside test. As DOM a tap on one never reaches
     // the canvas, so only the Bevy backend has to say.
     #[cfg(feature = "ui-probe")] lib_pointer: Option<Res<mithril_bevy::UiPointer>>,
+    #[cfg(not(feature = "ui-probe"))] ui_input: Res<crate::systems::ui_input::UiInput>,
 ) {
     let face = menu.face.take();
     let lib_acts = std::mem::take(&mut menu.lib_acts);
-    // It rises and fades in, and sinks out (`motion`), as the cards do; while
-    // it leaves it takes no taps. The library's edition (`lib_main_menu`)
-    // comes and goes with `open`.
-    let pres = (!menu.lib).then(|| {
-        crate::systems::motion::presence(egui.ctx(), egui::Id::new("face_sheet"), menu.open)
-    });
-    let showing = pres.map_or(menu.open, |p| p.visible());
-    if !showing {
+    if !menu.open {
         if menu.lib_view.is_some() {
             menu.lib_view = None;
         }
         return;
     }
 
-    let compact = egui.compact();
-    let viewport = egui.viewport_pts();
+    let compact = metrics.compact();
+    let viewport = metrics.viewport_pts();
     let width = sheet_width(viewport.x, compact);
     #[cfg(feature = "comms")]
     let demo = sign_in.chats.demo;
@@ -268,10 +255,8 @@ pub fn render_main_menu(
     // profile, its requests, its Admin and its sign-in (`comms`).
     #[cfg(not(feature = "comms"))]
     let (admin, waiting) = (None, false);
-    let ctx = egui.ctx_mut().clone();
-    let now = ctx.input(|i| i.time);
+    let now = time.elapsed_secs_f64();
     let armed = menu.sign_out_armed(now);
-    let mut act: Option<SheetAct> = None;
     let mut close = false;
 
     let spot = if compact {
@@ -287,8 +272,8 @@ pub fn render_main_menu(
             max_height: (viewport.y - bottom - theme::OSD_MARGIN).max(160.0),
         }
     } else {
-        let top = face.map_or(crate::systems::dock::reserved_top(), |f| f.bottom() + 8.0);
-        let right = face.map_or(viewport.x - theme::OSD_MARGIN, |f| f.right() + 2.0);
+        let top = face.map_or(crate::systems::dock::reserved_top(), |f| f.max.y + 8.0);
+        let right = face.map_or(viewport.x - theme::OSD_MARGIN, |f| f.max.x + 2.0);
         SheetSpot::Hang {
             right: viewport.x - right,
             top,
@@ -297,78 +282,45 @@ pub fn render_main_menu(
         }
     };
 
-    // Dismissed by a click that landed outside the sheet — but not on a face,
-    // which toggles it itself (see `MainMenu::face`). Escape and Back are
-    // `systems::dismiss`'s.
-    let clicked_out = match pres {
-        // The library draws it (`lib_main_menu`): egui publishes what it
-        // shows, and does its taps of the frame before below, as its own.
-        None => {
-            let (title, sub) = who_line(signed_in, me.as_deref(), &server);
-            let view = MenuView {
-                spot,
-                signed_in,
-                face: me.clone().filter(|_| signed_in),
-                waiting,
-                title,
-                sub,
-                admin,
-                error: sign_in.session.error.clone(),
-                dev: prefs.developer_menu,
-                diagnostics: diagnostics.last.clone(),
-                armed,
-            };
-            // The tap that opened it is not a tap outside it.
-            let fresh = menu.lib_view.is_none();
-            if menu.lib_view.as_ref() != Some(&view) {
-                menu.lib_view = Some(view);
-            }
-            // One tap a frame, as egui's sheet takes.
-            act = lib_acts.last().copied();
-            // Outside is on none of the library's screens: the sheet is one.
-            #[cfg(feature = "ui-probe")]
-            let over_lib = lib_pointer.is_some_and(|p| p.owns_pointer());
-            #[cfg(not(feature = "ui-probe"))]
-            let over_lib = false;
-            !fresh
-                && !over_lib
-                && ctx.input(|i| {
-                    i.pointer.any_click()
-                        && i.pointer
-                            .interact_pos()
-                            .is_some_and(|p| !face.is_some_and(|f| f.contains(p)))
-                })
-        }
-        Some(pres) => {
-            let rect = draw_sheet(
-                &ctx,
-                pres,
-                spot,
-                viewport,
-                compact,
-                SheetIn {
-                    signed_in,
-                    me: me.as_deref(),
-                    server: &server,
-                    waiting,
-                    admin,
-                    error: sign_in.session.error.as_deref(),
-                    dev: prefs.developer_menu,
-                    diagnostics: diagnostics.last.as_deref(),
-                    armed,
-                },
-                &mut act,
-                &mut close,
-            );
-            pres.open
-                && ctx.input(|i| {
-                    i.pointer.any_click()
-                        && i.pointer.interact_pos().is_some_and(|p| {
-                            !rect.contains(p) && !face.is_some_and(|f| f.contains(p))
-                        })
-                })
-        }
+    let (title, sub) = who_line(signed_in, me.as_deref(), &server);
+    let view = MenuView {
+        spot,
+        signed_in,
+        face: me.clone().filter(|_| signed_in),
+        waiting,
+        title,
+        sub,
+        admin,
+        error: sign_in.session.error.clone(),
+        dev: prefs.developer_menu,
+        diagnostics: diagnostics.last.clone(),
+        armed,
     };
+    // The tap that opened it is not a tap outside it.
+    let fresh = menu.lib_view.is_none();
+    if menu.lib_view.as_ref() != Some(&view) {
+        menu.lib_view = Some(view);
+    }
+    // One tap a frame.
+    let act = lib_acts.last().copied();
+
+    // Dismissed by a press that landed outside the sheet — on none of the
+    // library's screens, the sheet being one — but not on a face, which
+    // toggles it itself (see `MainMenu::face`). A finger is the emulated
+    // mouse (`touch`). Escape and Back are `systems::dismiss`'s.
+    #[cfg(feature = "ui-probe")]
+    let over_lib = lib_pointer.is_some_and(|p| p.owns_pointer());
+    #[cfg(not(feature = "ui-probe"))]
+    let over_lib = ui_input.overlay_owns_pointer();
+    let clicked_out = !fresh
+        && !over_lib
+        && mouse.is_some_and(|m| m.just_pressed(MouseButton::Left))
+        && windows
+            .iter()
+            .next()
+            .and_then(Window::cursor_position)
+            .map(|p| metrics.window_to_ui(p))
+            .is_some_and(|p| !face.is_some_and(|f| f.contains(p)));
 
     let mut log_out = false;
     match act {
@@ -401,7 +353,7 @@ pub fn render_main_menu(
             sign_in.screen.open = true;
             close = true;
         }
-        // The sheet offers none of them without `comms` (`sheet_body`).
+        // The sheet offers none of them without `comms` (`lib_main_menu`).
         #[cfg(not(feature = "comms"))]
         Some(SheetAct::Profile | SheetAct::ShareLink | SheetAct::SignIn) => {}
         Some(SheetAct::DevTools) => {
@@ -430,384 +382,48 @@ pub fn render_main_menu(
         crate::systems::session::sign_out(&mut sign_in.session, &mut store);
         *right_panel = RightPanel::None;
     }
-    // Armed, the label has to fall back by itself.
-    if menu.sign_out_armed(now) {
-        ctx.request_repaint();
-    }
+    // Armed, the label falls back by itself with no repaint asked for (egui's
+    // sheet had to `request_repaint`): this runs every frame, `armed` above is
+    // read off the clock each time, and the app never stops presenting — idle,
+    // `frame_pacing::present_rate` halves the rate, floored at 30 fps — so
+    // the changed view reaches the library within a frame of the 3 s.
     if close || clicked_out {
         menu.open = false;
     }
 }
 
-/// egui's edition of the sheet, at `spot`, on a `viewport` of egui points.
-/// Answers the rect it took.
-#[allow(clippy::too_many_arguments)]
-fn draw_sheet(
-    ctx: &egui::Context,
-    pres: crate::systems::motion::Presence,
-    spot: SheetSpot,
-    viewport: egui::Vec2,
-    compact: bool,
-    s: SheetIn<'_>,
-    act: &mut Option<SheetAct>,
-    close: &mut bool,
-) -> egui::Rect {
-    // Keyed on the band it may fill: an `Area` remembers its first frame's
-    // size and the `ScrollArea` inside never reports more, so a sheet first
-    // laid out against a smaller band (the window's first frame, a resize)
-    // stayed that short — Settings and About fell off the bottom.
-    // …and on what is in it: a sheet first laid out signed out (or before a
-    // capture's stand-in session arrived) kept the signed-out height when it
-    // grew rows, and Sign out fell under the fold again.
-    let sheet_id = egui::Id::new((
-        "main_menu",
-        compact,
-        viewport.x as i32,
-        viewport.y as i32,
-        s.signed_in,
-        s.admin.is_some(),
-        s.dev,
-        s.error.is_some(),
-    ));
-    let (area, width, max_height) = match spot {
-        SheetSpot::Bottom {
-            bottom,
-            width,
-            max_height,
-            ..
-        } => (
-            egui::Area::new(sheet_id).anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bottom)),
-            width,
-            max_height,
-        ),
-        SheetSpot::Hang {
-            right,
-            top,
-            width,
-            max_height,
-        } => (
-            egui::Area::new(sheet_id).anchor(egui::Align2::RIGHT_TOP, egui::vec2(-right, top)),
-            width,
-            max_height,
-        ),
-    };
-    let corner = egui::CornerRadius::same(theme::RADIUS_LG);
-    let area = area
-        .order(egui::Order::Foreground)
-        // **The sizing pass decides how tall this card may ever be.** An
-        // `Area` lays out its first frame against `Spacing::default_area_size`
-        // (600×400), remembers the content's size and uses *that* as the
-        // `max_rect` from then on; a `ScrollArea` inside shrinks to the room it
-        // is given, so container and content settle on a truncated height and
-        // the rows below the fold are simply not there. The sizing pass gets
-        // the whole band instead (`a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass`).
-        .default_size(egui::vec2(width, max_height))
-        .interactable(pres.open)
-        .show(ctx, |ui| {
-            crate::systems::motion::enter(ui, pres, crate::systems::motion::LIFT);
-            egui::Frame::NONE
-                .fill(theme::p32().panel)
-                .stroke(egui::Stroke::new(1.0, theme::p32().panel_rim))
-                .shadow(theme::card_shadow())
-                .corner_radius(corner)
-                .inner_margin(egui::Margin {
-                    left: 14,
-                    right: 14,
-                    top: 14,
-                    bottom: 12,
-                })
-                .show(ui, |ui| {
-                    let inner = width - 28.0;
-                    ui.set_width(inner);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_height - 32.0)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.set_width(inner);
-                            sheet_body(ui, s, act, close);
-                        });
-                });
-        });
-    area.response.rect
-}
-
-/// What the sheet shows, read before it is drawn.
-#[derive(Clone, Copy)]
-struct SheetIn<'a> {
-    signed_in: bool,
-    me: Option<&'a str>,
-    server: &'a str,
-    waiting: bool,
-    admin: Option<usize>,
-    error: Option<&'a str>,
-    dev: bool,
-    diagnostics: Option<&'a str>,
-    /// The first tap on Sign out has armed it ([`MainMenu::tap_sign_out`]).
-    armed: bool,
-}
-
-fn sheet_body(ui: &mut egui::Ui, s: SheetIn<'_>, act: &mut Option<SheetAct>, close: &mut bool) {
-    use crate::systems::theme::RowEnd;
-    let accent = theme::p32().accent;
-    // Who you are, and the close.
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(42.0), egui::Sense::hover());
-        crate::systems::dock::paint_face(
-            ui.painter(),
-            rect.center(),
-            42.0,
-            s.me.filter(|_| s.signed_in),
-            s.waiting,
-            false,
-        );
-        let close_w = theme::close_button_size();
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width() - close_w - 8.0, 46.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.spacing_mut().item_spacing.y = 1.0;
-                ui.add_space(3.0);
-                let (title, sub) = who_line(s.signed_in, s.me, s.server);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(title)
-                            .font(egui::FontId::new(
-                                theme::SIZE_HEADING,
-                                theme::brand_family(),
-                            ))
-                            .color(theme::p32().cream),
-                    )
-                    .truncate(),
-                );
-                if !sub.is_empty() {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(sub)
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p32().text_dim),
-                        )
-                        .truncate(),
-                    );
-                }
-            },
-        );
-        if theme::close_button(ui).clicked() {
-            *close = true;
-        }
-    });
-    ui.add_space(8.0);
-
-    if !cfg!(feature = "comms") {
-        // The web build: who you are, what to do about it and signing out
-        // are the page's around the World tab.
-    } else if s.signed_in {
-        // Your profile, and your link: the two things about you that are not
-        // a setting (`v2-account`, A3).
-        ui.horizontal(|ui| {
-            let w = theme::equal_width(ui, 2);
-            if theme::secondary_button(ui, crate::systems::icons::APPEARANCE, "Your profile", w)
-                .clicked()
-            {
-                *act = Some(SheetAct::Profile);
-            }
-            if theme::secondary_button(ui, crate::systems::icons::SHARE, "Share link", w).clicked()
-            {
-                *act = Some(SheetAct::ShareLink);
-            }
-        });
-    } else {
-        if theme::primary_button_sized(ui, "Sign in…", ui.available_width()).clicked() {
-            *act = Some(SheetAct::SignIn);
-        }
-    }
-    // **Why a session failure is reported here.** The sign-in card used to
-    // raise itself whenever one arrived; it opens from the row above and from
-    // nowhere else now, so the reason a remembered session did not come up
-    // lands next to the way to try again.
-    if let Some(error) = s.error {
-        theme::note(ui, error);
-    }
-    ui.add_space(8.0);
-
-    let row = |ui: &mut egui::Ui, panel: RightPanel, act: &mut Option<SheetAct>| {
-        if theme::list_row_sized(
-            ui,
-            Some(SHEET_ROW),
-            panel.icon(),
-            panel.label(),
-            None,
-            RowEnd::Chevron,
-            accent,
-        )
-        .clicked()
-        {
-            *act = Some(SheetAct::Panel(panel));
-        }
-    };
-    // Yours: the body others see, the places you keep, the models you own.
-    // Avatar and Models are an account's (an appearance is a thing other
-    // people look at; an inventory lives on a server); saved places are this
-    // device's and are there signed out too.
-    theme::list_group(ui, |ui| {
-        if s.signed_in {
-            row(ui, RightPanel::Appearance, act);
-        }
-        row(ui, RightPanel::Places, act);
-        if s.signed_in {
-            row(ui, RightPanel::Models, act);
-        }
-    });
-    // The app's: Settings, Admin for an account that may run something, and
-    // About, which carries the attribution the map data's licences require.
-    theme::list_group(ui, |ui| {
-        row(ui, RightPanel::Settings, act);
-        if let Some(waiting) = s.admin {
-            if theme::list_row_sized(
-                ui,
-                Some(SHEET_ROW),
-                RightPanel::Admin.icon(),
-                RightPanel::Admin.label(),
-                (waiting > 0)
-                    .then(|| format!("{waiting} waiting"))
-                    .as_deref(),
-                RowEnd::Badge(waiting),
-                theme::p32().warn,
-            )
-            .clicked()
-            {
-                *act = Some(SheetAct::Panel(RightPanel::Admin));
-            }
-        }
-        row(ui, RightPanel::About, act);
-        // Not on the web, where a tab is closed by the browser. On the phone
-        // Back from the map only sends the app to the background, so this is
-        // the one way to stop it there (asked for 2026-11-20): the `AppExit`
-        // ends `run`, and `android_main` ends the process — the background
-        // connection and its notification with it.
-        #[cfg(not(target_arch = "wasm32"))]
-        if theme::list_row_sized(
-            ui,
-            Some(SHEET_ROW),
-            crate::systems::icons::CLEAR,
-            "Exit",
-            None,
-            RowEnd::Nothing,
-            accent,
-        )
-        .clicked()
-        {
-            *act = Some(SheetAct::Exit);
-        }
-    });
-    // Developer tools and Share diagnostics only with Settings ▸ General ▸
-    // Developer on (`AppPrefs::developer_menu`).
-    if s.dev {
-        theme::list_group(ui, |ui| {
-            if theme::list_row_sized(
-                ui,
-                Some(SHEET_ROW),
-                crate::systems::icons::TUNE,
-                "Developer tools",
-                None,
-                RowEnd::Chevron,
-                accent,
-            )
-            .clicked()
-            {
-                *act = Some(SheetAct::DevTools);
-            }
-            // The person who needs this is holding a phone and reporting a
-            // bug (`systems::diagnostics`).
-            if theme::list_row_sized(
-                ui,
-                Some(SHEET_ROW),
-                crate::systems::icons::COPY,
-                "Share diagnostics…",
-                s.diagnostics,
-                RowEnd::Nothing,
-                accent,
-            )
-            .on_hover_text(
-                "The build, the GPU, the render tier and what the avatar is doing, plus \
-                 this run's log — to the share sheet on a phone, to the clipboard \
-                 everywhere else",
-            )
-            .clicked()
-            {
-                *act = Some(SheetAct::Diagnostics);
-            }
-        });
-    }
-    if s.signed_in && cfg!(feature = "comms") {
-        ui.add_space(4.0);
-        // Arms in place, as `theme::confirm_button` does: the first tap asks,
-        // the second signs out, and a stray tap times out
-        // (`MainMenu::tap_sign_out`).
-        let armed = s.armed;
-        let label = if armed {
-            "Tap again to sign out"
-        } else {
-            "Sign out…"
-        };
-        let (rect, resp) =
-            ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::click());
-        let resp = theme::named(ui, resp, label);
-        if resp.hovered() || armed {
-            ui.painter().rect_filled(
-                rect,
-                egui::CornerRadius::same(theme::RADIUS),
-                theme::p32().surface_hover,
-            );
-        }
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            label,
-            egui::FontId::new(theme::SIZE_VALUE, theme::brand_family()),
-            theme::p32().error,
-        );
-        if resp.clicked() {
-            *act = Some(SheetAct::SignOut);
-        }
-    }
-}
-
-// The camera-mode picker (a Follow/Fly/Earth chip row plus a "View whole
-// Earth" jump) used to be drawn inline here. It is the mode disc in the
-// right-hand column of the map now (`dock::mode_disc`): a camera switch
-// is a change to the map and belongs on it, not two taps deep in a card that
-// covers it — and the disc, cycling only the modes on offer, is also where
-// "Follow needs a signed-in session" is enforced for the UI.
-
 /// The share of the screen the Appearance sheet covers on a phone. It is also
 /// where the camera puts its aim, in NDC: a sheet covering `s` leaves NDC
 /// `2s - 1 ..= 1`, whose middle is `s`.
-const SHEET_SHARE: f32 = 0.5;
+pub(crate) const SHEET_SHARE: f32 = 0.5;
 
 /// The avatar designer (☰ ▸ Appearance): shapes the MakeHuman body with
-/// sliders (`avatar_designer`). The avatar wears the draft while the panel is
+/// sliders (`lib_avatar`). The avatar wears the draft while the panel is
 /// open (`HumanDraft`); Apply commits it to the persisted store, which
 /// `human_avatar::rebuild_on_look_change` watches to rebuild the model.
 ///
-/// **The menu only offers it in a session** (`render_main_menu`), because an
+/// This seeds the draft and aims the camera; the library's designer edits
+/// the draft, applies it and says what it wants of the camera through the
+/// chooser (`lib_close_up`, `lib_turn`).
+///
+/// **The menu only offers it in a session** (`drive_main_menu`), because an
 /// appearance is a thing other people look at. This closes it on the *transition*
-/// out of one rather than refusing to draw whenever there is no session, and the
+/// out of one rather than refusing to show whenever there is no session, and the
 /// difference is not pedantry: a scripted capture is always offline
 /// (`--ui appearance` sets `RightPanel` directly), so a flat "online or nothing"
 /// rule would mean the wardrobe is the one panel no README image can ever show.
 /// What is actually wrong is a panel left standing after a sign-out, and that is
 /// an edge.
-pub fn render_avatar_chooser(
-    mut egui: EguiMut,
+#[allow(clippy::too_many_arguments)]
+pub fn drive_avatar_chooser(
+    metrics: Res<UiMetrics>,
     mut chooser: ResMut<crate::resources::AvatarChooserState>,
-    mut store: ResMut<crate::systems::user_store::UserStore>,
+    store: Res<crate::systems::user_store::UserStore>,
     mut right_panel: ResMut<RightPanel>,
     session: Res<crate::systems::session::SessionState>,
     mut was_online: Local<bool>,
-    // The MakeHuman designer: the draft the avatar is rebuilt from while it is
-    // open, and its tab.
+    // The draft the avatar is rebuilt from while the designer is open.
     mut human_draft: ResMut<crate::systems::human_avatar::HumanDraft>,
-    mut designer: Local<crate::systems::avatar_designer::DesignerState>,
     mut camera: ResMut<crate::resources::CameraState>,
     mut designer_turn: ResMut<crate::systems::human_avatar::DesignerTurn>,
 ) {
@@ -833,110 +449,9 @@ pub fn render_avatar_chooser(
         }
         chooser.seeded = true;
     }
-    // Borrowed, not cloned: this ran five String clones per frame whether the
-    // panel was open or not, and the closure only compares against it — the
-    // store write on Apply happens after the closure ends.
-    let saved = &store.data.appearance;
-    let mut apply = false;
     // On a phone the designer is a sheet across the bottom half: a panel that
     // filled the screen would hide the avatar it is shaping.
-    // The library's edition takes the tab itself (`lib_avatar`).
-    let lib = chooser.lib;
-    if !lib {
-        if let Some(tab) = chooser.open_tab.take() {
-            designer.tab = tab;
-        }
-    }
-    let sheet = egui.compact();
-    // The library's edition is showing (`lib_avatar`): keep an empty strip
-    // of the panel's size, so the dock and the pins move aside and a click
-    // there is not the world's, and leave the draft and the camera to the
-    // code below, as for egui's.
-    if lib && right_panel.is(RightPanel::Appearance) {
-        let mut open = true;
-        if sheet {
-            let height = egui.viewport_pts().y * SHEET_SHARE;
-            egui::Panel::bottom("appearance_sheet")
-                .frame(egui::Frame::NONE)
-                .show_separator_line(false)
-                .resizable(false)
-                .exact_size(height)
-                .show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
-        } else {
-            let viewport_w = egui.viewport_pts().x;
-            crate::systems::egui_manager::responsive_right_panel(
-                "appearance_panel",
-                false,
-                viewport_w,
-                crate::systems::avatar_designer::LIB_PANEL_WIDTH,
-            )
-            .frame(egui::Frame::NONE)
-            .show_separator_line(false)
-            .resizable(false)
-            .exact_size(crate::systems::avatar_designer::LIB_PANEL_WIDTH)
-            .show_collapsible(egui.ui_mut(), &mut open, |_ui| {});
-        }
-    }
-    let body = |ui: &mut egui::Ui| {
-        // Outside the scroll area, so the header and the close button stay put
-        // while the body scrolls under them — and so the body is what is
-        // reachable on a 609 pt viewport, where these rows overrun the screen.
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let d = &mut chooser.draft;
-                if let Some(look) = d.human.as_mut() {
-                    crate::systems::avatar_designer::designer(
-                        ui,
-                        &mut designer,
-                        look,
-                        saved.human.as_ref(),
-                    );
-                    ui.separator();
-                    let changed = *d != *saved;
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled_ui(changed, |ui| {
-                                theme::primary_button_sized(ui, "Apply", 0.0)
-                            })
-                            .inner
-                            .clicked()
-                        {
-                            apply = true;
-                        }
-                        if !changed {
-                            ui.weak("This is your current avatar.");
-                        }
-                    });
-                }
-            });
-    };
-    let closed = !lib
-        && if sheet {
-            crate::systems::egui_manager::bottom_sheet(
-                &mut egui,
-                &mut right_panel,
-                RightPanel::Appearance,
-                "appearance_sheet",
-                SHEET_SHARE,
-                body,
-            )
-        } else {
-            crate::systems::egui_manager::right_panel(
-                &mut egui,
-                &mut right_panel,
-                RightPanel::Appearance,
-                "appearance_panel",
-                280.0,
-                body,
-            )
-        };
-    if apply {
-        crate::systems::avatar_designer::apply_draft(&chooser, &mut store);
-    }
-    if closed {
-        chooser.seeded = false;
-    }
+    let sheet = metrics.compact();
     // While the designer is open the avatar wears the draft; closing it, saved
     // or not, puts it back in the saved look. Compared first, so an idle
     // panel does not mark the resource changed every frame.
@@ -951,13 +466,7 @@ pub fn render_avatar_chooser(
     // the middle of the half it leaves, not the middle of the screen: aiming
     // at the face put it right on the sheet's edge, under it but for the hair.
     // (0.9 m at the default 6 m: 2.5 m of the top half, the body with room.)
-    // The library's designer says what it wants through the chooser.
-    let close_up = if lib {
-        chooser.lib_close_up
-    } else {
-        designer.close_up()
-    };
-    let close = showing.is_some() && close_up;
+    let close = showing.is_some() && chooser.lib_close_up;
     let aim = if close {
         Some(1.62)
     } else {
@@ -975,11 +484,7 @@ pub fn render_avatar_chooser(
         camera.aim_reach = reach;
     }
     let turn = if showing.is_some() {
-        if lib {
-            chooser.lib_turn
-        } else {
-            designer.view.turn()
-        }
+        chooser.lib_turn
     } else {
         0.0
     };
@@ -993,7 +498,7 @@ pub fn render_avatar_chooser(
 
 /// Fires the pending chrome-free capture (a chat's snapshot, a polaroid, the
 /// camera's world). Runs in Update **after** the panels that ask for one, so the
-/// click is seen this frame; because `suppress_egui_for_screenshot` drops the
+/// click is seen this frame; because `egui_manager::suppress_egui_for_screenshot` drops the
 /// egui output later this same frame (while `hide_ui` is set), the captured
 /// swapchain has no UI chrome. After the capturing frame, `hide_ui` is cleared
 /// and the panels reappear.
@@ -1123,24 +628,6 @@ pub fn drive_screenshots(
     }
 }
 
-/// When a screenshot is being captured, drop this frame's tessellated egui geometry so
-/// the shot is free of UI chrome. Runs in PostUpdate **after** `end_egui_frame` (which
-/// writes the output) and before render-world extraction. Only `clipped_primitives` is
-/// cleared — `textures_delta` is left intact so egui's font/texture uploads aren't lost.
-pub fn suppress_egui_for_screenshot(
-    shot: Res<crate::resources::ScreenshotState>,
-    mut output: ResMut<crate::systems::egui_manager::EguiRenderOutput>,
-) {
-    if shot.hide_ui {
-        output.clipped_primitives.clear();
-        // This mutates the output in place, so `end_egui_frame` must rewrite it next
-        // frame even if egui reports nothing changed — otherwise the cleared geometry
-        // is what stays resident and the UI never comes back after a screenshot.
-        output.force_next_write = true;
-        output.generation = output.generation.wrapping_add(1);
-    }
-}
-
 /// Fill the edit dialog's fields and revert snapshots from a prim. Leaves `visible` and
 /// `active_tab` untouched, so it serves both opening the dialog and following a selection
 /// change. Sets `is_new = false` and `prim_id` to this prim.
@@ -1227,7 +714,7 @@ pub fn sync_dialog_to_selection(
 }
 
 /// Saving the point under the cursor as a place: the ring's Save. Bundled to
-/// keep [`render_context_menu`] under Bevy's 16-parameter cap.
+/// keep [`drive_context_menu`] under Bevy's 16-parameter cap.
 /// `BookmarksState` is `Res` and not `ResMut` on purpose: `request_address`
 /// resolves the name through an interior-mutability channel, so the ring does
 /// not have to contend with the Places panel for the resource every frame it
@@ -1256,12 +743,13 @@ pub struct SaveHere<'w> {
 /// list — `camera_controls` hit the same wall and that is what it did, and so
 /// did the library's ring ([`SaveHere`] made its room).
 ///
-/// With the component library drawing the ring (`lib_action_ring`,
-/// `action_ring::MapRingLib`), this still decides everything and acts on the
-/// choice; only the painting moves.
-pub fn render_context_menu(
+/// The component library draws the ring (`lib_action_ring`,
+/// `action_ring::MapRingLib`); this decides everything and acts on the
+/// choice.
+#[allow(clippy::too_many_arguments)]
+pub fn drive_context_menu(
     mut commands: Commands,
-    mut egui: EguiMut,
+    pointer: crate::systems::action_ring::RingPointer,
     mut context_menu: ResMut<ContextMenuState>,
     mut edit_dialog: ResMut<EditDialogState>,
     mut game_state: ResMut<GameState>,
@@ -1436,16 +924,22 @@ pub fn render_context_menu(
         (None, None, Some((lat, lng))) => ("This spot".to_string(), format!("{lat:.5}, {lng:.5}")),
         (None, None, None) => (String::new(), String::new()),
     };
+    // The library's driver inserts the bridge its first frame: the ring opens
+    // the frame after.
+    let Some(ring_lib) = ring_lib.as_deref_mut() else {
+        return;
+    };
     // A new id per opening, so the press that opened it is not read as a press
-    // off the ring (`action_ring::show`).
-    let at = egui.window_to_ui(context_menu.screen_pos);
-    let id = egui::Id::new("map_ring").with((
+    // off the ring (`action_ring::run`).
+    let at = pointer.window_to_ui(context_menu.screen_pos);
+    let id = action_ring::RingId::new((
+        "map_ring",
         context_menu.screen_pos.x.to_bits(),
         context_menu.screen_pos.y.to_bits(),
     ));
     let outcome = action_ring::run(
-        egui.ctx_mut(),
-        ring_lib.as_deref_mut().map(|l| &mut l.0),
+        &mut ring_lib.0,
+        pointer.read(),
         id,
         at,
         &title,
@@ -1590,7 +1084,7 @@ pub fn open_new_object(
 ///
 /// The floor is deliberately below anything comfortable: on a viewport narrower
 /// than the floor the dialog is cut off either way, and a width that goes
-/// negative is a panic in egui's layout rather than an ugly dialog.
+/// negative lays out nothing at all.
 pub(crate) fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
     preferred.min(viewport_w - 16.0).max(200.0)
 }
@@ -1599,66 +1093,8 @@ pub(crate) fn dialog_width(viewport_w: f32, preferred: f32) -> f32 {
 /// the object itself, which is the thing being edited.
 pub(crate) const SHEET_HEIGHT: f32 = 0.55;
 
-/// One labelled X/Y/Z row: the label on its own line, then three fields sharing
-/// the width equally.
-///
-/// It was one row of a four-column grid, label first, and the label alone is
-/// ~120 pt — so on a phone the Z field landed past the right-hand edge of the
-/// dialog and of the screen. Returns which of the three changed.
-fn xyz_fields(
-    ui: &mut egui::Ui,
-    label: &str,
-    values: [&mut f32; 3],
-    speed: f64,
-    suffix: &str,
-    min: Option<f32>,
-) -> [bool; 3] {
-    ui.label(label);
-    let gap = ui.spacing().item_spacing.x;
-    let w = ((ui.available_width() - 2.0 * gap) / 3.0).max(40.0);
-    let h = ui.spacing().interact_size.y;
-    let mut changed = [false; 3];
-    ui.horizontal(|ui| {
-        for ((value, axis), out) in values.into_iter().zip(["X ", "Y ", "Z "]).zip(&mut changed) {
-            let mut field = egui::DragValue::new(value)
-                .prefix(axis)
-                .suffix(suffix)
-                .speed(speed);
-            if let Some(min) = min {
-                field = field.range(min..=f32::MAX);
-            }
-            *out = ui.add_sized([w, h], field).changed();
-        }
-    });
-    changed
-}
-
-/// The frame the object editor and the texture picker wear: the sign-in card's
-/// recipe, which is what a themed window looks like in this app — a glass fill,
-/// a lit rim, the shared corner radius and real margins.
-fn dialog_frame(style: &egui::Style) -> egui::Frame {
-    egui::Frame::window(style)
-        .fill(theme::p32().glass)
-        .stroke(egui::Stroke::new(1.0, theme::p32().overlay_line))
-        .inner_margin(egui::Margin::symmetric(10, 10))
-}
-
-/// The object editor and its texture picker as the component library draws
-/// them (`lib_object_editor`, `CARTO_UI_LIB=object_editor`).
-///
-/// With `lib` on [`render_edit_dialog`] draws nothing. The library's edition
-/// reads and writes [`EditDialogState`]'s fields itself (a field is a field in
-/// either edition) and does its buttons through [`apply_edit_act`], the code
-/// egui's buttons run.
-#[derive(Resource, Default)]
-#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
-pub struct ObjectEditorLib {
-    /// The library draws the editor and the picker.
-    pub lib: bool,
-}
-
-/// What a button of the object editor or its texture picker asked for —
-/// egui's, or the library's (`lib_object_editor`).
+/// What a button of the object editor or its texture picker asked for
+/// (`lib_object_editor`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditAct {
     /// The header's ✕: Cancel, and the picker goes too.
@@ -1734,673 +1170,6 @@ pub fn apply_edit_act(act: EditAct, edit_dialog: &mut EditDialogState, game_stat
         EditAct::Physical(on) => {
             edit_dialog.physical = on;
             edit_dialog.physical_request = Some(on);
-        }
-    }
-}
-
-/// The object (prim) editor.
-///
-/// **It wears the panels' chrome, not egui's.** This is the primary surface of
-/// the building tool — right-click anything in the world and it opens — and it
-/// was the one window still carrying a stock title bar, collapse triangle and
-/// close glyph, against nine right-hand panels wearing `theme::panel_header`'s
-/// raised band, accent medallion and painted cross. The recipe is the sign-in
-/// card's: `title_bar(false)`, a themed frame, and the shared header for the
-/// title and the way out.
-pub fn render_edit_dialog(
-    mut egui: EguiMut,
-    mut edit_dialog: ResMut<EditDialogState>,
-    mut game_state: ResMut<GameState>,
-    texture_lib: Res<TextureLibrary>,
-    mut texture_cache: ResMut<PrimTextureCache>,
-    mut gizmo_state: ResMut<crate::systems::gizmo::GizmoState>,
-    lib: Option<Res<ObjectEditorLib>>,
-) {
-    // The library draws the editor and the picker (`lib_object_editor`),
-    // and does their buttons itself.
-    if lib.is_some_and(|l| l.lib) {
-        return;
-    }
-    if !edit_dialog.visible {
-        return;
-    }
-
-    // 320 pt of dialog does not fit a 274 pt phone viewport, and a `Window` is no
-    // help there: it clamps its *position* to the screen, not its size. The Shape
-    // tab is a good 700 pt tall on its own, so the height needs the same treatment.
-    //
-    // On a phone the dialog is a sheet along the bottom of the screen: full
-    // width, fixed in place, and no taller than `SHEET_HEIGHT` of the screen, so
-    // the object being edited stays in view above it. Left to itself the window
-    // opened wherever egui put it and hung off the right-hand edge.
-    let viewport = egui.viewport_pts();
-    let compact = egui.compact();
-    let width = dialog_width(viewport.x, 320.0);
-    let max_height = if compact {
-        (viewport.y * SHEET_HEIGHT).max(200.0)
-    } else {
-        (viewport.y - 24.0).max(200.0)
-    };
-    let ctx = egui.ctx_mut();
-    let mut dialog_open = true;
-
-    let title = if edit_dialog.is_new {
-        "Create object"
-    } else {
-        "Edit object"
-    };
-
-    let mut window = Window::new(title)
-        .id(egui::Id::new("prim_edit_dialog"))
-        .title_bar(false)
-        .default_width(width)
-        .min_width(width)
-        .max_width(width)
-        .max_height(max_height)
-        .frame(dialog_frame(&ctx.style_of(ctx.theme())));
-    if compact {
-        window = window
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
-            .resizable(false);
-    }
-    let mut acts: Vec<EditAct> = Vec::new();
-    window.show(ctx, |ui| {
-        ui.set_max_width(width);
-        if theme::panel_header(ui, icons::TUNE, title) {
-            dialog_open = false;
-        }
-        // Tab bar
-        ui.horizontal(|ui| {
-            // Not "Edit / Object / Texture": the dialog is *called* "Edit
-            // object" now, so two of those three named the dialog rather than
-            // the tab. These name what is behind them.
-            ui.selectable_value(&mut edit_dialog.active_tab, 0, "Basics");
-            ui.selectable_value(&mut edit_dialog.active_tab, 1, "Shape");
-            ui.selectable_value(&mut edit_dialog.active_tab, 2, "Surface");
-        });
-        ui.separator();
-
-        // Only the tab scrolls: the title (and its close cross) and the
-        // Save/Cancel row stay put, or a short screen leaves the way out below
-        // the fold.
-        let spacing = ui.spacing().item_spacing.y;
-        let footer = theme::row_height() + 3.0 * spacing + 8.0;
-        let body = (max_height - ui.min_rect().height() - footer).max(80.0);
-        let tab_act = egui::ScrollArea::vertical()
-            .max_height(body)
-            .auto_shrink([false, true])
-            .show(ui, |ui| match edit_dialog.active_tab {
-                0 => basics_tab(ui, &mut edit_dialog, &mut gizmo_state),
-                1 => {
-                    shape_tab(ui, &mut edit_dialog);
-                    None
-                }
-                _ => surface_tab(ui, &mut edit_dialog, &texture_lib),
-            })
-            .inner;
-        acts.extend(tab_act);
-
-        ui.separator();
-
-        acts.extend(dialog_buttons(ui, &edit_dialog));
-    });
-
-    if !dialog_open {
-        acts.push(EditAct::Close);
-    }
-    for act in acts {
-        apply_edit_act(act, &mut edit_dialog, &mut game_state);
-    }
-
-    render_texture_picker(
-        &mut egui,
-        &mut edit_dialog,
-        &mut game_state,
-        &texture_lib,
-        &mut texture_cache,
-    );
-}
-
-// The tab and section helpers below take the system's `ResMut`s by reference
-// rather than the resources themselves, so each one dereferences mutably exactly
-// where the code did when it was inline — change detection sees the same writes.
-
-/// The object editor's Basics tab: name, gizmo tool, physics.
-fn basics_tab(
-    ui: &mut egui::Ui,
-    edit_dialog: &mut ResMut<EditDialogState>,
-    gizmo_state: &mut ResMut<crate::systems::gizmo::GizmoState>,
-) -> Option<EditAct> {
-    use crate::systems::gizmo::GizmoMode;
-    let mut act = None;
-    egui::Grid::new("edit_grid")
-        .num_columns(2)
-        .spacing([8.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Name");
-            theme::text_field(ui, egui::TextEdit::singleline(&mut edit_dialog.name));
-            ui.end_row();
-
-            ui.label("Tool");
-            ui.horizontal_wrapped(|ui| {
-                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Translate, "Move (T)");
-                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Rotate, "Rotate (R)");
-                ui.radio_value(&mut gizmo_state.mode, GizmoMode::Scale, "Scale (S)");
-            });
-            ui.end_row();
-
-            // Physical (protocol 34): its own message, like Video,
-            // so it applies at once rather than on Save, and only to
-            // a prim the server already has.
-            if !edit_dialog.is_new {
-                ui.label("Physical");
-                let mut on = edit_dialog.physical;
-                if crate::systems::theme::checkbox(ui, &mut on, "Falls, bounces and can be pushed")
-                    .changed()
-                {
-                    act = Some(EditAct::Physical(on));
-                }
-                ui.end_row();
-            }
-        });
-    act
-}
-
-/// The object editor's Shape tab: block type, transform, and the path and
-/// warp parameters.
-fn shape_tab(ui: &mut egui::Ui, edit_dialog: &mut ResMut<EditDialogState>) {
-    egui::Grid::new("object_grid")
-        .num_columns(2)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("Building block type");
-            egui::ComboBox::from_id_salt("shape_combo")
-                .selected_text(shape_display_name(&edit_dialog.shape))
-                .show_ui(ui, |ui| {
-                    for (key, label) in SHAPES {
-                        ui.selectable_value(&mut edit_dialog.shape, key.to_string(), *label);
-                    }
-                });
-            ui.end_row();
-        });
-
-    ui.separator();
-
-    // Position / Size / Rotation
-    let [px, py, pz] = &mut edit_dialog.position;
-    xyz_fields(ui, "Position (meters)", [px, py, pz], 0.1, "", None);
-    let [sx, sy, sz] = &mut edit_dialog.scale;
-    xyz_fields(ui, "Size (meters)", [sx, sy, sz], 0.1, "", Some(0.001));
-    let mut deg = edit_dialog.rotation.map(f32::to_degrees);
-    let [dx, dy, dz] = &mut deg;
-    let changed = xyz_fields(ui, "Rotation (degrees)", [dx, dy, dz], 1.0, "°", None);
-    for (axis, changed) in changed.into_iter().enumerate() {
-        if changed {
-            edit_dialog.rotation[axis] = deg[axis].to_radians();
-        }
-    }
-
-    ui.separator();
-
-    // Path Cut Begin and End
-    ui.label("Path cut begin and end");
-    ui.horizontal(|ui| {
-        let pce = edit_dialog.path_cut_end;
-        let pcb = edit_dialog.path_cut_begin;
-        ui.label("B");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.path_cut_begin)
-                .speed(0.005)
-                .range(0.0..=pce)
-                .min_decimals(3)
-                .max_decimals(3),
-        );
-        ui.label("E");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.path_cut_end)
-                .speed(0.005)
-                .range(pcb..=1.0)
-                .min_decimals(3)
-                .max_decimals(3),
-        );
-    });
-
-    ui.add_space(4.0);
-
-    // Hollow (stored 0–0.95, displayed 0–95)
-    ui.label("Hollow");
-    let mut hollow_pct = edit_dialog.hollow * 100.0;
-    if ui
-        .add(
-            egui::DragValue::new(&mut hollow_pct)
-                .speed(0.5)
-                .range(0.0..=95.0)
-                .min_decimals(1)
-                .max_decimals(1),
-        )
-        .changed()
-    {
-        edit_dialog.hollow = hollow_pct / 100.0;
-    }
-
-    ui.add_space(4.0);
-
-    // Twist Begin and End (degrees, −360..360)
-    ui.label("Twist begin and end");
-    ui.horizontal(|ui| {
-        ui.label("B");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.twist_begin)
-                .speed(1.0)
-                .range(-360.0..=360.0)
-                .suffix("°"),
-        );
-        ui.label("E");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.twist_end)
-                .speed(1.0)
-                .range(-360.0..=360.0)
-                .suffix("°"),
-        );
-    });
-
-    ui.add_space(4.0);
-
-    // Taper (−1..1 per axis)
-    ui.label("Taper");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.taper_x)
-                .prefix("X ")
-                .speed(0.01)
-                .range(-1.0..=1.0)
-                .max_decimals(2),
-        );
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.taper_y)
-                .prefix("Y ")
-                .speed(0.01)
-                .range(-1.0..=1.0)
-                .max_decimals(2),
-        );
-    });
-
-    ui.add_space(4.0);
-
-    // Top Shear (−0.5..0.5 per axis)
-    ui.label("Top shear");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.top_shear_x)
-                .prefix("X ")
-                .speed(0.01)
-                .range(-0.5..=0.5)
-                .max_decimals(2),
-        );
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.top_shear_y)
-                .prefix("Y ")
-                .speed(0.01)
-                .range(-0.5..=0.5)
-                .max_decimals(2),
-        );
-    });
-
-    ui.add_space(4.0);
-
-    // Slice Begin and End (trims the path 0..1, begin ≤ end)
-    ui.label("Slice begin and end");
-    ui.horizontal(|ui| {
-        let sb = edit_dialog.warp.slice_begin;
-        let se = edit_dialog.warp.slice_end;
-        ui.label("B");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.slice_begin)
-                .speed(0.005)
-                .range(0.0..=se)
-                .min_decimals(3)
-                .max_decimals(3),
-        );
-        ui.label("E");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.warp.slice_end)
-                .speed(0.005)
-                .range(sb..=1.0)
-                .min_decimals(3)
-                .max_decimals(3),
-        );
-    });
-}
-
-/// The object editor's Surface tab: colour, video, texture and its mapping.
-fn surface_tab(
-    ui: &mut egui::Ui,
-    edit_dialog: &mut ResMut<EditDialogState>,
-    texture_lib: &TextureLibrary,
-) -> Option<EditAct> {
-    let mut act = None;
-    egui::Grid::new("texture_grid")
-        .num_columns(2)
-        .spacing([8.0, 6.0])
-        .show(ui, |ui| {
-            ui.label("Color");
-            let mut srgb = [
-                (edit_dialog.color[0] * 255.0) as u8,
-                (edit_dialog.color[1] * 255.0) as u8,
-                (edit_dialog.color[2] * 255.0) as u8,
-            ];
-            if ui.color_edit_button_srgb(&mut srgb).changed() {
-                edit_dialog.color = [
-                    srgb[0] as f32 / 255.0,
-                    srgb[1] as f32 / 255.0,
-                    srgb[2] as f32 / 255.0,
-                ];
-            }
-            ui.end_row();
-
-            // Video (protocol 28): its own message, not part of the
-            // save — so only for a prim that already exists, and
-            // only where a clip can be chosen and played.
-            if !edit_dialog.is_new && crate::systems::map::prim_video_available() {
-                ui.label("Video");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(if edit_dialog.playing_video {
-                        "Playing"
-                    } else {
-                        "None"
-                    });
-                    if crate::platform::model_file::is_available()
-                        && theme::secondary_button(ui, "", "Choose video…", 0.0).clicked()
-                    {
-                        act = Some(EditAct::ChooseVideo);
-                    }
-                    if edit_dialog.playing_video
-                        && theme::ghost_button(ui, icons::STOP, "Stop").clicked()
-                    {
-                        act = Some(EditAct::StopVideo);
-                    }
-                    if let Some(note) = &edit_dialog.video_note {
-                        ui.label(
-                            egui::RichText::new(note.as_str())
-                                .small()
-                                .color(crate::systems::theme::p32().text_dim),
-                        );
-                    }
-                })
-                .response
-                .on_hover_text(cartopolis_core::video_limits::VIDEO_FORMAT_HINT);
-                ui.end_row();
-            }
-
-            ui.label("Texture");
-            ui.horizontal(|ui| {
-                ui.label(edit_dialog.texture_id.as_deref().unwrap_or("None"));
-                if !texture_lib.entries.is_empty()
-                    && theme::secondary_button(ui, "", "Pick…", 0.0).clicked()
-                {
-                    act = Some(EditAct::TogglePicker);
-                }
-                if edit_dialog.texture_id.is_some()
-                    && theme::ghost_button(ui, "", "Clear").clicked()
-                {
-                    act = Some(EditAct::ClearTexture);
-                }
-            });
-            ui.end_row();
-
-            // Transparency (SL "Transparency %": 0 = opaque, higher = more see-through).
-            ui.label("Transparency");
-            let mut transparency = (1.0 - edit_dialog.surface.alpha) * 100.0;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut transparency)
-                        .speed(0.5)
-                        .range(0.0..=100.0)
-                        .suffix(" %")
-                        .max_decimals(1),
-                )
-                .changed()
-            {
-                edit_dialog.surface.alpha = (1.0 - transparency / 100.0).clamp(0.0, 1.0);
-            }
-            ui.end_row();
-
-            // Glow (0–1; emissive surface glow).
-            ui.label("Glow");
-            ui.add(
-                egui::DragValue::new(&mut edit_dialog.surface.glow)
-                    .speed(0.01)
-                    .range(0.0..=1.0)
-                    .max_decimals(2),
-            );
-            ui.end_row();
-
-            ui.label("Full bright");
-            crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.full_bright, "");
-            ui.end_row();
-        });
-
-    ui.separator();
-
-    // Repeats Per Face (tiling count per axis, with optional flip).
-    ui.label("Repeats per face");
-    ui.horizontal_wrapped(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.surface.repeat_u)
-                .prefix("U ")
-                .speed(0.05)
-                .range(0.0..=100.0)
-                .max_decimals(3),
-        );
-        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_u, "Flip");
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.surface.repeat_v)
-                .prefix("V ")
-                .speed(0.05)
-                .range(0.0..=100.0)
-                .max_decimals(3),
-        );
-        crate::systems::theme::checkbox(ui, &mut edit_dialog.surface.flip_v, "Flip");
-    });
-
-    ui.add_space(4.0);
-
-    // Texture rotation (degrees, −360..360).
-    ui.label("Rotation (degrees)");
-    ui.add(
-        egui::DragValue::new(&mut edit_dialog.surface.rotation)
-            .speed(1.0)
-            .range(-360.0..=360.0)
-            .suffix("°"),
-    );
-
-    ui.add_space(4.0);
-
-    // Repeats Per Meter: derives per-face repeats from object size on Apply.
-    ui.label("Repeats per metre");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.repeats_per_meter)
-                .speed(0.05)
-                .range(0.0..=10.0)
-                .max_decimals(3),
-        );
-        if theme::secondary_button(ui, "", "Apply", 0.0).clicked()
-            && edit_dialog.repeats_per_meter > 0.0
-        {
-            act = Some(EditAct::ApplyPerMetre);
-        }
-    });
-
-    ui.add_space(4.0);
-
-    // Texture offset (fraction of a repeat).
-    ui.label("Offset");
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.surface.offset_u)
-                .prefix("U ")
-                .speed(0.005)
-                .range(-1.0..=1.0)
-                .max_decimals(3),
-        );
-        ui.add(
-            egui::DragValue::new(&mut edit_dialog.surface.offset_v)
-                .prefix("V ")
-                .speed(0.005)
-                .range(-1.0..=1.0)
-                .max_decimals(3),
-        );
-    });
-    act
-}
-
-/// Save, Cancel and Delete, under every tab: which was pressed.
-fn dialog_buttons(ui: &mut egui::Ui, edit_dialog: &EditDialogState) -> Option<EditAct> {
-    let mut act = None;
-    // Dialog buttons — always visible regardless of active tab
-    ui.horizontal(|ui| {
-        if theme::primary_button_sized(ui, "Save", 0.0).clicked() {
-            act = Some(EditAct::Save);
-        }
-
-        if theme::ghost_button(ui, "", "Cancel").clicked() {
-            act = Some(EditAct::Cancel);
-        }
-
-        // Two presses: a deleted prim has no undo.
-        if !edit_dialog.is_new
-            && theme::confirm_button(
-                ui,
-                egui::Id::new("edit_dialog_delete"),
-                "Delete",
-                "Really delete",
-            )
-        {
-            act = Some(EditAct::Delete);
-        }
-    });
-    act
-}
-
-/// The texture library picker the Surface tab opens.
-fn render_texture_picker(
-    egui: &mut EguiMut,
-    edit_dialog: &mut ResMut<EditDialogState>,
-    game_state: &mut ResMut<GameState>,
-    texture_lib: &TextureLibrary,
-    texture_cache: &mut ResMut<PrimTextureCache>,
-) {
-    // Texture picker window — the editor's chrome, for the same reason the editor
-    // has it: two windows opened from one another, one themed and one stock, look
-    // like two applications.
-    if edit_dialog.texture_picker_open && edit_dialog.visible {
-        let mut picker_open = edit_dialog.texture_picker_open;
-        let mut clicked_texture: Option<String> = None;
-        let picker_w = dialog_width(egui.viewport_pts().x, 380.0);
-        let picker_h = (egui.viewport_pts().y - 24.0).max(200.0);
-        let ctx = egui.ctx_mut();
-        Window::new("texture library")
-            .id(egui::Id::new("prim_texture_picker"))
-            .title_bar(false)
-            .default_width(picker_w)
-            .max_width(picker_w)
-            .max_height(picker_h)
-            .frame(dialog_frame(&ctx.style_of(ctx.theme())))
-            .show(ctx, |ui| {
-                ui.set_max_width(picker_w);
-                if theme::panel_header(ui, icons::PALETTE, "Texture library") {
-                    picker_open = false;
-                }
-                egui::ScrollArea::vertical()
-                    .max_height(400.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let cols = 4usize;
-                        egui::Grid::new("tex_grid")
-                            .num_columns(cols)
-                            .spacing([8.0, 8.0])
-                            .show(ui, |ui| {
-                                for (i, entry) in texture_lib.entries.iter().enumerate() {
-                                    let selected =
-                                        edit_dialog.texture_id.as_deref() == Some(&entry.id);
-                                    let cell_clicked = ui
-                                        .vertical(|ui| {
-                                            let clicked = if let Some(handle) =
-                                                texture_lib.egui_handles.get(&entry.id)
-                                            {
-                                                let sized = egui::load::SizedTexture::new(
-                                                    handle.id(),
-                                                    egui::vec2(72.0, 72.0),
-                                                );
-                                                let resp = ui.add(
-                                                    egui::Image::new(sized)
-                                                        .sense(egui::Sense::click()),
-                                                );
-                                                resp.widget_info(|| {
-                                                    egui::WidgetInfo::selected(
-                                                        egui::WidgetType::Button,
-                                                        ui.is_enabled(),
-                                                        selected,
-                                                        &entry.name,
-                                                    )
-                                                });
-                                                if selected {
-                                                    ui.painter().rect_stroke(
-                                                        resp.rect,
-                                                        2.0,
-                                                        egui::Stroke::new(
-                                                            2.5_f32,
-                                                            ui.visuals().selection.bg_fill,
-                                                        ),
-                                                        egui::StrokeKind::Outside,
-                                                    );
-                                                }
-                                                resp.clicked()
-                                            } else {
-                                                // Fallback text tile while egui handle is pending.
-                                                let resp = theme::secondary_toggle(
-                                                    ui,
-                                                    "",
-                                                    &entry.name,
-                                                    72.0,
-                                                    selected,
-                                                );
-                                                // Fetched once scrolled into view, so
-                                                // opening the picker is not a request
-                                                // for the whole catalogue.
-                                                if ui.is_rect_visible(resp.rect) {
-                                                    texture_cache.want(&entry.id);
-                                                }
-                                                resp.clicked()
-                                            };
-                                            ui.label(
-                                                egui::RichText::new(&entry.name)
-                                                    .small()
-                                                    .line_height(Some(14.0)),
-                                            );
-                                            clicked
-                                        })
-                                        .inner;
-                                    if cell_clicked {
-                                        clicked_texture = Some(entry.id.clone());
-                                    }
-                                    if (i + 1) % cols == 0 {
-                                        ui.end_row();
-                                    }
-                                }
-                                if !texture_lib.entries.is_empty()
-                                    && texture_lib.entries.len() % cols != 0
-                                {
-                                    ui.end_row();
-                                }
-                            });
-                    });
-            });
-        if let Some(id) = clicked_texture {
-            apply_edit_act(EditAct::PickTexture(id), edit_dialog, game_state);
-        } else if !picker_open {
-            apply_edit_act(EditAct::ClosePicker, edit_dialog, game_state);
         }
     }
 }
@@ -2865,110 +1634,25 @@ pub(crate) const SHAPES: &[(&str, &str)] = &[
     ("cone", "Cone"),
 ];
 
-fn shape_display_name(key: &str) -> &str {
-    SHAPES
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, label)| *label)
-        .unwrap_or(key)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::egui_manager::UnpaintedPasses as _;
 
-    /// **A bottom-anchored `Area` taller than the sizing pass allows settles at
-    /// a wrong height and stays there.** egui lays an `Area` out once against
-    /// `Spacing::default_area_size` (600×**400**), remembers the content's size,
-    /// and uses that as the `max_rect` from then on. Overflow is meant to grow
-    /// it back, but only if the content reports its real height — and a
-    /// `ScrollArea` shrinks to the room it is given while a justified top-down
-    /// layout hands the widgets past the bottom whatever is left. Container and
-    /// content then agree on the truncated height: a *stable* wrong answer, so
-    /// it neither flickers nor recovers.
-    ///
-    /// The main menu was ~470 pt of entries in a 400 pt sizing pass, and the four
-    /// below the fold — Sign in…, the status readout, Developer tools and Exit —
-    /// were simply absent. It reads as a menu that is merely short, which is how
-    /// it survived a UI sweep aimed at this very card.
-    ///
-    /// This reproduces the mechanism rather than calling the system (which needs
-    /// a `World`), and asserts the fix: the sizing pass gets the whole band, so
-    /// the card ends up as tall as its content.
+    /// Sign out arms on the first tap, acts on a second within the window,
+    /// and a stray tap after the window only arms it again.
     #[test]
-    fn a_tall_bottom_anchored_card_is_not_truncated_by_the_sizing_pass() {
-        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0));
-        let rows = 24;
-        let row = 24.0;
-        let wanted = rows as f32 * row;
-        assert!(
-            wanted > 400.0,
-            "the case only exists above the default sizing pass"
-        );
-
-        let run = |default_size: Option<egui::Vec2>| {
-            let ctx = egui::Context::default();
-            theme::install(&ctx);
-            let mut last = 0.0;
-            // Several frames: the failure is what it *settles* on, not frame one.
-            for _ in 0..8 {
-                let raw = egui::RawInput {
-                    screen_rect: Some(screen),
-                    ..Default::default()
-                };
-                let _ = ctx.run_ui_unpainted(raw, |ui| {
-                    let mut area = egui::Area::new(egui::Id::new("card"))
-                        .order(egui::Order::Foreground)
-                        .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -60.0));
-                    if let Some(size) = default_size {
-                        area = area.default_size(size);
-                    }
-                    area.show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.set_width(MENU_WIDTH);
-                            egui::ScrollArea::vertical()
-                                .max_height(816.0)
-                                .auto_shrink([false, true])
-                                .show(ui, |ui| {
-                                    ui.with_layout(
-                                        egui::Layout::top_down_justified(egui::Align::Min),
-                                        |ui| {
-                                            for i in 0..rows {
-                                                ui.add_sized(
-                                                    egui::vec2(MENU_WIDTH, row),
-                                                    egui::Button::new(format!("row {i}")),
-                                                );
-                                            }
-                                        },
-                                    );
-                                });
-                        });
-                    });
-                });
-                last = ctx
-                    .memory(|m| m.area_rect(egui::Id::new("card")))
-                    .map_or(0.0, |r| r.height());
-            }
-            last
-        };
-
-        let starved = run(None);
-        let fixed = run(Some(egui::vec2(MENU_WIDTH, 816.0)));
-        assert!(
-            starved < wanted * 0.9,
-            "the bug should reproduce without a sizing hint: {starved} vs {wanted}"
-        );
-        assert!(
-            fixed >= wanted,
-            "with the band as the sizing pass the card must hold its content: \
-             {fixed} vs {wanted}"
-        );
+    fn sign_out_arms_before_it_acts() {
+        let mut menu = MainMenu::default();
+        assert!(!menu.tap_sign_out(10.0));
+        assert!(menu.sign_out_armed(11.0));
+        assert!(menu.tap_sign_out(11.0));
+        assert!(!menu.sign_out_armed(11.5));
+        assert!(!menu.tap_sign_out(20.0));
+        assert!(!menu.tap_sign_out(20.0 + SIGN_OUT_ARMED_S + 1.0));
     }
 
-    /// Your face's sheet is a size-to-content `Area`, so nothing clamps it: what
-    /// it asks for is what it takes, off the edge of the screen included — and
-    /// it is the only route to Settings, sign-in and Exit. On a phone it is a
+    /// Your face's sheet is the only route to Settings, sign-in and Exit, so
+    /// it must stay on screen. On a phone it is a
     /// bottom sheet exactly the screen's width (both documented phone
     /// viewports, 274 pt Android and ≈214 pt web); on a desktop a card under
     /// the face, inside the window's margins even at the narrowest
@@ -2989,30 +1673,7 @@ mod tests {
         }
     }
 
-    /// On a phone the sheet stands on the World | Community switch, and the
-    /// fullest one — signed in, an admin, with Exit — fits in the 600 pt the
-    /// phone shots have, so Sign out is in sight without scrolling (it was
-    /// under the fold, 2026-11-11).
-    #[test]
-    fn the_sheet_fits_above_the_switch() {
-        let rows = 3.0 + 4.0; // Avatar, Saved places, Models; Settings, Admin, About, Exit
-        let content = 42.0 // who you are
-            + 8.0
-            + theme::PRIMARY_BUTTON_HEIGHT.max(theme::TOUCH_ROW_PTS) // Your profile, Share link
-            + 8.0
-            + rows * SHEET_ROW
-            + 2.0 * 6.0 // under each group
-            + 4.0
-            + 40.0 // Sign out…
-            + 14.0
-            + 12.0; // the card's margins
-        let room = 600.0 - crate::systems::dock::reserved_bottom() - 8.0 - theme::OSD_MARGIN;
-        assert!(content <= room, "the sheet is {content} pt in {room}");
-        assert!(SHEET_ROW >= theme::MIN_TOUCH_TARGET_DP / 1.5);
-    }
-
-    /// The object editor asks for 320 pt, which is wider than a phone. A
-    /// `Window` clamps its position to the screen but never its width, so this
+    /// The object editor asks for 320 pt, which is wider than a phone; this
     /// is the only thing keeping the Save/Cancel row reachable.
     #[test]
     fn the_object_editor_is_clamped_to_the_viewport() {

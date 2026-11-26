@@ -2667,20 +2667,6 @@ fn compose_page(l: &ChatsLive, id: Uuid) -> View {
             }
         }
     });
-    let counter = {
-        let text = f.post_text.clone();
-        move || -> View {
-            let used = text.get().chars().count();
-            let colour = if used + 20 >= MAX_POST_TEXT {
-                "var(--m-warning)"
-            } else {
-                "var(--m-text-faint)"
-            };
-            let style =
-                format!("align-self: flex-end; color: {colour}; font-size: var(--m-font-size-sm)");
-            view! { <span style={style}>{format!("{used} / {MAX_POST_TEXT}")}</span> }
-        }
-    };
     let place = part(l, |l, page| {
         let Some(v) = (match page {
             Page::Community(v) => v.compose.clone(),
@@ -2751,9 +2737,13 @@ fn compose_page(l: &ChatsLive, id: Uuid) -> View {
             None => View::Empty,
         };
         view! {
-            <div style="display: flex; align-items: center; gap: 12px; padding: 12px 12px 12px 16px; border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); background: var(--m-surface)">
-                <span style="flex: none; color: var(--m-accent)">{icon(icons::PIN)}</span>
-                {what}
+            // The place and its note across the whole width, the button
+            // under them: beside them it left the name a few letters.
+            <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 12px 12px 12px 16px; border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); background: var(--m-surface)">
+                <div style="align-self: stretch; display: flex; align-items: center; gap: 12px">
+                    <span style="flex: none; color: var(--m-accent)">{icon(icons::PIN)}</span>
+                    {what}
+                </div>
                 <Button size=Size::Sm icon={icon(icons::HERE)} onclick={compose(l, ComposerAction::UseView)} title="Close the panel, look somewhere else, come back and press this">"Use view"</Button>
             </div>
             {snapshot}
@@ -2824,10 +2814,8 @@ fn compose_page(l: &ChatsLive, id: Uuid) -> View {
     view! {
         {header(back(tap(l, Tap::Back), "Back"), "New post".into_view(), view! { {post}{close(l)} })}
         <div style={body}>
-            <div style="display: flex; flex-direction: column; gap: 4px">
-                <FieldTextarea model={f.post_text.clone()} rows={4_u32} maxlength={MAX_POST_TEXT as u32} placeholder="What's happening here?" onchange={text} id="post-text" />
-                {counter}
-            </div>
+            // The field counts its own characters (`maxlength`).
+            <FieldTextarea model={f.post_text.clone()} rows={4_u32} maxlength={MAX_POST_TEXT as u32} placeholder="What's happening here?" onchange={text} id="post-text" />
             {place}
             <FieldCheckbox model={f.warning_on.clone()} label="Content warning" onchange={warning_on} id="post-warning-on" />
             {warning}

@@ -1,19 +1,16 @@
 //! What a tap on a satellite opens, drawn by the component library
-//! (`lib_host`), beside egui's (`satellites::render_satellite_menu`): the
-//! ring of actions round it — Follow, Path, More — through the map ring's
-//! [`RingMount`](crate::systems::lib_action_ring), and, from More, the card
-//! with everything known about it.
+//! (`lib_host`): the ring of actions round it — Follow, Path, More — through
+//! the map ring's [`RingMount`](crate::systems::lib_action_ring), and, from
+//! More, the card with everything known about it.
 //!
-//! On with `CARTO_UI_LIB=satellite_menu` (or `1`), on the web `?ui=lib`.
-//! egui's system steps aside (`SatelliteLayer::ring_lib.on`,
-//! `SatelliteLayer::card_lib`) but keeps every decision — which satellite,
-//! where its ring stands, what the card says — and publishes it in
-//! `ring_lib.view` and `card_view`. A tap here goes back (`ring_lib.acts`,
-//! `card_acts`) and is done by the code egui's buttons run, next frame.
+//! `satellites::drive_satellite_menu` keeps every decision — which
+//! satellite, where its ring stands, what the card says — and publishes it
+//! in `ring_lib.view` and `card_view`. A tap here goes back
+//! (`ring_lib.acts`, `card_acts`) and is done by it, next frame.
 //!
-//! **Placement.** As egui's card: centred over the bottom edge,
-//! `dock::reserved_bottom` + 8 up, `card_view.width` wide inside egui's
-//! popup margin of 10.
+//! **Placement.** The card is centred over the bottom edge,
+//! `dock::reserved_bottom` + 8 up, `card_view.width` wide inside a popup
+//! margin of 10.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -87,19 +84,13 @@ pub fn drive_lib_satellite_menu(
     let Some(mut layer) = layer else {
         return;
     };
-    if !layer.ring_lib.on {
-        layer.ring_lib.on = true;
-    }
-    if !layer.card_lib {
-        layer.card_lib = true;
-    }
     let k = px_scale(metrics.ui_scale());
     RING.with(|m| sync_ring(m, RING_KEY, &mut layer.ring_lib, k));
 
     let dark = theme::p().ink == theme::DARK.ink;
     CARD.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `drive_satellite_menu` next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<SatCardAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {

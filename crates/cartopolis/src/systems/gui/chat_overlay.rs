@@ -551,7 +551,7 @@ fn map_rect(
     metrics: &UiMetrics,
     keyboard: &onscreen_keyboard::OnScreenKeyboard,
 ) -> Rect {
-    let map = ui_input.egui_verdict().map_rect.map_or_else(
+    let map = ui_input.map_rect().map_or_else(
         || Rect::from_corners(Vec2::ZERO, metrics.viewport_pts()),
         |r| Rect::from_corners(metrics.window_to_ui(r.min), metrics.window_to_ui(r.max)),
     );
@@ -843,7 +843,7 @@ pub fn drive_chat_chip(
         theme::touch_layout() || touch.ever(),
     );
     let corner = crate::systems::map_osd::reserved_left_bottom(cluster);
-    // Above the interaction prompt (`interact::render_interaction_prompt`,
+    // Above the interaction prompt (`interact::drive_interaction_prompt`,
     // which runs before this) when it is up: it sits in the same band over
     // the switch, and a chip placed over its buttons hid them.
     let corner = match interact.lib_view.as_ref() {

@@ -2,9 +2,6 @@ use super::*;
 
 // ─── Panel header ─────────────────────────────────────────────────────────────
 
-/// Padding between the header band's edge and its contents.
-pub(super) const HEADER_INSET: f32 = 7.0;
-
 /// Side of the header's close button, in points.
 ///
 /// 22 pt is ~33 dp, which is the smallest target in the app and attached to the
@@ -17,12 +14,6 @@ pub fn close_button_size() -> f32 {
     } else {
         22.0
     }
-}
-
-/// Height of the band [`panel_header`] paints, in points — whatever the close
-/// button needs plus its inset, floored at the pointer tier's 38.
-pub(super) fn header_height() -> f32 {
-    44.0_f32.max(close_button_size() + 2.0 * HEADER_INSET)
 }
 
 /// A word that is an action beside a panel's title — Map layers' Reset: the
@@ -274,86 +265,4 @@ pub fn close_button(ui: &mut egui::Ui) -> egui::Response {
     p.line_segment([x.right_top(), x.left_bottom()], stroke);
     paint_focus_ring(ui, &resp, rect, false);
     resp.on_hover_text("Close")
-}
-
-/// The header every right-hand panel opens with: a raised band carrying the
-/// panel's own icon, its name, and the close button. Returns whether close was
-/// clicked.
-///
-/// Three things it fixes, all of which the six hand-rolled copies shared. The
-/// close glyph was `✕`, which the font cannot draw ([`close_button`]). The
-/// heading sat directly on the panel fill, so a panel opened as a wall of one
-/// colour with a slightly larger word at the top of it. And nothing tied the
-/// header to the control that opened it — the medallion is the dock's disc in
-/// its *selected* colours at a smaller radius, so the lit button at the bottom
-/// of the screen and the badge at the top of the panel are visibly one thing.
-///
-/// Depth is a three-part recipe and all three parts matter: a soft shadow under
-/// the band (it floats over the content, so the content must be able to pass
-/// beneath it), a fill one step up from the panel, and a hairline highlight
-/// along the top edge — the lit edge is what turns a lighter rectangle into a
-/// raised one.
-pub fn panel_header(ui: &mut egui::Ui, icon: &str, title: &str) -> bool {
-    panel_header_with(ui, icon, title, |_| {})
-}
-
-/// [`panel_header`] plus room for extra actions, laid out right-to-left from the
-/// close button (the Places panel's "+ Folder").
-pub fn panel_header_with(
-    ui: &mut egui::Ui,
-    icon: &str,
-    title: &str,
-    extra: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    // **No band.** The header used to be a raised, bordered, shadowed box —
-    // a panel inside the panel — which made every panel start with a second
-    // frame and pushed the title down to body size. It is now the Chats
-    // screen's title bar (`chats::list_screen`): a large title straight on the
-    // surface and a hairline under it, so all the panels read as one family.
-    let avail = ui.available_rect_before_wrap();
-    let band = egui::Rect::from_min_size(avail.min, egui::vec2(avail.width(), header_height()));
-    ui.painter().line_segment(
-        [
-            egui::pos2(band.left(), band.bottom() - 0.5),
-            egui::pos2(band.right(), band.bottom() - 0.5),
-        ],
-        Stroke::new(1.0, p32().overlay_line),
-    );
-
-    let close;
-    {
-        // The **actions are placed first**, from the right edge, and the title
-        // gets what is left. The other way round is what the Places panel shipped
-        // as: a truncating `Label` in a left-to-right layout claims the whole
-        // remaining width (truncation is how it fits, so it always "fits"), which
-        // left the right-to-left child rect empty and let "+ Folder"/"+ Place"
-        // overflow leftwards *over* the panel's own name. Same bargain every row
-        // in the Places panel makes with its kebab.
-        let mut row = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(band.shrink2(egui::vec2(0.0, HEADER_INSET)))
-                .layout(egui::Layout::right_to_left(egui::Align::Center)),
-        );
-        row.spacing_mut().item_spacing.x = 8.0;
-        close = close_button(&mut row).clicked();
-        extra(&mut row);
-        // A plain title, as the midas hub titles its pages: the teal medallion
-        // that stood before it repeated the dock disc that opened the panel,
-        // and was one more accent on a page that should carry one.
-        let _ = icon;
-        row.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(title)
-                        .font(FontId::new(SIZE_PANEL_TITLE, brand_family()))
-                        .color(p32().cream),
-                )
-                .truncate()
-                .selectable(false),
-            );
-        });
-    }
-    ui.advance_cursor_after_rect(band);
-    ui.add_space(10.0);
-    close
 }

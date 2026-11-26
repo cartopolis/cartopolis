@@ -3,7 +3,7 @@
 //!
 //! Offered from the person card a tap on somebody's avatar opens
 //! (`contacts::render_person_card`); shown to the one offered as the
-//! interaction prompt's first button (`interact::render_interaction_prompt`),
+//! interaction prompt's first button (`interact::drive_interaction_prompt`),
 //! which E or a tap accepts. The sim decides the rest and starts both bodies
 //! at once, so this module only keeps the open offers, sends the two
 //! requests, and turns the local avatar when the sim says it has started.

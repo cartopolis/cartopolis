@@ -8,14 +8,12 @@
 //! and the face parts, for whoever wants them. Shaping a body from the
 //! default by sliders alone took a dozen drags.
 //!
-//! Drawn inside the Appearance panel (`ui::render_avatar_chooser`), whose
-//! Apply saves the draft. The names here are the pack's
-//! (`crates/human/src/bin/human-pack.rs` lists what it carries); a name the
-//! pack lacks is skipped by the builder. The component library draws the
-//! same designer (`lib_avatar`) from the tables and `DesignerState` methods
-//! here, so a change to what it offers goes here, once.
+//! The Appearance panel (`ui::drive_avatar_chooser`) holds the draft; the
+//! component library draws the designer (`lib_avatar`) from the tables and
+//! `DesignerState` methods here, so a change to what it offers goes here,
+//! once. The names here are the pack's (`crates/human/src/bin/human-pack.rs`
+//! lists what it carries); a name the pack lacks is skipped by the builder.
 
-use crate::systems::theme;
 use crate::systems::user_store::HumanLook;
 
 pub use crate::resources::DesignerTab;
@@ -1029,33 +1027,6 @@ pub(crate) fn wear_separates(look: &mut HumanLook) {
     }
 }
 
-/// A row of chips for exactly one of `list` as an extra (a top, a bottom).
-fn one_of(ui: &mut egui::Ui, look: &mut HumanLook, list: &[(&str, &str)]) {
-    let worn = extra_of(look, list);
-    ui.horizontal_wrapped(|ui| {
-        for (name, label) in list {
-            if theme::chip(ui, label, worn == Some(*name)).clicked() {
-                set_extra(look, list, Some(name));
-            }
-        }
-    });
-}
-
-/// A row of chips for one of `list` as an extra, with "None" first.
-fn extra_chips(ui: &mut egui::Ui, look: &mut HumanLook, list: &[(&str, &str)]) {
-    let worn = extra_of(look, list);
-    ui.horizontal_wrapped(|ui| {
-        if theme::chip(ui, "None", worn.is_none()).clicked() {
-            set_extra(look, list, None);
-        }
-        for (name, label) in list {
-            if theme::chip(ui, label, worn == Some(*name)).clicked() {
-                set_extra(look, list, Some(name));
-            }
-        }
-    });
-}
-
 /// A different face: a handful of the face controls, each a little off
 /// average.
 fn another_face(dice: &mut Dice, look: &mut HumanLook) {
@@ -1068,31 +1039,6 @@ fn another_face(dice: &mut Dice, look: &mut HumanLook) {
             }
         }
     }
-}
-
-/// The designer's body. `saved` is the look last applied, for "Back to
-/// saved". Returns whether the look changed this frame.
-pub fn designer(
-    ui: &mut egui::Ui,
-    state: &mut DesignerState,
-    look: &mut HumanLook,
-    saved: Option<&HumanLook>,
-) -> bool {
-    let before = look.clone();
-    history_row(ui, state, look, saved);
-    view_row(ui, state);
-    start_from(ui, state, look);
-    ui.add_space(8.0);
-    theme::segmented(ui, &mut state.tab, &TABS);
-    ui.add_space(8.0);
-    match state.tab {
-        DesignerTab::Body => body(ui, &mut state.body, look),
-        DesignerTab::Face => face(ui, state, look),
-        DesignerTab::SkinAndHair => skin_and_hair(ui, look),
-        DesignerTab::Clothes => clothes(ui, look),
-    }
-    state.record(look, ui.input(|i| i.pointer.any_down()));
-    *look != before
 }
 
 /// The width of the library's panel (`lib_avatar`) and of the empty strip
@@ -1295,16 +1241,6 @@ pub(crate) struct MacroSlider {
     pub(crate) ends: (&'static str, &'static str),
 }
 
-impl MacroSlider {
-    /// The word for where it sits.
-    pub(crate) fn says(&self, v: u8) -> String {
-        match self.words {
-            Some(words) => word(v, words),
-            None => v.to_string(),
-        }
-    }
-}
-
 pub(crate) const MACROS: [MacroSlider; 7] = [
     MacroSlider {
         which: Macro::BodyShape,
@@ -1395,193 +1331,11 @@ pub(crate) fn average_body_parts(look: &mut HumanLook) {
     }
 }
 
-/// Undo, redo and back to the saved look.
-fn history_row(
-    ui: &mut egui::Ui,
-    state: &mut DesignerState,
-    look: &mut HumanLook,
-    saved: Option<&HumanLook>,
-) {
-    ui.horizontal_wrapped(|ui| {
-        if ui
-            .add_enabled_ui(state.can_undo(), |ui| theme::ghost_button(ui, "", "Undo"))
-            .inner
-            .clicked()
-        {
-            state.undo(look);
-        }
-        if ui
-            .add_enabled_ui(state.can_redo(), |ui| theme::ghost_button(ui, "", "Redo"))
-            .inner
-            .clicked()
-        {
-            state.redo(look);
-        }
-        if let Some(saved) = saved.filter(|s| *s != look) {
-            if theme::ghost_button(ui, "", "Back to saved").clicked() {
-                state.back_to_saved(look, saved);
-            }
-        }
-    });
-}
-
-/// Which side of the avatar to see.
-fn view_row(ui: &mut egui::Ui, state: &mut DesignerState) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label("View");
-        for (v, label) in VIEWS {
-            if theme::chip(ui, label, state.view == v).clicked() {
-                state.view = v;
-            }
-        }
-    });
-    ui.add_space(4.0);
-}
-
 impl DesignerState {
     /// Whether the camera should come close to the face: the Face tab is a
     /// set of controls for things a few millimetres across.
     pub fn close_up(&self) -> bool {
         self.tab == DesignerTab::Face
-    }
-}
-
-/// A list of shape sliders (face or body), each a MakeHuman modifier held in
-/// the look's `face` list.
-fn shape_sliders(ui: &mut egui::Ui, sliders: &[FaceSlider], look: &mut HumanLook) {
-    for FaceSlider(modifier, label, ends, one_sided) in sliders {
-        let mut v = i32::from(look.face_value(modifier));
-        let says = shape_says(v, *ends);
-        let lo = if *one_sided { 0 } else { -100 };
-        header(ui, label, says);
-        ui.spacing_mut().slider_width = ui.available_width();
-        if ui
-            .add(egui::Slider::new(&mut v, lo..=100).show_value(false))
-            .changed()
-        {
-            look.set_face(modifier, v.clamp(-100, 100) as i8);
-        }
-        ends_row(ui, if *one_sided { ("", ends.1) } else { *ends });
-    }
-}
-
-/// The starters and the dice, above the tabs: a whole person in one tap.
-fn start_from(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
-    theme::section(ui, "Start from");
-    let time = ui.input(|i| i.time);
-    ui.horizontal_wrapped(|ui| {
-        for starter in &STARTERS {
-            let theirs = starter.look();
-            if theme::chip(ui, starter.label, *look == theirs).clicked() {
-                *look = theirs;
-            }
-        }
-        if theme::chip(ui, "Surprise me", false).clicked() {
-            state.surprise(look, time);
-        }
-    });
-    theme::note(ui, "Then change anything below.");
-}
-
-/// A row of quick picks for one or more sliders: each pick sets them all,
-/// and shows chosen while they hold its values. Most bodies are a pick per
-/// row; the sliders under "Fine-tune" are for the rest.
-fn picks<const N: usize>(
-    ui: &mut egui::Ui,
-    title: &str,
-    options: &[(&str, [u8; N])],
-    mut values: [&mut u8; N],
-) {
-    ui.label(title);
-    ui.horizontal_wrapped(|ui| {
-        for (label, set) in options {
-            let chosen = values.iter().zip(set).all(|(v, s)| **v == *s);
-            if theme::chip(ui, label, chosen).clicked() {
-                for (v, s) in values.iter_mut().zip(set) {
-                    **v = *s;
-                }
-            }
-        }
-    });
-    ui.add_space(6.0);
-}
-
-fn body(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
-    picks(ui, "Body shape", &SHAPE_PICKS, [&mut look.body_shape]);
-    picks(ui, "Age", &AGE_PICKS, [&mut look.age]);
-    picks(
-        ui,
-        "Build",
-        &BUILD_PICKS,
-        [&mut look.weight, &mut look.muscle],
-    );
-    picks(ui, "Height", &HEIGHT_PICKS, [&mut look.height]);
-    egui::CollapsingHeader::new("Fine-tune")
-        .id_salt("avatar_body_fine_tune")
-        .show(ui, |ui| body_sliders(ui, look));
-    egui::CollapsingHeader::new("Body parts")
-        .id_salt("avatar_body_parts")
-        .show(ui, |ui| body_parts(ui, part, look));
-}
-
-fn body_parts(ui: &mut egui::Ui, part: &mut BodyPart, look: &mut HumanLook) {
-    ui.horizontal_wrapped(|ui| {
-        for (p, label) in BODY_PARTS {
-            if theme::chip(ui, label, *part == p).clicked() {
-                *part = p;
-            }
-        }
-    });
-    ui.add_space(6.0);
-    if let Some((_, sliders)) = BODY.iter().find(|(p, _)| p == part) {
-        shape_sliders(ui, sliders, look);
-    }
-    if body_parts_moved(look) && theme::action_button(ui, "Average body parts").clicked() {
-        average_body_parts(look);
-    }
-}
-
-fn body_sliders(ui: &mut egui::Ui, look: &mut HumanLook) {
-    for m in &MACROS {
-        let says = m.says(m.which.get(look));
-        slider(
-            ui,
-            m.label,
-            m.which.get_mut(look),
-            m.range.0..=m.range.1,
-            says,
-            m.ends,
-        );
-    }
-}
-
-fn face(ui: &mut egui::Ui, state: &mut DesignerState, look: &mut HumanLook) {
-    // Whole faces first: most people want a different face, not a narrower
-    // nose.
-    let time = ui.input(|i| i.time);
-    ui.horizontal_wrapped(|ui| {
-        if theme::action_button(ui, "Another face").clicked() {
-            state.another_face(look, time);
-        }
-        if theme::action_button(ui, "Similar face").clicked() {
-            state.similar_face(look, time);
-        }
-        if has_face(look) && theme::action_button(ui, "Average face").clicked() {
-            clear_face(look);
-        }
-    });
-    ui.add_space(6.0);
-    let part = &mut state.face;
-    ui.horizontal_wrapped(|ui| {
-        for (p, label) in FACE_PARTS {
-            if theme::chip(ui, label, *part == p).clicked() {
-                *part = p;
-            }
-        }
-    });
-    ui.add_space(6.0);
-    if let Some((_, sliders)) = FACE.iter().find(|(p, _)| p == part) {
-        shape_sliders(ui, sliders, look);
     }
 }
 
@@ -1607,211 +1361,9 @@ pub(crate) fn clear_face(look: &mut HumanLook) {
     look.face.retain(|(m, _)| is_body_control(m));
 }
 
-fn skin_and_hair(ui: &mut egui::Ui, look: &mut HumanLook) {
-    theme::section(ui, "Skin");
-    ui.horizontal_wrapped(|ui| {
-        for (family, colour) in SKINS {
-            if disc(ui, colour, look.skin == family, family).clicked() {
-                look.skin = family.into();
-            }
-        }
-    });
-    let tone = look.skin_tone;
-    let mut v = i32::from(tone);
-    header(ui, "Tone", tone_says(i32::from(tone)));
-    ui.spacing_mut().slider_width = ui.available_width();
-    if ui
-        .add(egui::Slider::new(&mut v, -100..=100).show_value(false))
-        .changed()
-    {
-        look.skin_tone = v.clamp(-100, 100) as i8;
-    }
-    ends_row(ui, ("Darker", "Lighter"));
-    theme::note(
-        ui,
-        "Your age and body shape choose among the family's skins; the tone shades it.",
-    );
-    theme::section(ui, "Eyes");
-    ui.horizontal_wrapped(|ui| {
-        for (name, colour) in EYES {
-            if disc(ui, colour, look.eyes == name, name).clicked() {
-                look.eyes = name.into();
-            }
-        }
-    });
-    theme::section(ui, "Hair");
-    ui.horizontal_wrapped(|ui| {
-        if theme::chip(ui, "None", look.hair.is_none()).clicked() {
-            look.hair = None;
-        }
-        for (name, label) in HAIR {
-            if theme::chip(ui, label, look.hair.as_deref() == Some(name)).clicked() {
-                look.hair = Some(name.into());
-            }
-        }
-    });
-    ui.add_space(4.0);
-    colours(ui, "hair", &HAIR_COLOURS, &mut look.hair_colour);
-    theme::section(ui, "Brows");
-    ui.horizontal_wrapped(|ui| {
-        for (name, label) in EYEBROWS {
-            if theme::chip(ui, label, look.eyebrows == name).clicked() {
-                look.eyebrows = name.into();
-            }
-        }
-    });
-    theme::section(ui, "Beard");
-    extra_chips(ui, look, &BEARDS);
-    theme::note(ui, "Brows, lashes and beard take the hair's colour.");
-}
-
-fn clothes(ui: &mut egui::Ui, look: &mut HumanLook) {
-    theme::section(ui, "Outfit");
-    let separates = look.outfit.is_empty();
-    ui.horizontal_wrapped(|ui| {
-        if theme::chip(ui, "Separates", separates).clicked() && !separates {
-            wear_separates(look);
-        }
-        for (name, label) in OUTFITS {
-            if theme::chip(ui, label, look.outfit == name).clicked() {
-                wear_outfit(look, name);
-            }
-        }
-    });
-    theme::section(ui, "Dresses");
-    ui.horizontal_wrapped(|ui| {
-        for (name, label) in DRESSES {
-            if theme::chip(ui, label, look.outfit == name).clicked() {
-                wear_outfit(look, name);
-            }
-        }
-    });
-    // With separates, which top and bottom; either way, their colours.
-    theme::section(ui, "Top");
-    if look.outfit.is_empty() {
-        one_of(ui, look, &TOPS);
-    }
-    colours(ui, "top", &CLOTH_COLOURS, &mut look.top_colour);
-    theme::section(ui, "Bottom");
-    if look.outfit.is_empty() {
-        one_of(ui, look, &BOTTOMS);
-    }
-    colours(ui, "bottom", &CLOTH_COLOURS, &mut look.bottom_colour);
-    theme::section(ui, "Shoes");
-    ui.horizontal_wrapped(|ui| {
-        for (name, label) in SHOES {
-            if theme::chip(ui, label, look.shoes == name).clicked() {
-                look.shoes = name.into();
-            }
-        }
-    });
-    theme::section(ui, "Hat");
-    ui.horizontal_wrapped(|ui| {
-        if theme::chip(ui, "None", look.hat.is_none()).clicked() {
-            look.hat = None;
-        }
-        for (name, label) in HATS {
-            if theme::chip(ui, label, look.hat.as_deref() == Some(name)).clicked() {
-                look.hat = Some(name.into());
-            }
-        }
-    });
-    theme::section(ui, "Glasses");
-    extra_chips(ui, look, &GLASSES);
-    theme::note(
-        ui,
-        "Everything worn stretches with the body, so it still fits when the sliders move.",
-    );
-}
-
 /// A word for where a 0–100 slider sits, in five bands.
 pub(crate) fn word(v: u8, words: [&str; 5]) -> String {
     words[(usize::from(v.min(99)) * 5 / 100).min(4)].to_string()
-}
-
-fn header(ui: &mut egui::Ui, label: &str, says: String) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(says).color(theme::p().text_dim));
-        });
-    });
-}
-
-fn ends_row(ui: &mut egui::Ui, ends: (&str, &str)) {
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(ends.0)
-                .size(theme::SIZE_CHIP)
-                .color(theme::p().line),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(ends.1)
-                    .size(theme::SIZE_CHIP)
-                    .color(theme::p().line),
-            );
-        });
-    });
-    ui.add_space(4.0);
-}
-
-/// One slider: its name and a word for its value on a line, the track, and
-/// what its two ends mean.
-fn slider(
-    ui: &mut egui::Ui,
-    label: &str,
-    value: &mut u8,
-    range: std::ops::RangeInclusive<u8>,
-    says: String,
-    ends: (&str, &str),
-) {
-    header(ui, label, says);
-    ui.spacing_mut().slider_width = ui.available_width();
-    ui.add(egui::Slider::new(value, range).show_value(false));
-    ends_row(ui, ends);
-}
-
-/// A colour disc, ringed when chosen. The colours are the look's, not the
-/// interface's, so they are data here rather than theme colours.
-fn disc(ui: &mut egui::Ui, c: [u8; 3], chosen: bool, hover: &str) -> egui::Response {
-    let d = theme::row_height().max(32.0);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(d, d), egui::Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), chosen, hover)
-    });
-    let p = ui.painter();
-    let centre = rect.center();
-    let r = d * 0.5 - 4.0;
-    p.circle_filled(centre, r, egui::Color32::from_rgb(c[0], c[1], c[2]));
-    if chosen {
-        p.circle_stroke(centre, r + 2.5, egui::Stroke::new(2.0, theme::p().accent));
-    } else {
-        p.circle_stroke(centre, r, egui::Stroke::new(1.0, theme::p().line));
-    }
-    response.on_hover_text(hover)
-}
-
-/// "As it is" and a row of colour discs for an optional colour.
-fn colours(ui: &mut egui::Ui, what: &str, palette: &[[u8; 3]], value: &mut Option<[u8; 3]>) {
-    ui.horizontal_wrapped(|ui| {
-        if theme::chip(ui, "As it is", value.is_none()).clicked() {
-            *value = None;
-        }
-        for c in palette {
-            if disc(ui, *c, *value == Some(*c), what).clicked() {
-                *value = Some(*c);
-            }
-        }
-        // Any other colour: egui's picker, starting from the one worn.
-        let mut c = value.unwrap_or(palette[0]);
-        if egui::color_picker::color_edit_button_srgb(ui, &mut c)
-            .on_hover_text(format!("Any {what} colour"))
-            .changed()
-        {
-            *value = Some(c);
-        }
-    });
 }
 
 #[cfg(test)]

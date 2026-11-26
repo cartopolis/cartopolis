@@ -452,9 +452,9 @@ pub fn drive_lib_chats(
             // (`ui::MainMenu::face`): taken by the sheet every frame.
             if w.screen() == ChatsScreen::List {
                 let vp = metrics.viewport_pts();
-                w.menu.face = Some(egui::Rect::from_min_size(
-                    egui::pos2(vp.x - 52.0, 8.0),
-                    egui::vec2(40.0, 40.0),
+                w.menu.face = Some(bevy::math::Rect::from_corners(
+                    bevy::math::Vec2::new(vp.x - 52.0, 8.0),
+                    bevy::math::Vec2::new(vp.x - 12.0, 48.0),
                 ));
             }
             w.settle(act, now);
@@ -835,7 +835,7 @@ fn panel(l: &ChatsLive) -> View {
 // ─── The list ────────────────────────────────────────────────────────────────
 
 /// Your face at the right of the list's header: the same sheet as the
-/// search bar's face (`ui::render_main_menu`), with the orange dot when
+/// search bar's face (`ui::drive_main_menu`), with the orange dot when
 /// something waits for you.
 fn face_button(l: &ChatsLive, me: &Me) -> View {
     let dot: View = if me.waiting {

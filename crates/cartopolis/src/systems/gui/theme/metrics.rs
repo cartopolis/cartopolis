@@ -135,7 +135,7 @@ pub const SIZE_BODY: f32 = 14.0;
 /// The one number a box is *about*: the HUD's clock, a primary button's label
 /// ([`primary_button_sized`]). One per box — a second is just body text.
 pub const SIZE_VALUE: f32 = 15.0;
-/// A panel header's title, in the brand face ([`panel_header`]).
+/// A panel header's title, in the brand face.
 pub const SIZE_TITLE: f32 = 17.0;
 /// [`egui::TextStyle::Heading`], in the brand face.
 pub const SIZE_HEADING: f32 = 19.0;

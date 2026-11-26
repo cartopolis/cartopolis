@@ -23,7 +23,7 @@ in `makehuman-avatars.md`.
   the rate limit, telling the other side).
 - The client: `systems::greet` (the open offers, the turn when one starts),
   the person card's two buttons (`contacts::render_person_card`), and the
-  interaction prompt's first button (`interact::render_interaction_prompt`).
+  interaction prompt's first button (`interact::drive_interaction_prompt`).
 
 ## How it goes
 

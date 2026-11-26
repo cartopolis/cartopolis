@@ -15,26 +15,25 @@
 //! the atlas floor-plan editor shows, because the picker is the read side of what
 //! the owner wrote there: what is drawn in `/building/{pand}` is what this lists.
 //!
-//! A floating `Area`, outside the panel chain like the building card, and hidden
+//! Drawn by the library (`lib_chrome`) at the right edge, and hidden
 //! by whatever owns the screen it would float over — driver mode, the main menu,
 //! the on-screen keyboard and, on a phone, an open panel.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use crate::resources::RightPanel;
 use crate::systems::building_facts::BuildingFacts;
 use crate::systems::cutaway::Cutaway;
 use crate::systems::data_layers::{open_url, open_url_supported};
-use crate::systems::icons;
 use crate::systems::theme;
+use crate::systems::ui_input::UiMetrics;
 
 /// Width of the column, points. Wide enough for "Ground floor" and a dot.
 const WIDTH: f32 = 150.0;
 
-/// The picker as the library's edition draws it (`lib_chrome`, through
-/// `dock::ChromeLib`): egui's system decides whether it shows and what it
-/// lists, and does what a tap asks.
+/// The picker as the library draws it (`lib_chrome`, through
+/// `dock::ChromeLib`): [`drive_floor_picker`] decides whether it shows and
+/// what it lists, and does what a tap asks.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct FloorsView {
@@ -56,10 +55,11 @@ pub struct FloorsView {
     pub plan: bool,
 }
 
-/// Draw the picker while the building card is looking inside a building.
+/// Decide the picker while the building card is looking inside a building,
+/// publish it for the library's edition (`lib_chrome`) and do its taps.
 #[allow(clippy::too_many_arguments)]
-pub fn render_floor_picker(
-    egui: EguiRef,
+pub fn drive_floor_picker(
+    metrics: Res<UiMetrics>,
     mut cutaway: ResMut<Cutaway>,
     facts: Res<BuildingFacts>,
     right_panel: Res<RightPanel>,
@@ -69,136 +69,61 @@ pub fn render_floor_picker(
     mut chrome: ResMut<crate::systems::dock::MapChrome>,
 ) {
     use crate::systems::dock::{set_if_changed, ChromeAct};
-    // The library's edition (`lib_chrome`): its taps, and whether egui draws.
-    let lib = chrome.lib.on;
     let acts = chrome.lib.take_acts(ChromeAct::is_floor);
     // Only the card's Look inside asks for the floors, once the interior has
     // been built, and not under what owns the screen.
     let shown = cutaway.looking.is_some()
         && !cutaway.storeys.is_empty()
         && !(driver.active || menu.open || keyboard.is_open())
-        && !(egui.compact() && !right_panel.is(RightPanel::None));
+        && !(metrics.compact() && !right_panel.is(RightPanel::None));
     let Some(id) = cutaway.building.clone().filter(|_| shown) else {
         set_if_changed(&mut chrome.lib.floors, None);
         return;
     };
 
+    let view = FloorsView {
+        // Under the map's column of round buttons on the same edge
+        // (`dock::right_column`); in the middle of the edge it ran into them.
+        right: theme::OSD_MARGIN,
+        top: chrome.right_bottom + theme::OSD_GROUP_GAP,
+        width: WIDTH,
+        room: cutaway.room.clone(),
+        // Top storey first: a lift, and every indoor map, counts upward.
+        storeys: (0..cutaway.storeys.len())
+            .rev()
+            .map(|k| {
+                (
+                    k,
+                    cutaway.storeys[k].clone(),
+                    k == cutaway.storey,
+                    cutaway.avatar_storey == Some(k),
+                )
+            })
+            .collect(),
+        follow: cutaway.picked.is_some() && cutaway.avatar_storey.is_some(),
+        designed: cutaway.designed,
+        plan: open_url_supported(),
+    };
+    set_if_changed(&mut chrome.lib.floors, Some(view));
+
     let mut pick: Option<Option<usize>> = None;
     let mut close = false;
-    let mut open: Option<String> = None;
     let mut plan = false;
-    if lib {
-        let view = FloorsView {
-            right: theme::OSD_MARGIN,
-            top: chrome.right_bottom + theme::OSD_GROUP_GAP,
-            width: WIDTH,
-            room: cutaway.room.clone(),
-            storeys: (0..cutaway.storeys.len())
-                .rev()
-                .map(|k| {
-                    (
-                        k,
-                        cutaway.storeys[k].clone(),
-                        k == cutaway.storey,
-                        cutaway.avatar_storey == Some(k),
-                    )
-                })
-                .collect(),
-            follow: cutaway.picked.is_some() && cutaway.avatar_storey.is_some(),
-            designed: cutaway.designed,
-            plan: open_url_supported(),
-        };
-        set_if_changed(&mut chrome.lib.floors, Some(view));
-        for act in acts {
-            match act {
-                ChromeAct::FloorPick(k) => pick = Some(k),
-                ChromeAct::FloorClose => close = true,
-                ChromeAct::FloorPlan => plan = true,
-                _ => {}
-            }
+    for act in acts {
+        match act {
+            ChromeAct::FloorPick(k) => pick = Some(k),
+            ChromeAct::FloorClose => close = true,
+            ChromeAct::FloorPlan => plan = true,
+            _ => {}
         }
-    } else {
-        set_if_changed(&mut chrome.lib.floors, None);
     }
-    let ctx = egui.ctx();
-    if !lib {
-        egui::Area::new(egui::Id::new("floor_picker"))
-            // Under the map's column of round buttons on the same edge
-            // (`dock::right_column`); in the middle of the edge it ran into them.
-            .anchor(
-                egui::Align2::RIGHT_TOP,
-                egui::vec2(
-                    -theme::OSD_MARGIN,
-                    chrome.right_bottom + theme::OSD_GROUP_GAP,
-                ),
-            )
-            .show(ctx, |ui| {
-                theme::overlay_frame().show(ui, |ui| {
-                    ui.set_width(WIDTH);
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Floors").strong().size(theme::SIZE_SUB));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            close = theme::close_button(ui).clicked();
-                        });
-                    });
-                    if let Some(room) = &cutaway.room {
-                        ui.label(
-                            egui::RichText::new(format!("In the {room}"))
-                                .size(theme::SIZE_SUB)
-                                .color(theme::p().accent),
-                        );
-                    }
-                    ui.add_space(4.0);
-                    // Top storey first: a lift, and every indoor map, counts upward.
-                    for k in (0..cutaway.storeys.len()).rev() {
-                        let mut label = cutaway.storeys[k].clone();
-                        if cutaway.avatar_storey == Some(k) {
-                            label.push_str("  ●");
-                        }
-                        let current = k == cutaway.storey;
-                        let button = egui::Button::selectable(
-                            current,
-                            egui::RichText::new(label).size(theme::SIZE_BODY),
-                        )
-                        .min_size(egui::vec2(WIDTH, theme::row_height()));
-                        if ui.add(button).clicked() && !current {
-                            pick = Some(Some(k));
-                        }
-                    }
-                    if cutaway.picked.is_some() && cutaway.avatar_storey.is_some() {
-                        ui.add_space(2.0);
-                        if theme::secondary_button(ui, "", "Follow me", WIDTH).clicked() {
-                            pick = Some(None);
-                        }
-                    }
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(if cutaway.designed {
-                            "Drawn by its owner"
-                        } else {
-                            "Generated from the register"
-                        })
-                        .size(theme::SIZE_TINY)
-                        .color(theme::p().text_dim),
-                    );
-                    if ui
-                        .add_enabled_ui(open_url_supported(), |ui| {
-                            theme::secondary_button(ui, icons::OPEN_EXTERNAL, "Floor plan", WIDTH)
-                        })
-                        .inner
-                        .on_hover_text("Open this building in the floor-plan editor")
-                        .clicked()
-                    {
-                        plan = true;
-                    }
-                });
-            });
-    }
-    if plan {
-        open = facts
-            .building(&id)
-            .map(|f| crate::systems::building_card::floor_plan_url(&id, &f.footprint));
-    }
+    let open = plan
+        .then(|| {
+            facts
+                .building(&id)
+                .map(|f| crate::systems::building_card::floor_plan_url(&id, &f.footprint))
+        })
+        .flatten();
 
     if let Some(k) = pick {
         cutaway.picked = k;

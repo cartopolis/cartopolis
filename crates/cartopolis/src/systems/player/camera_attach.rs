@@ -27,12 +27,11 @@
 //! `BigSpace` root at `GridCell::default()` with an identity transform has
 //! mesh-local coordinates in exactly this frame.
 
-use crate::systems::egui_manager::EguiRef;
 use bevy::math::DVec3;
 use bevy::prelude::*;
 
 use crate::resources::CameraMode;
-use crate::systems::theme;
+use crate::systems::ui_input::UiInput;
 
 /// Frames without a report before an attachment is dropped.
 pub const MISSED_FRAMES_LIMIT: u32 = 30;
@@ -93,13 +92,10 @@ pub struct CameraAttach {
     /// camera's job: the frame the target goes away, the camera still has to
     /// re-seed the mode it returns to from where it now is.
     pub(crate) rig: Option<AttachRig>,
-    /// The library draws the chip (`lib_interact`, `CARTO_UI_LIB=attach_chip`):
-    /// [`render_attach_chip`] draws nothing and publishes what it follows in
-    /// [`lib_view`](Self::lib_view) instead.
-    pub lib: bool,
-    /// What the library's chip names, while it shows.
+    /// What the library's chip (`lib_interact`) names, while it shows,
+    /// published by [`drive_attach_chip`].
     pub lib_view: Option<String>,
-    /// Its ✕ tapped, for [`render_attach_chip`] to do next frame.
+    /// Its ✕ tapped, for [`drive_attach_chip`] to do next frame.
     pub lib_release: bool,
 }
 
@@ -189,14 +185,14 @@ impl CameraAttach {
     }
 }
 
-/// The chip at the top of the screen while attached: what the camera follows,
-/// and the way to let go. Escape lets go as well.
-pub fn render_attach_chip(
-    egui: EguiRef,
+/// The chip at the top of the screen while attached (`lib_interact`): publish
+/// what the camera follows, and let go on its ✕ or Escape.
+pub fn drive_attach_chip(
+    ui_input: Res<UiInput>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mut attach: ResMut<CameraAttach>,
 ) {
-    // The library's ✕ last frame: let go, as egui's does.
+    // The chip's ✕ last frame: let go.
     if attach.lib_release {
         attach.lib_release = false;
         attach.detach();
@@ -207,42 +203,13 @@ pub fn render_attach_chip(
         }
         return;
     };
-    if keyboard.just_pressed(KeyCode::Escape) && !egui.ctx.text_edit_focused() {
+    if keyboard.just_pressed(KeyCode::Escape) && !ui_input.ui_owns_keyboard(false, &keyboard) {
         attach.detach();
         attach.lib_view = None;
         return;
     }
-    // The library's edition is showing: hand it the name, draw nothing.
-    if attach.lib {
-        if attach.lib_view.as_deref() != Some(label.as_str()) {
-            attach.lib_view = Some(label);
-        }
-        return;
-    }
-    let mut release = false;
-    egui::Area::new(egui::Id::new("camera_attach_chip"))
-        .anchor(
-            egui::Align2::CENTER_TOP,
-            egui::vec2(0.0, crate::systems::dock::reserved_top()),
-        )
-        .show(egui.ctx(), |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Following")
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p().text_dim),
-                    );
-                    ui.label(egui::RichText::new(&label).strong());
-                    ui.add_space(6.0);
-                    release = theme::close_button(ui)
-                        .on_hover_text("Let go (Esc)")
-                        .clicked();
-                });
-            });
-        });
-    if release {
-        attach.detach();
+    if attach.lib_view.as_deref() != Some(label.as_str()) {
+        attach.lib_view = Some(label);
     }
 }
 

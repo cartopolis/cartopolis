@@ -25,7 +25,7 @@
 //! height its size earns ([`country_ceiling_m`]).
 //!
 //! **A name is a button.** Clicking or long-pressing one opens the map's ring of
-//! actions on the place (`ui::render_context_menu`): Go there, Route here and
+//! actions on the place (`ui::drive_context_menu`): Go there, Route here and
 //! Lenses, which centres the place and puts up the shelf of lenses.
 //!
 //! **Two editions, one placing.** Which names show, where, and what each
@@ -362,13 +362,18 @@ pub fn render_place_names(
     route: Res<crate::systems::navigation::RouteState>,
     layers: Res<crate::systems::layer_state::DataLayers>,
     driver: Res<crate::systems::driver::DriverState>,
-    // A name that is clicked opens the map's ring on it (`ui::render_context_menu`),
+    // A name that is clicked opens the map's ring on it (`ui::drive_context_menu`),
     // and the ring's Go there comes back here to be flown.
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut lenses: ResMut<crate::systems::scenario::ScenarioView>,
-    night: Res<crate::systems::globe::GlobeNight>,
-    room: Res<crate::systems::design_room::DesignRoom>,
+    // One parameter for three, at Bevy's cap of sixteen. The chrome is the
+    // map's buttons, which a name keeps off (`place_pins::clear_of_chrome`).
+    (night, room, chrome): (
+        Res<crate::systems::globe::GlobeNight>,
+        Res<crate::systems::design_room::DesignRoom>,
+        Res<crate::systems::dock::MapChrome>,
+    ),
 ) {
     if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
         nav.pending_teleport = Some(crate::systems::geo_nav::Teleport::geo(
@@ -457,7 +462,7 @@ pub fn render_place_names(
             };
             let at = egui::pos2(screen.x / ui_scale, screen.y / ui_scale);
             if map_rect.shrink(8.0).contains(at)
-                && crate::systems::place_pins::clear_of_chrome(&ctx, at)
+                && crate::systems::place_pins::clear_of_chrome(&chrome.holes, at)
             {
                 places.push((p, at));
             }

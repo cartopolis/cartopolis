@@ -40,8 +40,6 @@ pub const LEAVE: f32 = 0.24;
 #[allow(dead_code)]
 pub const AMBIENT: f32 = 0.6;
 
-/// How far a surface that arrives from below starts under its resting place.
-pub const LIFT: f32 = 16.0;
 /// How much a pressed control shrinks.
 const PRESS_SCALE: f32 = 0.06;
 
@@ -58,7 +56,9 @@ pub fn reduced() -> bool {
     REDUCED.load(Ordering::Relaxed)
 }
 
-/// [`ENTER`] under the setting.
+/// [`ENTER`] under the setting. (Its egui readers, the panels' slide, went
+/// with egui's panels; kept beside [`ambient_time`] as the vocabulary's.)
+#[allow(dead_code)]
 #[must_use]
 pub fn enter_time() -> f32 {
     if reduced() {
@@ -68,7 +68,8 @@ pub fn enter_time() -> f32 {
     }
 }
 
-/// [`LEAVE`] under the setting.
+/// [`LEAVE`] under the setting. (As [`enter_time`].)
+#[allow(dead_code)]
 #[must_use]
 pub fn leave_time() -> f32 {
     if reduced() {
@@ -149,7 +150,9 @@ pub struct Presence {
 }
 
 impl Presence {
-    /// Still worth drawing: open, or not yet gone.
+    /// Still worth drawing: open, or not yet gone. (Read by the tests only
+    /// since `linger`'s cards went with egui's screens.)
+    #[allow(dead_code)]
     #[must_use]
     pub fn visible(&self) -> bool {
         self.open || self.linear > 0.001
@@ -200,32 +203,6 @@ pub fn forget(ctx: &Context, id: Id) {
     ctx.data_mut(|d| {
         d.remove::<bool>(id.with("seen"));
     });
-}
-
-/// Keep the last value of something that comes and goes for as long as its
-/// presence says to draw it, so a card whose state has already been cleared
-/// can still be drawn on its way out.
-///
-/// `Some(current)` while the thing is shown, `None` once it is not; the answer
-/// is what to draw (the current value, or the last one) and its presence — or
-/// `None` once it is gone.
-pub fn linger<T: Clone + Send + Sync + 'static>(
-    ctx: &Context,
-    id: Id,
-    current: Option<T>,
-) -> Option<(T, Presence)> {
-    let id = id.with("linger");
-    let open = current.is_some();
-    if let Some(v) = current.clone() {
-        ctx.data_mut(|d| d.insert_temp(id, v));
-    }
-    let pres = presence(ctx, id, open);
-    if !pres.visible() {
-        ctx.data_mut(|d| d.remove::<T>(id));
-        return None;
-    }
-    let value = current.or_else(|| ctx.data(|d| d.get_temp::<T>(id)))?;
-    Some((value, pres))
 }
 
 /// Apply a presence to the floating `Area` `ui` draws in: it comes up
@@ -312,17 +289,6 @@ pub enum Rest {
     Peek,
     Half,
     Full,
-}
-
-/// Run `f` — a `Panel::show_collapsible`, whose slide reads
-/// `Style::animation_time` — with the time a surface takes to come or go,
-/// and put the style's [`STATE`] back after.
-pub fn with_panel_time<R>(ctx: &Context, open: bool, f: impl FnOnce() -> R) -> R {
-    let secs = if open { enter_time() } else { leave_time() };
-    ctx.all_styles_mut(|s| s.animation_time = secs.max(1e-3));
-    let r = f();
-    ctx.all_styles_mut(|s| s.animation_time = STATE);
-    r
 }
 
 #[cfg(test)]
@@ -421,29 +387,5 @@ mod tests {
         assert!(!leaving.open && leaving.visible(), "{leaving:?}");
         let (gone, _) = at(2.1 + f64::from(LEAVE) + 0.1, false);
         assert!(!gone.visible(), "{gone:?}");
-    }
-
-    #[test]
-    fn linger_keeps_the_last_value_until_the_presence_is_gone() {
-        let ctx = Context::default();
-        let id = Id::new("place");
-        let at = |time: f64, current: Option<&str>| {
-            ctx.begin_pass(egui::RawInput {
-                time: Some(time),
-                ..Default::default()
-            });
-            let got = linger(&ctx, id, current.map(str::to_owned));
-            let _ = ctx.end_pass_unpainted();
-            got
-        };
-        set_reduced(false);
-        let (v, pres) = at(0.0, Some("Martinitoren")).expect("shown");
-        assert_eq!(v, "Martinitoren");
-        assert!(pres.open);
-        let _ = at(1.0, Some("Martinitoren"));
-        let (v, pres) = at(1.1, None).expect("still leaving");
-        assert_eq!(v, "Martinitoren", "the last value is drawn on the way out");
-        assert!(!pres.open);
-        assert!(at(2.0, None).is_none(), "and then it is gone");
     }
 }

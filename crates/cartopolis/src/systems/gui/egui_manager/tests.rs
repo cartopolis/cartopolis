@@ -939,13 +939,7 @@ fn every_root_ui_panel_is_in_the_chain() {
             // A *system* that draws into the root `Ui` takes the manager
             // mutably; helpers like `responsive_right_panel` take plain
             // arguments and only build a widget, so they order nothing.
-            // A call to `egui_manager::right_panel(` is the same act one
-            // level up — the helper calls `ui_mut()` on the system's behalf,
-            // so a panel using it still composes into the shared layer and
-            // still needs its place in the chain.
-            let draws_root_ui =
-                chunk.contains("ui_mut()") || chunk.contains("egui_manager::right_panel(");
-            if !draws_root_ui || !chunk.contains("EguiMut") {
+            if !chunk.contains("ui_mut()") || !chunk.contains("EguiMut") {
                 continue;
             }
             let name = chunk
@@ -962,12 +956,14 @@ fn every_root_ui_panel_is_in_the_chain() {
             }
         }
     }
-    // The scan works when it finds a drawer known to be one. Not a count:
-    // egui's panels are going family by family (the library draws them), so
-    // how many are left says nothing about the scan.
+    // The scan works when it finds a drawer known to be one: the strip that
+    // reserves the library's side panel (`panel_slots`), the last egui panel
+    // in the root `Ui`. Not a count: egui's panels are going family by family
+    // (the library draws them), so how many are left says nothing about the
+    // scan.
     assert!(
-        drawers.iter().any(|d| d == "render_dock"),
-        "found only {drawers:?} root-`Ui` drawers, not `render_dock` — the scan has broken, not the chain"
+        drawers.iter().any(|d| d == "reserve_library_panels"),
+        "found only {drawers:?} root-`Ui` drawers, not `reserve_library_panels` — the scan has broken, not the chain"
     );
 
     // The chain is two chained halves (one per `ClientPhase`) chained to each
@@ -980,7 +976,7 @@ fn every_root_ui_panel_is_in_the_chain() {
         .map(|(block, _)| block.to_string())
         .expect("the panel chain still exists in systems/gui/plugin.rs");
     assert!(
-        chain.contains("render_main_menu") && chain.contains("render_place_pins"),
+        chain.contains("drive_main_menu") && chain.contains("render_locate_arrow"),
         "the chain block was extracted but looks wrong — the markers in \
              systems/gui/plugin.rs moved"
     );

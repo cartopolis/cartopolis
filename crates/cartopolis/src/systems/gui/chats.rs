@@ -5,13 +5,13 @@
 //! # Three screens, one state
 //!
 //!  * **World | Community**, the switch at the bottom of the screen
-//!    (`dock::render_dock`, since 2026-11-10; it was at the top of the map and
+//!    (`dock::drive_dock`, since 2026-11-10; it was at the top of the map and
 //!    only signed in). *World* is the map; *Community* is the list, which is
 //!    the right-hand panel (the whole screen on a phone). It was called Chats
 //!    until 2026-10-16, when it took the web page's word, since it holds
 //!    communities and the public chats as well as conversations
 //!    (`docs/mockups/home-and-profile`). Your face at the top right opens your
-//!    sheet (`ui::render_main_menu`), whose "Your profile" is the You page.
+//!    sheet (`ui::drive_main_menu`), whose "Your profile" is the You page.
 //!  * **A chat's Chat view**: its thread, as bubbles, with points drawn as
 //!    numbered cards. Same panel, with the chat open.
 //!  * **A chat's World view**: the map, with the chat's points as numbered pins

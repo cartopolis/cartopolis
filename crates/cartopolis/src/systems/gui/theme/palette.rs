@@ -158,7 +158,7 @@ pub struct Palette {
     /// [`Palette::card`], close to it. **Light:** the hub's page, with white
     /// cards on it.
     pub panel: Rgba8,
-    /// A card inside a panel ([`list_group`], a chat or contact row). Dark:
+    /// A card inside a panel (a list group, a chat or contact row). Dark:
     /// just off [`Palette::panel`], so a group of rows reads as one block by
     /// its hairline and shadow rather than by a jump in tone. Light: white.
     pub card: Rgba8,
@@ -176,7 +176,7 @@ pub struct Palette {
     /// coverage; nothing legible sits on it. The floor is the other direction:
     /// at alpha 90 the well vanished into pale beige map.
     pub overlay_soft: Rgba8,
-    /// The rule between the rows of a [`list_group`]: the text tone at a low
+    /// The rule between the rows of a list group: the text tone at a low
     /// alpha, so it is a hairline on any card.
     pub list_line: Rgba8,
     /// How dark the shadows are, as a factor on their alpha: a light page

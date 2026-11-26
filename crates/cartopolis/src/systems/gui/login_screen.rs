@@ -23,7 +23,7 @@
 //! wanted to avoid. It used to raise itself over the map whenever a session failed
 //! or dropped, which made a modal an *event* — a card the app pushed in front of
 //! you, mid-flight, for something you had not asked about — so a failed sign-in
-//! now reports itself in the menu it was started from (`ui::render_main_menu`),
+//! now reports itself in the menu it was started from (`ui::drive_main_menu`),
 //! next to the entry that offers to try again. A failure on a card that is still
 //! open still lands on that card: the question is up, so the answer belongs there.
 //!

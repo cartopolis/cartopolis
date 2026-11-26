@@ -723,6 +723,7 @@ pub fn render_locate_arrow(
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<DriverState>,
     mut arrow: Option<ResMut<LocateArrow>>,
+    chrome: Res<crate::systems::dock::MapChrome>,
 ) {
     // Redrawn on the frames the map moves under it, as the pins are.
     let mut anchored = crate::systems::egui_manager::WorldAnchored::new(egui.ctx(), "locate_arrow");
@@ -784,7 +785,8 @@ pub fn render_locate_arrow(
     let Some(here) = project(here_lat, here_lng) else {
         return; // over the horizon, behind the camera, or off the flat frame
     };
-    if !map_rect.contains(here) || !crate::systems::place_pins::clear_of_chrome(&ctx, here) {
+    if !map_rect.contains(here) || !crate::systems::place_pins::clear_of_chrome(&chrome.holes, here)
+    {
         return;
     }
     anchored.at(here);
@@ -1735,7 +1737,7 @@ mod tests {
         t.exit();
         assert!(!t.active && t.watch.is_none() && t.compass.is_none());
         assert!(!t.recenter && t.last_place.is_none());
-        // And leaving twice is not an error either — `render_map_controls` and
+        // And leaving twice is not an error either — `drive_map_controls` and
         // `track_device_pose` can both decide the mode is over in the same frame.
         t.exit();
         assert!(!t.active);

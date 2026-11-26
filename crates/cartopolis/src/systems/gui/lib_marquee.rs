@@ -1,13 +1,12 @@
-//! The builder's rubber band drawn by the component library (`lib_host`),
-//! beside egui's (`picking::render_marquee`): the rectangle a drag over
-//! empty ground spreads while it selects every object inside it.
+//! The builder's rubber band drawn by the component library (`lib_host`):
+//! the rectangle a drag over empty ground spreads while it selects every
+//! object inside it.
 //!
-//! On with `CARTO_UI_LIB=marquee` (or `1`), on the web `?ui=lib`. The drag
-//! stays where it is (`picking::prim_picking` measures it, Bevy's input);
-//! egui's system steps aside (`MarqueeLib::lib`) and publishes the
-//! rectangle in `MarqueeLib::view`, which this draws: the accent's rim over
-//! a faint wash of it, as egui's (`accent` at 28 / 255, `accent_bright` 1 px
-//! outside the rectangle). It listens nowhere: the drag goes on under it.
+//! The drag is Bevy's input (`picking::update_marquee` measures it);
+//! `picking::publish_marquee` publishes the rectangle in `MarqueeLib::view`,
+//! which this draws: the accent's rim over a faint wash of it (`accent` at
+//! 28 / 255, `accent_bright` 1 px outside the rectangle). It listens
+//! nowhere: the drag goes on under it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,18 +67,15 @@ thread_local! {
 pub fn drive_lib_marquee(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
-    bridge: Option<ResMut<MarqueeLib>>,
+    bridge: Option<Res<MarqueeLib>>,
     metrics: Res<UiMetrics>,
 ) {
     if !lib.marquee {
         return;
     }
-    let Some(mut bridge) = bridge else {
+    let Some(bridge) = bridge else {
         return;
     };
-    if !bridge.lib {
-        bridge.lib = true;
-    }
     // The library's px are egui's points on the Bevy backend; as DOM they
     // are the page's (`lib_place_card::Placement::over_the_dock`).
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {

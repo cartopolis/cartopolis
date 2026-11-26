@@ -193,97 +193,6 @@ pub fn responsive_right_panel(
     }
 }
 
-/// One right-hand panel, the whole dance: the slot check, the collapsible show,
-/// the header with its ✕, and the close handling after the body returns.
-///
-/// This sequence was repeated near-verbatim in eleven panel systems, and it
-/// carries an invariant that only a comment used to defend (the note lived in
-/// the since-removed assistant panel): a panel must *collect* its close and
-/// write the slot **after** `show_collapsible` returns, never mid-frame from
-/// inside the draw
-/// closure. The other half is the last line: a drag on the panel's edge that
-/// pulls it shut writes `open = false` and never touches the header, so a panel
-/// that consults only its ✕ reopens on the next frame — the slot still says it
-/// is the active panel. Both are the same request. Absorbing the dance here
-/// makes both rules structural.
-///
-/// The body runs only while the panel is expanding or expanded (egui skips it
-/// collapsed), so per-frame work belongs inside it. A panel that needs extra
-/// header widgets (the Layers panel's Reset) still writes the dance by hand.
-pub fn right_panel(
-    egui: &mut EguiManager,
-    slot: &mut crate::resources::RightPanel,
-    which: crate::resources::RightPanel,
-    id: &'static str,
-    wide_width: f32,
-    body: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    let open_before = slot.is(which);
-    let mut open = open_before;
-    let mut close = false;
-    let compact = egui.compact();
-    let viewport_w = egui.viewport_pts().x;
-    let ctx = egui.ctx().clone();
-    crate::systems::motion::with_panel_time(&ctx, open, || {
-        responsive_right_panel(id, compact, viewport_w, wide_width).show_collapsible(
-            egui.ui_mut(),
-            &mut open,
-            |ui| {
-                close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
-                body(ui);
-            },
-        );
-    });
-    // Returned so a panel with teardown of its own (the search panel drops its
-    // suggestion popup and its focus claim) can hook the same moment.
-    let closed = close || (open_before && !open);
-    if closed {
-        *slot = crate::resources::RightPanel::None;
-    }
-    closed
-}
-
-/// [`right_panel`] as a sheet across the bottom of a phone's screen, for a
-/// panel whose subject is in the world above it — the avatar designer, which a
-/// full-screen panel would hide the avatar behind. `share` is the fraction of
-/// the screen's height it takes. Same slot, header and close handling.
-pub fn bottom_sheet(
-    egui: &mut EguiManager,
-    slot: &mut crate::resources::RightPanel,
-    which: crate::resources::RightPanel,
-    id: &'static str,
-    share: f32,
-    body: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    let open_before = slot.is(which);
-    let mut open = open_before;
-    let mut close = false;
-    let height = egui.viewport_pts().y * share;
-    let frame = egui::Frame::NONE
-        .fill(crate::systems::theme::p32().panel)
-        .stroke(egui::Stroke::new(
-            1.0,
-            crate::systems::theme::p32().panel_rim,
-        ))
-        .inner_margin(egui::Margin::symmetric(14, 10));
-    let ctx = egui.ctx().clone();
-    crate::systems::motion::with_panel_time(&ctx, open, || {
-        egui::Panel::bottom(id)
-            .frame(frame)
-            .resizable(false)
-            .exact_size(height)
-            .show_collapsible(egui.ui_mut(), &mut open, |ui| {
-                close = crate::systems::theme::panel_header(ui, which.icon(), which.label());
-                body(ui);
-            });
-    });
-    let closed = close || (open_before && !open);
-    if closed {
-        *slot = crate::resources::RightPanel::None;
-    }
-    closed
-}
-
 impl Default for EguiManager {
     fn default() -> Self {
         let ctx = egui::Context::default();
@@ -745,10 +654,29 @@ pub struct EguiRenderOutput {
     /// that lingers in a re-used output isn't re-applied every frame.
     pub generation: u64,
     /// Set by a system that mutated this resource in place (currently
-    /// `ui::suppress_egui_for_screenshot`, which clears the geometry for one frame).
+    /// [`suppress_egui_for_screenshot`], which clears the geometry for one frame).
     /// Forces the next [`end_egui_frame`] to write even if egui reports no repaint,
     /// otherwise the suppressed state would stick and the UI would never come back.
     pub force_next_write: bool,
+}
+
+/// When a screenshot is being captured, drop this frame's tessellated egui geometry so
+/// the shot is free of UI chrome. Runs in PostUpdate **after** `end_egui_frame` (which
+/// writes the output) and before render-world extraction. Only `clipped_primitives` is
+/// cleared — `textures_delta` is left intact so egui's font/texture uploads aren't lost.
+/// The screenshot state is optional: a test app without the client has none.
+pub fn suppress_egui_for_screenshot(
+    shot: Option<Res<crate::resources::ScreenshotState>>,
+    mut output: ResMut<EguiRenderOutput>,
+) {
+    if shot.is_some_and(|s| s.hide_ui) {
+        output.clipped_primitives.clear();
+        // This mutates the output in place, so `end_egui_frame` must rewrite it next
+        // frame even if egui reports nothing changed — otherwise the cleared geometry
+        // is what stays resident and the UI never comes back after a screenshot.
+        output.force_next_write = true;
+        output.generation = output.generation.wrapping_add(1);
+    }
 }
 
 // ─── Render-world resource ─────────────────────────────────────────────────
@@ -809,7 +737,13 @@ impl Plugin for EguiPlugin {
                 .after(begin_egui_frame)
                 .after(crate::systems::touch::recognize_touch_gestures),
         )
-        .add_systems(PostUpdate, publish_ui_animating.after(end_egui_frame));
+        .add_systems(PostUpdate, publish_ui_animating.after(end_egui_frame))
+        // Drop egui geometry for the screenshot frame, after end_egui_frame has
+        // written it.
+        .add_systems(
+            PostUpdate,
+            suppress_egui_for_screenshot.after(end_egui_frame),
+        );
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

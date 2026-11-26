@@ -1,19 +1,17 @@
-//! The Share sheet (bridge 3) drawn by the component library (`lib_host`),
-//! beside egui's (`bridges::render_share_sheet`): "Share <name>", what it
-//! does, the recent chats and the communities to send the place to, and
-//! Copy link.
+//! The Share sheet (bridge 3) drawn by the component library (`lib_host`):
+//! "Share <name>", what it does, the recent chats and the communities to
+//! send the place to, and Copy link.
 //!
-//! On with `CARTO_UI_LIB=share_sheet` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`Bridges::lib`) but keeps every decision — which
-//! chats and communities are offered and in what order, where the sheet
-//! stands, whether Copy link shows its ✓, a tap off the sheet — and
-//! publishes it in `Bridges::lib_view`. A tap here is a `bridges::ShareAct`,
-//! handed back in `Bridges::lib_acts` and done by the code egui's rows run.
+//! `bridges::drive_share_sheet` keeps every decision — which chats and
+//! communities are offered and in what order, where the sheet stands,
+//! whether Copy link shows its ✓, a tap off the sheet — and publishes it in
+//! `Bridges::lib_view`. A tap here is a `bridges::ShareAct`, handed back in
+//! `Bridges::lib_acts` and done by that system next frame.
 //!
-//! **Placement.** As egui's: a card standing on the World | Community
+//! **Placement.** A card standing on the World | Community
 //! switch, centred, as your face's sheet is on a phone (`ui::SheetSpot`).
 //!
-//! The ‹ Back chip of a Show in world (`bridges::back_chip`) is the chrome's
+//! The ‹ Back chip of a Show in world is the chrome's
 //! (`lib_chrome`'s search bar), not this module's.
 
 use std::cell::RefCell;
@@ -69,9 +67,6 @@ pub fn drive_lib_share(
 ) {
     if !lib.share_sheet {
         return;
-    }
-    if !bridges.lib {
-        bridges.lib = true;
     }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {

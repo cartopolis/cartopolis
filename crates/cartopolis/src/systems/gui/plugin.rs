@@ -84,7 +84,6 @@ impl Plugin for GuiPlugin {
                 systems::lib_picture_viewer::drive_lib_picture_viewer
                     .after(systems::lib_places::drive_lib_places),
             )
-            .init_resource::<systems::ui::ObjectEditorLib>()
             .init_resource::<systems::picking::MarqueeLib>();
         app.init_resource::<systems::settings::SettingsState>()
             // The tapped POI's card, egui's or the library's (`data_layers`).
@@ -208,7 +207,7 @@ impl Plugin for GuiPlugin {
             Update,
             (
                 systems::plans::drive_plans
-                    .after(systems::ui::render_context_menu)
+                    .after(systems::ui::drive_context_menu)
                     .in_set(ClientPhase::Input),
                 systems::plans::drive_plans_card
                     .after(systems::place_pins::render_place_pins)
@@ -230,7 +229,7 @@ impl Plugin for GuiPlugin {
                 Update,
                 (
                     systems::design_room::drive_design_room
-                        .after(systems::ui::render_context_menu)
+                        .after(systems::ui::drive_context_menu)
                         .in_set(ClientPhase::Input),
                     systems::design_room::layer_design_room.in_set(ClientPhase::Present),
                     systems::design_room::layer_prims.in_set(ClientPhase::Present),
@@ -284,21 +283,21 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Present),
                 systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
                 systems::camera_screen::play_clip_sound.in_set(ClientPhase::Present),
-                // The Share sheet (`bridges`): its own `Foreground` area over the
-                // map, so not in the panel chain; after the switch it stands on.
-                // Its community rows open the floating composer below.
-                systems::bridges::render_share_sheet
-                    .after(systems::dock::render_dock)
+                // The Share sheet (`bridges`, drawn by the library): after the
+                // switch it stands on. Its community rows open the floating
+                // composer below.
+                systems::bridges::drive_share_sheet
+                    .after(systems::dock::drive_dock)
                     .in_set(ClientPhase::Present),
                 // The chip that says only one community's posts are on the map
                 // (`community_posts`): its own `Area` under the search bar.
                 // A text field: drawn before the on-screen keyboard reads it.
                 systems::community_posts::drive_floating_composer
-                    .after(systems::bridges::render_share_sheet)
+                    .after(systems::bridges::drive_share_sheet)
                     .before(systems::onscreen_keyboard::render_onscreen_keyboard)
                     .in_set(ClientPhase::Present),
                 systems::community_posts::drive_filter_chip
-                    .after(systems::dock::render_dock)
+                    .after(systems::dock::drive_dock)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -310,7 +309,7 @@ impl Plugin for GuiPlugin {
             Update,
             (
                 systems::scenario::drive_scenario
-                    .before(systems::ui::render_main_menu)
+                    .before(systems::ui::drive_main_menu)
                     .in_set(ClientPhase::Input),
                 systems::cosmos::drive_galaxies.in_set(ClientPhase::Stream),
                 systems::scenario::drive_scenario_lens
@@ -332,7 +331,7 @@ impl Plugin for GuiPlugin {
             Update,
             (
                 systems::faces::drive_faces
-                    .before(systems::ui::render_main_menu)
+                    .before(systems::ui::drive_main_menu)
                     .in_set(ClientPhase::Input),
                 systems::faces::render_face_viewfinder
                     .after(systems::place_pins::render_place_pins)
@@ -360,26 +359,19 @@ impl Plugin for GuiPlugin {
                 .before(systems::chats::drive_chats),
         );
 
-        // Drop egui geometry for the screenshot frame, after end_egui_frame has
-        // written it.
-        app.add_systems(
-            PostUpdate,
-            systems::ui::suppress_egui_for_screenshot.after(systems::egui_manager::end_egui_frame),
-        );
-
         app.add_systems(
             Update,
             (
                 // The rungs above the globe (`systems::cosmos`): painted on the
                 // background layer, so before every panel, which then draws over
                 // it as panels draw over the map.
-                systems::cosmos::render_cosmos.before(systems::ui::render_main_menu),
+                systems::cosmos::render_cosmos.before(systems::ui::drive_main_menu),
                 // The place card — a floating `Area` above the dock, so it stays
                 // out of the panel chain too. **Before the panels**: taking a pick
                 // out of `GeoNavState::pending_card` is also what closes the Search
                 // panel, and doing it before the chain runs means the panel never
                 // draws a frame over the card it just opened.
-                systems::place_card::drive_place_card.before(systems::ui::render_main_menu),
+                systems::place_card::drive_place_card.before(systems::ui::drive_main_menu),
                 // The building card, on the same terms and for the same reasons: a
                 // floating `Area` above the dock, outside the panel chain,
                 // suppressed by whatever owns the bottom of the screen. **After**
@@ -389,41 +381,39 @@ impl Plugin for GuiPlugin {
                 // than a race if they ever are.
                 systems::building_card::drive_building_card
                     .after(systems::place_card::drive_place_card)
-                    .before(systems::ui::render_main_menu),
+                    .before(systems::ui::drive_main_menu),
                 // Its facade buttons' photograph and answer (`facade_check`),
                 // carried on whether or not the card is up: the camera app
                 // hides the whole client while it runs.
                 systems::facade_check::drive_facade_check
                     .before(systems::building_card::drive_building_card),
-                // The floor picker (`systems::cutaway`): a floating column at the
-                // right edge, outside the panel chain on the card's terms. After
-                // the card, whose Look inside it answers in the same frame.
-                systems::floor_picker::render_floor_picker
+                // The floor picker (`systems::cutaway`, drawn by the library): a
+                // column at the right edge, outside the panel chain on the card's
+                // terms. After the card, whose Look inside it answers in the same
+                // frame.
+                systems::floor_picker::drive_floor_picker
                     .after(systems::building_card::drive_building_card)
-                    .before(systems::ui::render_main_menu),
+                    .before(systems::ui::drive_main_menu),
                 // The menu a tap on a satellite opens, and the chip that says what the
-                // camera is riding: both floating, outside the panel chain on the
-                // card's terms. The menu first, so attaching from it puts the chip up
-                // in the same frame.
-                systems::satellites::render_satellite_menu
+                // camera is riding: both the library's, outside the panel chain on
+                // the card's terms. The menu first, so attaching from it puts the
+                // chip up in the same frame.
+                systems::satellites::drive_satellite_menu
                     .after(systems::building_card::drive_building_card)
-                    .before(systems::ui::render_main_menu),
-                systems::camera_attach::render_attach_chip
-                    .after(systems::satellites::render_satellite_menu)
-                    .before(systems::ui::render_main_menu),
+                    .before(systems::ui::drive_main_menu),
+                systems::camera_attach::drive_attach_chip
+                    .after(systems::satellites::drive_satellite_menu)
+                    .before(systems::ui::drive_main_menu),
                 // The screenshot driver runs after the dev panel so a button click
                 // is seen the same frame it's captured.
                 systems::ui::drive_screenshots.after(systems::dev_panel::render_dev_panel),
-                // Context menu and edit dialog.
-                systems::ui::render_context_menu,
-                // Follow selection changes from picking before the dialog draws /
-                // live edits apply.
-                systems::ui::sync_dialog_to_selection
-                    .after(systems::picking::prim_picking)
-                    .before(systems::ui::render_edit_dialog),
-                systems::ui::render_edit_dialog,
-                systems::ui::apply_live_prim_edits.after(systems::ui::render_edit_dialog),
-                systems::ui::send_prim_mutations.after(systems::ui::render_edit_dialog),
+                // The map's ring (the library draws it, `lib_action_ring`).
+                systems::ui::drive_context_menu,
+                // Follow selection changes from picking before live edits apply.
+                // The editor itself is the library's (`lib_object_editor`).
+                systems::ui::sync_dialog_to_selection.after(systems::picking::prim_picking),
+                systems::ui::apply_live_prim_edits.after(systems::ui::sync_dialog_to_selection),
+                systems::ui::send_prim_mutations.after(systems::ui::sync_dialog_to_selection),
             )
                 .in_set(ClientPhase::Input),
         )
@@ -510,13 +500,13 @@ impl Plugin for GuiPlugin {
                 // then draws the screen it switched to.
                 systems::bridges::drive_bridges
                     .after(systems::place_card::drive_place_card)
-                    .before(systems::ui::render_main_menu),
+                    .before(systems::ui::drive_main_menu),
                 // The first-launch card (`systems::welcome`): floating above the
                 // dock on the place card's terms. After it, since it stands
                 // aside for an open card.
                 systems::welcome::render_welcome
                     .after(systems::place_card::drive_place_card)
-                    .before(systems::ui::render_main_menu),
+                    .before(systems::ui::drive_main_menu),
                 // The sign-in screen (`systems::login_screen`). It draws into its
                 // own floating `Area` (a modal must sit above the main menu, which
                 // is itself a `Foreground` area), so it is deliberately *not* in
@@ -525,7 +515,7 @@ impl Plugin for GuiPlugin {
                 // session driver it feeds runs after it (`net::plugin`). Its
                 // fields are drawn before the on-screen keyboard looks for them.
                 systems::login_screen::render_login_screen
-                    .after(systems::ui::render_main_menu)
+                    .after(systems::ui::drive_main_menu)
                     .before(systems::session::drive_session)
                     .before(systems::onscreen_keyboard::render_onscreen_keyboard),
             )
@@ -577,7 +567,9 @@ impl Plugin for GuiPlugin {
             Update,
             (
                 (
-                    systems::ui::render_main_menu,
+                    // Your face's sheet (the library draws it, `lib_main_menu`):
+                    // it opens the sign-in screen, so it keeps the head.
+                    systems::ui::drive_main_menu,
                     // Search and the route sheet draw nothing of egui's any more
                     // (the library draws them); they keep their place in the
                     // order, the route's Start feeding the drive tick.
@@ -591,22 +583,24 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Input),
                 (
                     // (The messenger and Admin go here: `comms` below.)
-                    systems::ui::render_avatar_chooser,
-                    // Before the pins and after every panel, for the same reason
-                    // both of those hold: it culls against the root `Ui`'s leftover
-                    // space, which is only the map once the side panels have taken
-                    // their width.
-                    systems::interact::render_interaction_prompt,
+                    // The Appearance panel (the library draws it, `lib_avatar`).
+                    systems::ui::drive_avatar_chooser,
+                    // The prompt over what you can interact with (the library
+                    // draws it, `lib_interact`): placed in last frame's map
+                    // (`UiInput::map_rect`), and before the chat chip, which
+                    // stands aside for it.
+                    systems::interact::drive_interaction_prompt,
                     // (Chat over the map goes here: `comms` below.)
-                    // The map's chrome (`systems::dock`): the World | Community
-                    // switch, the search bar with your face, the round buttons.
-                    // In the chain because the bar and the switch sit over the
-                    // map the side panels leave, read off the root `Ui` — so
-                    // after every panel. After your face's sheet too, which is
-                    // at the head: a face drawn here toggles the sheet, and the
-                    // sheet leaves a tap on last frame's face to it
-                    // (`ui::MainMenu::face`).
-                    systems::dock::render_dock,
+                    // The map's chrome (`systems::dock`, drawn by the library):
+                    // the World | Community switch, the search bar with your face,
+                    // the round buttons. After your face's sheet, which is at the
+                    // head: a face drawn here toggles the sheet, and the sheet
+                    // leaves a tap on last frame's face to it
+                    // (`ui::MainMenu::face`). **Before every overlay below**: it
+                    // writes `MapChrome::holes`, which the names, the plans, the
+                    // pins and the locate arrow keep off
+                    // (`place_pins::clear_of_chrome`).
+                    systems::dock::drive_dock,
                     // (The person card goes here: `comms` below.)
                     // Layers ▸ Places ▸ Plans (`systems::plans`): dots over the
                     // map, culled against the leftover space as the pins are, and
@@ -668,7 +662,7 @@ impl Plugin for GuiPlugin {
                 )
                     .chain()
                     .after(systems::navigation::drive_route_sheet)
-                    .before(systems::ui::render_avatar_chooser),
+                    .before(systems::ui::drive_avatar_chooser),
                 (
                     // Chat over the map (`systems::chat_overlay`). In the chain
                     // because the bubbles cull against the root `Ui`'s leftover
@@ -690,12 +684,12 @@ impl Plugin for GuiPlugin {
                     systems::chats::render_chat_world,
                 )
                     .chain()
-                    .after(systems::interact::render_interaction_prompt)
-                    .before(systems::dock::render_dock),
+                    .after(systems::interact::drive_interaction_prompt)
+                    .before(systems::dock::drive_dock),
                 // The person card and the first-message sheet
                 // (`systems::contacts`): the sheet is a text field too.
                 systems::contacts::drive_person_card
-                    .after(systems::dock::render_dock)
+                    .after(systems::dock::drive_dock)
                     .before(systems::scenario::render_scenario_map),
             )
                 .in_set(ClientPhase::Present),
@@ -706,11 +700,11 @@ impl Plugin for GuiPlugin {
             Update,
             (
                 systems::data_layers::drive_poi_card
-                    .after(systems::ui::render_main_menu)
+                    .after(systems::ui::drive_main_menu)
                     .after(systems::free_camera::camera_controls),
                 // The compass/locate column, which driver mode repurposes.
-                systems::hud::render_map_controls
-                    .after(systems::ui::render_main_menu)
+                systems::hud::drive_map_controls
+                    .after(systems::ui::drive_main_menu)
                     .after(systems::driver::drive_driver_mode),
                 // The on-screen keyboard — the only keyboard Android and a phone
                 // browser have (`systems::onscreen_keyboard`). NativeActivity
@@ -733,13 +727,12 @@ impl Plugin for GuiPlugin {
                 // flip to the top — needs the same ordering, because
                 // `read_response` only sees widgets already drawn this pass.
                 //
-                // Three anchors, because the fields are spread over three places:
-                // the panel chain (geo search, chat, assistant, bookmark rename,
-                // route), the sign-in card, and the prim edit dialog.
-                // (The sign-in card is ordered before it from its own side.)
+                // The fields are in two places: the panel chain and the sign-in
+                // card, which is ordered before it from its own side. (The prim
+                // edit dialog was a third; the library draws it now, with its
+                // own fields.)
                 systems::onscreen_keyboard::render_onscreen_keyboard
-                    .after(systems::place_pins::render_place_pins)
-                    .after(systems::ui::render_edit_dialog),
+                    .after(systems::place_pins::render_place_pins),
                 // Escape's single dismissal ladder. It reads state every panel has
                 // already written this frame, so it runs after the panel chain —
                 // which used to hold only because it was registered after it; the

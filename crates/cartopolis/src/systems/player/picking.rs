@@ -9,9 +9,7 @@
 use crate::components::PrimMesh;
 use crate::components::{Prim, Selected};
 use crate::resources::{ContextMenuState, GameState, MarqueeState};
-use crate::systems::egui_manager::EguiMut;
-use crate::systems::theme;
-use crate::systems::ui_input::UiInput;
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use bevy::prelude::*;
 use cartopolis_core::msg;
 
@@ -77,7 +75,7 @@ pub fn prim_picking(
     mut prim_click: ResMut<PrimClick>,
 ) {
     let (geo_cameras, map_anchor, online) = (&world.cameras, &world.anchor, &world.online);
-    // Don't process world clicks when egui has the pointer (toolbar buttons, dialogs, etc.).
+    // Don't process world clicks when the interface has the pointer (toolbar buttons, dialogs, etc.).
     // The same gate `building_select::pick_building` uses, or `PrimClick` goes stale.
     let cursor = windows.iter().next().and_then(|w| w.cursor_position());
     if ui_input.owns_click(world.touch.touch_click(), cursor) {
@@ -87,7 +85,7 @@ pub fn prim_picking(
     let left_pressed = mouse_buttons.just_pressed(MouseButton::Left);
     let right_pressed = mouse_buttons.just_pressed(MouseButton::Right);
 
-    // Any click outside egui closes the context menu.
+    // Any click outside the interface closes the context menu.
     if context_menu.visible && (left_pressed || right_pressed) {
         context_menu.visible = false;
     }
@@ -370,67 +368,36 @@ fn reset_marquee(m: &mut MarqueeState) {
 
 // ─── Marquee rendering ────────────────────────────────────────────────────────
 
-/// The rubber band as the component library draws it (`lib_marquee`,
-/// `CARTO_UI_LIB=marquee`): with `lib` on [`render_marquee`] paints nothing
-/// and publishes the rectangle in `view` instead. The drag itself stays
-/// [`prim_picking`]'s either way.
+/// The rubber band as the component library draws it (`lib_marquee`):
+/// [`publish_marquee`] publishes the rectangle in `view`. The drag itself is
+/// [`update_marquee`]'s.
 #[derive(Resource, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct MarqueeLib {
-    /// The library draws the rubber band.
-    pub lib: bool,
-    /// The rectangle while a drag is on, in egui points: `[left, top,
-    /// right, bottom]`.
+    /// The rectangle while a drag is on, in UI points: `[left, top, right,
+    /// bottom]`.
     pub view: Option<[f32; 4]>,
 }
 
-/// Draws the rubber-band rectangle as an egui overlay.
-pub fn render_marquee(
-    mut egui: EguiMut,
+/// Publish the rubber-band rectangle for the library to draw (`lib_marquee`).
+pub fn publish_marquee(
+    metrics: Res<UiMetrics>,
     marquee: Res<MarqueeState>,
-    mut lib: Option<ResMut<MarqueeLib>>,
+    lib: Option<ResMut<MarqueeLib>>,
 ) {
-    // The drag was measured against the window's cursor, so both corners are in
-    // window points and have to be converted before egui paints with them.
-    let corners = marquee.active.then(|| {
-        (
-            egui.window_to_ui(marquee.start.min(marquee.end)),
-            egui.window_to_ui(marquee.start.max(marquee.end)),
-        )
-    });
-    // The library draws it (`lib_marquee`): publish, paint nothing.
-    if let Some(lib) = lib.as_deref_mut().filter(|l| l.lib) {
-        let view = corners.map(|(min, max)| [min.x, min.y, max.x, max.y]);
-        if lib.view != view {
-            lib.view = view;
-        }
-        return;
-    }
-    let Some((min, max)) = corners else {
+    let Some(mut lib) = lib else {
         return;
     };
-    let rect = egui::Rect::from_min_max(min, max);
-
-    let ctx = egui.ctx_mut();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("marquee_rect"),
-    ));
-
-    let fill = egui::Color32::from_rgba_unmultiplied(
-        theme::p().accent.r(),
-        theme::p().accent.g(),
-        theme::p().accent.b(),
-        28,
-    );
-    let stroke = egui::Stroke::new(1.0_f32, theme::p().accent_bright);
-    painter.rect(
-        rect,
-        egui::CornerRadius::default(),
-        fill,
-        stroke,
-        egui::StrokeKind::Outside,
-    );
+    // The drag was measured against the window's cursor, so both corners are
+    // in window points and have to be converted to UI points.
+    let view = marquee.active.then(|| {
+        let min = metrics.window_to_ui(marquee.start.min(marquee.end));
+        let max = metrics.window_to_ui(marquee.start.max(marquee.end));
+        [min.x, min.y, max.x, max.y]
+    });
+    if lib.view != view {
+        lib.view = view;
+    }
 }
 
 // ─── Delete key ──────────────────────────────────────────────────────────────
@@ -443,12 +410,8 @@ pub fn handle_delete_key(
     ui_input: Res<UiInput>,
     selected_query: Query<&Prim, With<Selected>>,
 ) {
-    // `ui_owns_keyboard`, not `egui_wants_keyboard_input()`. The latter is
-    // `memory.focused().is_some()`, which stays true after clicking *any* widget —
-    // a button, a selectable — so Delete silently did nothing until you clicked
-    // empty space first. `docs/notes/egui-shared-root-ui.md` names this exact
-    // predicate as the wrong one and records that it already swallowed the
-    // avatar's movement keys once.
+    // A focused text field only: "any widget focused" stays true after clicking
+    // a button, and Delete silently did nothing until you clicked empty space.
     if ui_input.ui_owns_keyboard(false, &keyboard) {
         return;
     }

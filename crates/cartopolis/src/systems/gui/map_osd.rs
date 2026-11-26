@@ -54,7 +54,7 @@
 //! out of the panel chain (like the dock and the HUD) — but for the
 //! same reason egui paints those areas *over* a panel, it hides itself whenever
 //! a right-hand panel is open rather than sitting on top of one, which is what
-//! `hud::render_map_controls` does and for the same reason: an invisible control
+//! `hud::drive_map_controls` does and for the same reason: an invisible control
 //! that still eats taps is worse than no control.
 //!
 //! **It reports a wish, it does not move the camera.** `camera_controls` owns
@@ -183,7 +183,7 @@ pub fn right_edge_reach(lying: bool) -> f32 {
 
 /// How much of the bottom-**left** corner the thumbstick claims, in points, for
 /// whatever else wants to sit above it — the scale bar
-/// (`hud::render_map_controls`) is the only caller so far.
+/// (`hud::drive_map_controls`) is the only caller so far.
 ///
 /// Measured from the window's bottom edge, so it already contains the dock's
 /// own reservation and a caller adds nothing but its own gap. `0` means the
@@ -712,7 +712,9 @@ pub fn render_map_osd(
             ..Default::default()
         };
         if let Some(cluster) = cluster {
-            let at = spots(crate::systems::dock::lying(screen));
+            let at = spots(crate::systems::dock::lying(bevy::math::Vec2::new(
+                screen.x, screen.y,
+            )));
             let s = &mut *stick;
             match cluster {
                 Cluster::Walk => {
@@ -784,7 +786,10 @@ pub fn render_map_osd(
     if let Some(cluster) = cluster {
         let fingers = Fingers::new(touch, ui_scale);
         let ctx = egui.ctx();
-        let at = spots(crate::systems::dock::lying(egui.viewport_pts()));
+        let view = egui.viewport_pts();
+        let at = spots(crate::systems::dock::lying(bevy::math::Vec2::new(
+            view.x, view.y,
+        )));
         match cluster {
             Cluster::Walk => {
                 // The avatar has no vertical of its own (it walks), so the
@@ -3021,7 +3026,8 @@ mod tests {
     /// 2026-11-12).
     #[test]
     fn the_right_edge_controls_clear_the_column_of_round_buttons() {
-        for view in [egui::vec2(274.0, 600.0), egui::vec2(924.0, 424.0)] {
+        use bevy::math::Vec2;
+        for view in [Vec2::new(274.0, 600.0), Vec2::new(924.0, 424.0)] {
             let lying = crate::systems::dock::lying(view);
             let column = crate::systems::dock::right_column(view, true, true).bottom;
             let follow_top = view.y - right_edge_reach(lying);
@@ -3052,11 +3058,11 @@ mod tests {
             }
         }
         // A phone upright keeps its column, and on its side lies down.
-        assert!(!crate::systems::dock::lying(egui::vec2(274.0, 600.0)));
-        assert!(crate::systems::dock::lying(egui::vec2(924.0, 424.0)));
+        assert!(!crate::systems::dock::lying(Vec2::new(274.0, 600.0)));
+        assert!(crate::systems::dock::lying(Vec2::new(924.0, 424.0)));
         // The shortest phone on its side (274 pt) still has room for Follow's
         // pairs under the rows; Earth's rail does not fit there yet.
-        let short = egui::vec2(600.0, 274.0);
+        let short = Vec2::new(600.0, 274.0);
         let rows = crate::systems::dock::right_column(short, true, true).bottom;
         assert!(short.y - right_edge_reach(true) >= rows + theme::OSD_GROUP_GAP);
     }

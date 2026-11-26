@@ -34,10 +34,6 @@ pub struct AvatarChooserState {
     /// A tab for the designer to open on, taken once: `--ui appearance,designer-face`
     /// photographs the Face tab, which a capture cannot tap to.
     pub open_tab: Option<DesignerTab>,
-    /// The component library draws the panel (`lib_avatar`): egui's keeps
-    /// an empty strip, the seeding of the draft, and the camera, which it
-    /// aims by the two fields below instead of its own designer's.
-    pub lib: bool,
     /// The library's designer is on the Face tab: come close to the head.
     pub lib_close_up: bool,
     /// The library's designer's Front/Side/Back, as the model's turn in
