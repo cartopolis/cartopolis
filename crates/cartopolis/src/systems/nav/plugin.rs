@@ -3,10 +3,10 @@
 //! each system runs in is `crate::phase`'s; the edges beside them are the ones
 //! `lib.rs` carried before the split.
 //!
-//! Three of this group's systems are registered elsewhere, in the panel chain
-//! (`gui::plugin`): `geo_nav::drive_search`, `navigation::drive_route_sheet`
-//! and `locate::render_locate_arrow` draw into the shared root `Ui`, and a panel
-//! outside that one tuple is not in the chain.
+//! Three of this group's systems are registered elsewhere (`gui::plugin`):
+//! `geo_nav::drive_search` and `navigation::drive_route_sheet` keep their place
+//! in the panel chain, and `locate::place_locate_arrow` closes the map's layers
+//! that follow it.
 
 use bevy::prelude::*;
 
@@ -247,7 +247,7 @@ impl Plugin for NavPlugin {
                 // limit). After the drive tick, which is what turns driver mode on,
                 // and before the chrome that reads it.
                 systems::route_ahead::drive_route_ahead.after(systems::driver::drive_driver_mode),
-                systems::driver::render_driver_hud
+                systems::driver::drive_driver_hud
                     .after(systems::ui::drive_main_menu)
                     .after(systems::route_ahead::drive_route_ahead),
                 systems::walk_guide::publish_walk_guide.after(systems::ui::drive_main_menu),

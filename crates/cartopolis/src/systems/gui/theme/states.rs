@@ -86,51 +86,6 @@ pub(super) fn sentence_case(s: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Where a page's back chevron says it was drawn, and where the dismissal
-/// ladder leaves a press of Back or Escape for it: the pass of each.
-pub(super) fn page_back_seen_id() -> egui::Id {
-    egui::Id::new("theme::page_back_seen")
-}
-pub(super) fn page_back_pending_id() -> egui::Id {
-    egui::Id::new("theme::page_back_pending")
-}
-
-/// A page's back chevron: whether it was `clicked`, or Back / Escape was
-/// pressed for it.
-///
-/// Every chevron inside a panel goes through this, so the dismissal ladder
-/// (`systems::dismiss`) steps back **one page** — Contacts to You, You to
-/// Community — rather than closing the whole stack at once, which is what a
-/// press did while the pages kept their own state out of the ladder's sight.
-/// The page still decides where back goes; this only lets a key press it.
-pub fn page_back(ctx: &egui::Context, clicked: bool) -> bool {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(page_back_seen_id(), pass));
-    let pressed = ctx
-        .data_mut(|d| d.remove_temp::<u64>(page_back_pending_id()))
-        // The ladder runs after the panel chain, so its press is read in the
-        // next pass; anything older belonged to a page no longer drawn.
-        .is_some_and(|at| pass.saturating_sub(at) <= 2);
-    clicked || pressed
-}
-
-/// Whether a page with a back chevron was drawn in this pass or the last.
-#[must_use]
-pub fn page_back_shown(ctx: &egui::Context) -> bool {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data(|d| d.get_temp::<u64>(page_back_seen_id()))
-        .is_some_and(|at| pass.saturating_sub(at) <= 1)
-}
-
-/// Press the shown page's back chevron (the dismissal ladder's page rung).
-pub fn press_page_back(ctx: &egui::Context) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| {
-        d.remove_temp::<u64>(page_back_seen_id());
-        d.insert_temp(page_back_pending_id(), pass);
-    });
-}
-
 /// A line under a control stating a constraint or a stored intention — *not* a
 /// failure. Plain dim text rather than a warning colour: it is a fact about the
 /// build or the world, not something the user did wrong.

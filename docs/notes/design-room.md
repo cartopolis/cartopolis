@@ -57,7 +57,7 @@ everything fades out between 14 m and 36 m from the spot. UV0 is metres from the
 spot, never `world_position`.
 
 The room's panels are drawn in the dark palette whatever the app's theme
-(`room_panel`, `theme::dark_here`): over a white floor the map's light chrome
+(`lib_design_room`, mounted dark): over a white floor the map's light chrome
 lost its edges. Each has a title row with an icon, and states are pills
 (`draft`, `running`, `working`, `error`).
 
@@ -174,7 +174,13 @@ Side (looking west) and 3D, which set `orbit_yaw` / `orbit_pitch` (yaw 0 stands
 south of the spot); a grey **figure** of 1.75 m standing west of the spot, a
 child of the floor; and **measurements** painted under the panels — the
 figure's height, and the selected part's width and height along the edges that
-face the camera, in orange with the length on a white plate.
+face the camera, in orange with the length on a white plate. All of it is the
+library's (`lib_design_room::drive_lib_design_room_overlays`), built from
+boxes: a line is a thin box turned by `rotate()`, and each frame restyles the
+nodes from signals (`gizmo_axes`, `measured_edges` in `design_room` do the
+geometry) rather than remounting; a measurement's plate is sized from an
+estimate of its text, since a box wide enough to centre any text in would take
+the taps under it.
 
 Still perspective throughout: Top is a camera looking straight down, not an
 orthographic view.

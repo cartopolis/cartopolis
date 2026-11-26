@@ -1,15 +1,13 @@
-//! The map's pins drawn by the component library (`lib_host`), beside
-//! egui's (`place_pins::render_place_pins`): saved places, a chat's points,
-//! a community's posts, people's markers (`chat_people`) with what they last
-//! said over them, and the "you are sharing your location" chip.
+//! The map's pins drawn by the component library (`lib_host`): saved places,
+//! a chat's points, a community's posts, people's markers (`chat_people`)
+//! with what they last said over them, and the "you are sharing your
+//! location" chip.
 //!
-//! On with `CARTO_UI_LIB=pins` (or `1`), on the web `?ui=pins`. egui's system
-//! keeps everything but the painting: it projects every marker, culls it to
-//! `place_pins::map_area` and the map's buttons, and publishes the frame's
-//! markers in `PlacePins::lib_view`; a tap here goes back as
-//! `PlacePins::lib_tapped` (the marker's key) and is done by the code a click
-//! on egui's pin runs, so the two editions cannot disagree about what a pin
-//! is or does.
+//! `place_pins::place_map_pins` keeps everything but the drawing: it
+//! projects every marker, culls it to `place_pins::map_area` and the map's
+//! buttons, and publishes the frame's markers in `PlacePins::lib_view`; a
+//! tap here goes back as `PlacePins::lib_tapped` (the marker's key) and is
+//! done there.
 //!
 //! **One mount, moved, never rebuilt per frame.** Everything anchored to the
 //! world is drawn through [`Anchored`]: a keyed list whose items each hold
@@ -24,10 +22,10 @@
 //! balloon's tail a small turned square. Each anchor is a 0 × 0 node at the
 //! tip, its parts placed around it: a box wide enough to centre a label in
 //! would take the taps meant for the pins under it, so a label is centred by
-//! egui's measure of it (`place_pins::text_width`).
+//! a measure of it (`place_pins::text_size`).
 //!
-//! What differs from egui's: the library has no hover, so a pin's name chip
-//! (egui shows it on hover) and the marker's hover ring are not drawn — the
+//! What differs from egui's old pins: the library has no hover, so a pin's
+//! name chip (egui showed it on hover) and the hover ring are not drawn — the
 //! name is the node's `title`, which a browser shows; a pin seen for the
 //! first time does not pop. The sharing chip is centred in a row across the
 //! screen, which pins under that row cannot be tapped through.
@@ -214,8 +212,9 @@ impl<S: Clone + PartialEq + 'static> Anchored<S> {
     }
 
     /// The list: a 0 × 0 node at the root's corner, under every other
-    /// library screen (`z`, below zero: the names at -2 under the pins and
-    /// the people at -1), with an item per key — a 0 × 0 node at the item's
+    /// library screen (`z`, below zero: the Plans outlines at -4, the place
+    /// names at -3, the Plans marks at -2, the pins and the people at -1),
+    /// with an item per key — a 0 × 0 node at the item's
     /// spot, holding what `look` builds for it around that point. A 0 × 0
     /// node takes no taps; only what is drawn round it does.
     pub(crate) fn view(&self, z: i32, look: impl Fn(&str, &S) -> View + 'static) -> View {
@@ -331,7 +330,7 @@ thread_local! {
     static MOUNTED: RefCell<Option<Live>> = const { RefCell::new(None) };
 }
 
-/// Mounts the pins once, mirrors egui's frame of markers into them, and
+/// Mounts the pins once, mirrors `place_map_pins`' frame of markers into them, and
 /// hands their taps back. `PostUpdate`, before `DriveUi`, as every library
 /// screen; the pins' state is inserted here, the first frame.
 pub fn drive_lib_pins(
@@ -345,15 +344,9 @@ pub fn drive_lib_pins(
         return;
     }
     let Some(mut pins) = pins else {
-        commands.insert_resource(PlacePins {
-            lib: true,
-            ..Default::default()
-        });
+        commands.insert_resource(PlacePins::default());
         return;
     };
-    if !pins.lib {
-        pins.lib = true;
-    }
     let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
     MOUNTED.with(|m| {
@@ -374,7 +367,7 @@ pub fn drive_lib_pins(
             crate::systems::lib_host::mount_keyed(KEY, view_of(&live), dark, theme::touch_layout());
             live
         });
-        // The taps of the last frame, for egui's system to do.
+        // The taps of the last frame, for `place_map_pins` to do.
         if let Some(key) = live.tapped.borrow_mut().take() {
             pins.lib_tapped = Some(key);
         }
@@ -648,8 +641,7 @@ fn balloon(b: &Balloon) -> View {
     };
     let frame = format!(
         "position: absolute; left: 0; bottom: 0; width: {:.1}px; padding: 7px 11px; border-radius: 14px; background: {fill}; color: {ink}; font-size: {}px; box-shadow: {LIFT}",
-        b.width,
-        BALLOON_TEXT
+        b.width, BALLOON_TEXT
     );
     let tail = format!(
         "position: absolute; left: {:.1}px; bottom: -4px; width: 9px; height: 9px; background: {fill}; transform: rotate(45deg)",

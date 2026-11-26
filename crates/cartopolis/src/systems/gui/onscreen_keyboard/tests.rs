@@ -31,8 +31,6 @@ struct Harness {
     /// Where the card sits. Centred by default; a test pins it to the bottom
     /// edge to put the field where the keys land.
     anchor: (egui::Align2, egui::Vec2),
-    /// Does the card claim [`field_makes_room`] for its field?
-    makes_room: bool,
 }
 
 impl Harness {
@@ -56,7 +54,6 @@ impl Harness {
             backdrop_clicks: 0,
             backdrop: true,
             anchor: (egui::Align2::CENTER_CENTER, egui::Vec2::ZERO),
-            makes_room: false,
         }
     }
 
@@ -96,7 +93,6 @@ impl Harness {
 
         let card_id = egui::Id::new("sign_in_card");
         let text = &mut self.text;
-        let makes_room = self.makes_room;
         let mut field = egui::Rect::NOTHING;
         egui::Window::new("sign in")
             .id(card_id)
@@ -114,9 +110,6 @@ impl Harness {
                         let resp =
                             ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
                         field = resp.rect;
-                        if makes_room {
-                            field_makes_room(ui.ctx(), resp.id);
-                        }
                     });
             });
         // The card raises itself every frame; the keyboard has to raise itself
@@ -682,33 +675,25 @@ fn the_keyboard_moves_off_the_field_it_is_serving() {
     );
 }
 
-/// The chat thread's composer, pinned to the bottom of its panel: tapping it
-/// put the keys at the **top**, over the conversation, because on the frame
-/// the keyboard opens the field has not lifted yet. A field that claims
-/// [`field_makes_room`] keeps the keys on the bottom edge; one that does not
-/// still gets the flip, which is right for a field that cannot move.
+/// An egui field pinned to the bottom edge cannot move out of the keys' way,
+/// so tapping it flips them to the top. (A field that lifted itself above
+/// them once claimed an exemption, the chat composer; that one is the
+/// library's now, whose fields never flip the keys.)
 #[test]
-fn a_field_that_makes_room_keeps_the_keys_at_the_bottom() {
-    for makes_room in [false, true] {
-        let mut h = Harness::new();
-        h.backdrop = false;
-        h.makes_room = makes_room;
-        h.anchor = (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0));
-        h.frame(Vec::new());
-        h.frame(Vec::new());
+fn a_field_on_the_bottom_edge_flips_the_keys_to_the_top() {
+    let mut h = Harness::new();
+    h.backdrop = false;
+    h.anchor = (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0));
+    h.frame(Vec::new());
+    h.frame(Vec::new());
 
-        h.tap(h.field.center());
-        assert!(
-            h.kb.is_open(),
-            "tapping the field did not open the keyboard"
-        );
-        let slab = h.kb.slab().expect("open keyboard has no slab");
-        let at_bottom = slab.top() > h.screen.center().y;
-        assert_eq!(
-            at_bottom, makes_room,
-            "makes_room = {makes_room}: keyboard at {slab:?}"
-        );
-    }
+    h.tap(h.field.center());
+    assert!(
+        h.kb.is_open(),
+        "tapping the field did not open the keyboard"
+    );
+    let slab = h.kb.slab().expect("open keyboard has no slab");
+    assert!(slab.top() <= h.screen.center().y, "keyboard at {slab:?}");
 }
 
 /// A viewport too short for four 48 dp rows must still produce a usable

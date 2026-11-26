@@ -5,7 +5,7 @@
 //! names them back, so its callers are unchanged.
 
 use crate::systems::chat::ChatState;
-use crate::systems::{icons, theme};
+use crate::systems::icons;
 
 /// The round initials, picked by name so a person keeps theirs (`.c1`–`.c6`).
 ///
@@ -173,33 +173,4 @@ pub fn disc_look(name: &str, kind: ChatKind) -> DiscLook {
         scale,
         square: matches!(kind, ChatKind::Topic | ChatKind::Community),
     }
-}
-
-/// A round button of the design's composer (`.circ`): raised, or the pale
-/// accent when it is the one that acts (`.circ.hot`).
-pub(crate) fn circle_button(
-    ui: &mut egui::Ui,
-    icon: &str,
-    hot: bool,
-    enabled: bool,
-    hint: &str,
-) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::splat(38.0), egui::Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, hint));
-    let (fill, ink) = match (hot, enabled) {
-        (true, true) => (theme::p32().accent, theme::p32().on_accent),
-        (true, false) => (theme::p32().accent_muted, theme::p32().text_dim),
-        (false, _) if resp.hovered() => (theme::p32().surface_hover, theme::p32().text),
-        (false, _) => (theme::p32().surface_raised, theme::p32().text),
-    };
-    let p = ui.painter();
-    p.circle_filled(rect.center(), 19.0, fill);
-    p.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon,
-        egui::FontId::proportional(20.0),
-        ink,
-    );
-    resp.on_hover_text(hint)
 }

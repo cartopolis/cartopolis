@@ -1,7 +1,7 @@
 ---
 topic: egui-quiet-frame-staleness
 triggers: [egui_manager.rs, end_egui_frame, WorldAnchored, place_pins.rs, EguiRenderOutput, force_next_write, keep_egui_fresh, repaint_delay, request_repaint, shot_harness.rs, "--shot", "cargo shots", "stale UI", "frozen HUD", "compass does not move", quiet frame, tessellate]
-updated: 2026-10-17
+updated: 2026-11-26
 ---
 
 # egui's repaint signal does not know about the ECS
@@ -77,3 +77,10 @@ appeared or went, and on no others. A still map with pins on it keeps the skip.
 (`data_layers::render_poi_popup`) and the gizmo still have none. `animating()` is
 not a substitute: a quarter-second redraw is a stutter against a map drawn at
 sixty. The HUD readouts listed above are still open.
+
+**Since 2026-11-26 no egui overlay is world-anchored**: the pins, the chat
+bubbles, the device arrow, the plans, the names and a lens's marks are the
+component library's, which redraws every frame, so `WorldAnchored` was deleted
+with its last caller. What took egui's place for a scenario is the idle
+throttle: a playing clock over a still map keeps full frames through
+`ScenarioView::animating` in `frame_pacing::present_rate`.

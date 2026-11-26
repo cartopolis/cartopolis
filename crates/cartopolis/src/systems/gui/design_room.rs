@@ -37,9 +37,7 @@ use serde::Deserialize;
 use crate::components::{FreeCamera, Prim, PrimGeo};
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
 use crate::resources::{ContextMenuState, EditDialogState, GameState, MapAnchor};
-use crate::systems::egui_manager::EguiMut;
 use crate::systems::model_assets;
-use crate::systems::theme;
 use crate::systems::ui_input::UiInput;
 use cartopolis_materials::design_floor::DesignFloorMaterial;
 
@@ -120,19 +118,16 @@ pub struct DesignRoom {
     /// Parts a script just touched, and until when they glow (real seconds).
     pub pulse: std::collections::HashMap<i64, f64>,
     /// Counts each way in and out; each one whites the screen out and fades
-    /// it back ([`render_design_room_veil`]). The second is the one the veil
-    /// has started.
+    /// it back (the veil, `lib_design_room`).
     flash: u32,
-    flash_started: u32,
     loaded: bool,
     inbox: Inbox,
 }
 
 impl DesignRoom {
     /// How many times the room was entered or left: a change is a way in or
-    /// out, for whatever draws the white veil over it.
-    // Waits for the white veil's port to the library (`lib_design_room`).
-    #[allow(dead_code)]
+    /// out, for the white veil drawn over it (`lib_design_room`).
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     #[must_use]
     pub fn veil_flash(&self) -> u32 {
         self.flash
@@ -1087,75 +1082,9 @@ fn floor_mesh() -> Mesh {
 }
 
 // ---------------------------------------------------------------------------
-// The room's chrome: the panels are the library's (`lib_design_room`); the
-// veil, the navigation gizmo and the measurements are still egui's
+// The room's chrome, all drawn by the library (`lib_design_room`): the
+// panels, the veil, the navigation gizmo, the measurements and the agent's bar
 // ---------------------------------------------------------------------------
-
-/// Draw one of the room's panels: dark glass over the white, whatever the
-/// app's theme (v4's sheet, `docs/mockups/design-room/v4-editor.png`). The
-/// navigation gizmo and the agent's bar (`mcp::overlay`) still use it.
-///
-/// Dark because the room is white. The map's light chrome is drawn to sit on
-/// a map; over a white floor its panels lost their edges and read as grey
-/// smudges ("the UI panels are too plainly styled"), where a drawing tool's
-/// dark panels frame the white as its viewport.
-pub(crate) fn room_panel(
-    ctx: &egui::Context,
-    id: &str,
-    anchor: egui::Align2,
-    offset: egui::Vec2,
-    width: Option<f32>,
-    add: impl FnOnce(&mut egui::Ui),
-) {
-    theme::dark_here(|| {
-        egui::Area::new(egui::Id::new(id))
-            .order(egui::Order::Foreground)
-            .anchor(anchor, offset)
-            .show(ctx, |ui| {
-                theme::use_dark_visuals(ui);
-                theme::overlay_frame()
-                    .shadow(theme::card_shadow())
-                    .show(ui, |ui| {
-                        if let Some(w) = width {
-                            ui.set_width(w);
-                        }
-                        add(ui);
-                    });
-            });
-    });
-}
-
-/// The room's white as the screen shows it, for the veil.
-const VEIL: egui::Color32 = egui::Color32::from_gray(247);
-
-/// The way in and the way out: the screen goes white and the new view comes
-/// up through it, so the street and its controls dissolve into the room
-/// rather than vanish (and the camera's jump to the spot is never seen).
-///
-/// A fresh animation id per way in or out: egui starts an id it has not seen
-/// at its target, so the first frame asks for `true` (fully white) and every
-/// later one for `false`, which eases it out over [`motion::ambient_time`] —
-/// nothing under reduced motion.
-///
-/// [`motion::ambient_time`]: crate::systems::motion::ambient_time
-pub fn render_design_room_veil(egui: EguiMut, mut room: ResMut<DesignRoom>) {
-    use crate::systems::motion;
-    if room.flash == 0 {
-        return;
-    }
-    let ctx = egui.ctx();
-    let id = egui::Id::new("design_room_veil").with(room.flash);
-    let first = room.flash_started != room.flash;
-    if first {
-        room.flash_started = room.flash;
-    }
-    let alpha = motion::toggle(ctx, id, first, motion::ambient_time());
-    if alpha <= 0.0 {
-        return;
-    }
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, id));
-    painter.rect_filled(ctx.content_rect(), 0.0, VEIL.gamma_multiply(alpha));
-}
 
 /// The bar's width, before the screen narrows it.
 pub const BAR_W: f32 = 420.0;
@@ -1328,67 +1257,68 @@ pub const VIEWS: [(&str, (f32, f32)); 4] = [
     ("3D", (0.6, ARRIVE_PITCH_RAD)),
 ];
 
-/// The navigation gizmo at the top right: the three axes as the camera sees
-/// them (red X east, green Y up, blue Z south), and the [`VIEWS`] to jump to.
-pub fn render_design_room_views(
-    egui: EguiMut,
-    room: Res<DesignRoom>,
-    mut camera: ResMut<crate::resources::CameraState>,
-) {
-    if room.spot.is_none() {
-        return;
+/// The navigation gizmo's three axes (red X east, green Y up, blue Z south)
+/// as the camera at these orbit angles sees them, in the order X, Y, Z:
+/// each one's direction on the screen (x right, y down, length up to 1)
+/// and its place in the drawing order, 0 drawn first — the farthest first,
+/// so the nearest is drawn over it.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[must_use]
+pub fn gizmo_axes(yaw: f32, pitch: f32) -> [(Vec2, usize); 3] {
+    // The camera's basis, from the orbit angles (`free_camera`): yaw 0
+    // stands south of the spot looking north.
+    let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());
+    let right = Vec3::new(cy, 0.0, -sy);
+    let forward = -Vec3::new(sy * cp, sp, cy * cp);
+    let up = right.cross(forward);
+    let dirs = [Vec3::X, Vec3::Y, Vec3::Z];
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|&a, &b| {
+        dirs[a]
+            .dot(forward)
+            .total_cmp(&dirs[b].dot(forward))
+            .reverse()
+    });
+    let mut out = [(Vec2::ZERO, 0usize); 3];
+    for (rank, &i) in order.iter().enumerate() {
+        let d = dirs[i];
+        out[i] = (Vec2::new(d.dot(right), -d.dot(up)), rank);
     }
-    let (yaw, pitch) = (camera.orbit_yaw, camera.orbit_pitch);
-    let mut want: Option<(f32, f32)> = None;
-    room_panel(
-        egui.ctx(),
-        "design_room_views",
-        egui::Align2::RIGHT_TOP,
-        egui::vec2(-theme::OSD_MARGIN, theme::OSD_MARGIN),
-        Some(150.0),
-        |ui| {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(150.0, 104.0), egui::Sense::hover());
-            let c = rect.center();
-            let painter = ui.painter();
-            painter.circle_filled(c, 48.0, theme::p32().surface_raised);
-            // The camera's basis, from the orbit angles (`free_camera`):
-            // yaw 0 stands south of the spot looking north.
-            let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pitch.sin(), pitch.cos());
-            let right = Vec3::new(cy, 0.0, -sy);
-            let forward = -Vec3::new(sy * cp, sp, cy * cp);
-            let up = right.cross(forward);
-            let mut axes = [
-                (Vec3::X, "X", egui::Color32::from_rgb(229, 72, 77)),
-                (Vec3::Y, "Y", egui::Color32::from_rgb(48, 164, 108)),
-                (Vec3::Z, "Z", egui::Color32::from_rgb(62, 142, 208)),
-            ];
-            // The farthest first, so the nearest is drawn over it.
-            axes.sort_by(|a, b| a.0.dot(forward).total_cmp(&b.0.dot(forward)).reverse());
-            for (dir, name, colour) in axes {
-                let tip = c + egui::vec2(dir.dot(right), -dir.dot(up)) * 38.0;
-                painter.line_segment([c, tip], egui::Stroke::new(3.0, colour));
-                painter.circle_filled(tip, 9.0, colour);
-                painter.text(
-                    tip,
-                    egui::Align2::CENTER_CENTER,
-                    name,
-                    egui::FontId::proportional(11.0),
-                    egui::Color32::WHITE,
-                );
-            }
-            ui.horizontal_wrapped(|ui| {
-                for (label, view) in VIEWS {
-                    if theme::chip(ui, label, false).clicked() {
-                        want = Some(view);
-                    }
-                }
-            });
-        },
-    );
-    if let Some((y, p)) = want {
-        camera.orbit_yaw = y;
-        camera.orbit_pitch = p;
+    out
+}
+
+/// What the room measures, in the world: the figure's height beside it, and
+/// the selected part's width and height along the edges that face the
+/// camera at `eye`. Always three, in that order, `None` for one not shown;
+/// each is `(from, to, metres)`.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[must_use]
+pub fn measured_edges(
+    figure: Option<Vec3>,
+    part: Option<(&GlobalTransform, &Transform)>,
+    eye: Vec3,
+) -> [Option<(Vec3, Vec3, f32)>; 3] {
+    let mut out = [None; 3];
+    if let Some(fig) = figure {
+        let base = fig + Vec3::new(-0.45, 0.0, 0.0);
+        out[0] = Some((base, base + Vec3::Y * FIGURE_HEIGHT_M, FIGURE_HEIGHT_M));
     }
+    if let Some((gt, tf)) = part {
+        // The part's front-bottom edge and a vertical one, on the side that
+        // faces the camera.
+        let local_cam = gt.affine().inverse().transform_point3(eye);
+        let z = if local_cam.z >= 0.0 { 0.5 } else { -0.5 };
+        let x = if local_cam.x >= 0.0 { 0.5 } else { -0.5 };
+        let at = |l: Vec3| gt.transform_point(l);
+        let s = tf.scale.abs();
+        out[1] = Some((
+            at(Vec3::new(-0.5, -0.5, z)),
+            at(Vec3::new(0.5, -0.5, z)),
+            s.x,
+        ));
+        out[2] = Some((at(Vec3::new(x, -0.5, z)), at(Vec3::new(x, 0.5, z)), s.y));
+    }
+    out
 }
 
 /// The figure for scale: a grey person of [`FIGURE_HEIGHT_M`] standing west of
@@ -1443,93 +1373,6 @@ fn spawn_figure(
                 ));
             });
     });
-}
-
-/// Measurements over the room: the figure's height beside it, and the
-/// selected part's width and height along its edges — orange lines with end
-/// ticks and the length on a white plate, as the v4 sheet draws them. Painted
-/// under the panels (a background layer), so a panel is never covered.
-#[allow(clippy::type_complexity)]
-pub fn render_design_room_measures(
-    egui: EguiMut,
-    room: Res<DesignRoom>,
-    camera: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
-    figure: Query<&GlobalTransform, With<ScaleFigure>>,
-    selected: Query<
-        (&GlobalTransform, &Transform),
-        (With<crate::components::Selected>, With<Prim>),
-    >,
-) {
-    if room.spot.is_none() {
-        return;
-    }
-    let Ok((cam, cam_gt)) = camera.single() else {
-        return;
-    };
-    let to_ui = |p: Vec3| {
-        cam.world_to_viewport(cam_gt, p)
-            .ok()
-            .map(|v| egui.window_to_ui(v))
-    };
-    let painter = egui.ctx().layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new("design_room_measures"),
-    ));
-    let ink = egui::Color32::from_rgb(253, 96, 18);
-    let measure = |a: Vec3, b: Vec3, metres: f32, painter: &egui::Painter| {
-        let (Some(pa), Some(pb)) = (to_ui(a), to_ui(b)) else {
-            return;
-        };
-        let stroke = egui::Stroke::new(1.6, ink);
-        painter.line_segment([pa, pb], stroke);
-        let along = (pb - pa).normalized();
-        let tick = egui::vec2(-along.y, along.x) * 6.0;
-        for p in [pa, pb] {
-            painter.line_segment([p - tick, p + tick], stroke);
-        }
-        let mid = pa + (pb - pa) * 0.5;
-        let text = format!("{metres:.2} m");
-        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(13.0), ink);
-        let plate = egui::Rect::from_center_size(mid, galley.size() + egui::vec2(10.0, 4.0));
-        painter.rect_filled(plate, egui::CornerRadius::same(5), egui::Color32::WHITE);
-        painter.rect_stroke(
-            plate,
-            egui::CornerRadius::same(5),
-            egui::Stroke::new(1.0, ink.gamma_multiply(0.5)),
-            egui::StrokeKind::Inside,
-        );
-        painter.galley(plate.min + egui::vec2(5.0, 2.0), galley, ink);
-    };
-    if let Ok(fig) = figure.single() {
-        let base = fig.translation() + Vec3::new(-0.45, 0.0, 0.0);
-        measure(
-            base,
-            base + Vec3::Y * FIGURE_HEIGHT_M,
-            FIGURE_HEIGHT_M,
-            &painter,
-        );
-    }
-    if let Ok((gt, tf)) = selected.single() {
-        // The part's front-bottom edge and a vertical one, on the side that
-        // faces the camera.
-        let local_cam = gt.affine().inverse().transform_point3(cam_gt.translation());
-        let z = if local_cam.z >= 0.0 { 0.5 } else { -0.5 };
-        let x = if local_cam.x >= 0.0 { 0.5 } else { -0.5 };
-        let at = |l: Vec3| gt.transform_point(l);
-        let s = tf.scale.abs();
-        measure(
-            at(Vec3::new(-0.5, -0.5, z)),
-            at(Vec3::new(0.5, -0.5, z)),
-            s.x,
-            &painter,
-        );
-        measure(
-            at(Vec3::new(x, -0.5, z)),
-            at(Vec3::new(x, 0.5, z)),
-            s.y,
-            &painter,
-        );
-    }
 }
 
 /// How far east of the original a duplicate stands, in metres: beside it, and
@@ -1676,5 +1519,25 @@ mod tests {
             spot.1 + 10.0 / (111_319.49 * spot.0.to_radians().cos()),
         );
         assert!((metres_between(spot, east) - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_front_view_shows_x_right_y_up_and_z_end_on() {
+        let [(x, _), (y, _), (z, _)] = gizmo_axes(0.0, 0.0);
+        assert!((x - Vec2::X).length() < 1e-5);
+        assert!((y - Vec2::new(0.0, -1.0)).length() < 1e-5);
+        assert!(z.length() < 1e-5);
+        // Seen from above, Y points at the camera: drawn last, over the rest.
+        let [_, (_, rank), _] = gizmo_axes(0.0, 1.55);
+        assert_eq!(rank, 2);
+    }
+
+    #[test]
+    fn the_figure_is_measured_at_its_height() {
+        let [fig, w, h] = measured_edges(Some(Vec3::ZERO), None, Vec3::Z * 10.0);
+        let (a, b, m) = fig.unwrap();
+        assert!(((b - a).length() - FIGURE_HEIGHT_M).abs() < 1e-5);
+        assert_eq!(m, FIGURE_HEIGHT_M);
+        assert!(w.is_none() && h.is_none());
     }
 }

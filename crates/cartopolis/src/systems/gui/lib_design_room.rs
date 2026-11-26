@@ -1,25 +1,25 @@
-//! The design room's panels drawn by the component library (`lib_host`),
-//! beside egui's (`systems::design_room`): the way out, the tool column,
-//! the outliner, the Scripts panel and the bar along the bottom
-//! (`docs/mockups/design-room/v4-editor.png`, `design-room.md`).
+//! The design room's chrome, drawn by the component library (`lib_host`):
+//! the way out, the tool column, the outliner, the Scripts panel and the bar
+//! along the bottom (`docs/mockups/design-room/v4-editor.png`,
+//! `design-room.md`), and over the room the white veil on the way in and
+//! out, the navigation gizmo, the measurements and the agent's bar. Every
+//! button goes through the `DesignRoom` methods and `design_room` functions
+//! (`keep`, `place_kept`, `group_picked`, `duplicate`, `edit_script` …).
 //!
-//! On with `CARTO_UI_LIB=design_room` (or `1`), on the web `?ui=lib`.
-//! egui's systems step aside (`DesignRoom::lib`) but keep what they paint
-//! over the room: the white veil on the way in and out, the navigation
-//! gizmo (`render_design_room_views`), the measurements and the scripts'
-//! glow — canvases, egui's until the canvas step. Every button goes through
-//! the same `DesignRoom` methods and `design_room` functions egui's call
-//! (`keep`, `place_kept`, `group_picked`, `duplicate`, `edit_script` …), so
-//! the two editions cannot drift apart.
+//! **Dark whatever the theme**: over the white floor a light panel loses its
+//! edges, where a drawing tool's dark panels frame the white as its
+//! viewport. The library's theme is one for every screen it draws, so while
+//! the room is open every library screen is dark; leaving the room sets the
+//! app's theme back.
 //!
-//! **Dark whatever the theme**, as egui's are (`room_panel`): over the
-//! white floor a light panel loses its edges. The library's theme is one
-//! for every screen it draws, so while the room is open every library
-//! screen is dark; leaving the room sets the app's theme back.
+//! **Placement**: the way out top left, the tool column under it, the
+//! outliner beside the column, the gizmo top right with Scripts under it,
+//! the agent's bar centred at the top, the bar centred over the dock.
 //!
-//! **Placement** is egui's: the way out top left, the tool column under
-//! it, the outliner beside the column, Scripts top right under the gizmo,
-//! the bar centred over the dock.
+//! **Drawn from boxes, restyled per frame, never remounted** (the gizmo and
+//! the measurements, [`drive_lib_design_room_overlays`]): a line is a thin
+//! box turned by one `rotate()`, a disc a `border-radius` circle; each node's
+//! style reads a signal the system writes when what it shows moved.
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -31,20 +31,23 @@ use bevy::prelude::*;
 use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
-use crate::components::{Prim, Selected};
-use crate::resources::{EditDialogState, GameState, MapAnchor, OnlineSession, RightPanel};
+use crate::components::{FreeCamera, Prim, Selected};
+use crate::resources::{
+    CameraState, EditDialogState, GameState, MapAnchor, OnlineSession, RightPanel,
+};
 use crate::systems::design_room::{
-    self, drafts_line, kept_parts, outline, outliner_note, parts_note, script_rows, scripts_note,
-    size_line, DesignRoom, Outline, ScriptRow, ScriptState, SelectedPart, BACK_TIP, BAR_W,
-    DUPLICATE_TIP, GROUP_TIP, NAV_GIZMO_H, OUTLINER_W, SCRIPTS_W, SNAP_TIP, TOOLS, TOOL_COLUMN_W,
-    UNGROUP_TIP,
+    self, drafts_line, gizmo_axes, kept_parts, measured_edges, outline, outliner_note, parts_note,
+    script_rows, scripts_note, size_line, DesignRoom, Outline, ScaleFigure, ScriptRow, ScriptState,
+    SelectedPart, BACK_TIP, BAR_W, DUPLICATE_TIP, GROUP_TIP, NAV_GIZMO_H, OUTLINER_W, SCRIPTS_W,
+    SNAP_TIP, TOOLS, TOOL_COLUMN_W, UNGROUP_TIP, VIEWS,
 };
 use crate::systems::gizmo::{GizmoMode, GizmoState};
+use crate::systems::lib_pins::{boxed, px_scale};
 use crate::systems::lib_place_card::icon;
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::script_editor::ScriptEditorState;
 use crate::systems::ui_input::UiMetrics;
-use crate::systems::{icons, model_assets, theme};
+use crate::systems::{icons, model_assets, motion, theme};
 
 /// The pieces' names in the library's host.
 const BACK: &str = "design_room_back";
@@ -880,5 +883,574 @@ fn bar_view(st: Signal<BarState>, f: &Fields) -> View {
             {field}
             {foot}
         </div>
+    }
+}
+
+// ─── Over the room: the veil, the navigation gizmo, the measurements ────────
+
+/// Their names in the library's host.
+const VEIL: &str = "design_room_veil";
+const GIZMO: &str = "design_room_views";
+const MEASURES: &str = "design_room_measures";
+
+/// The veil: the room's white as the screen shows it (the floor's grey 247).
+const VEIL_RGB: &str = "247, 247, 247";
+
+/// The axes' own colours (content, not chrome): red X east, green Y up,
+/// blue Z south; their letters white.
+const AXIS_INK: [&str; 3] = ["#e5484d", "#30a46c", "#3e8ed0"];
+const AXIS_NAME: [&str; 3] = ["X", "Y", "Z"];
+const AXIS_LETTER_INK: &str = "#ffffff";
+
+/// The gizmo's drawing, px: its width, its height above the view buttons,
+/// the disc behind the axes, an axis' length and stroke, a tip's radius.
+const GIZMO_W: f32 = 150.0;
+const GIZMO_CANVAS_H: f32 = 104.0;
+const GIZMO_DISC_R: f32 = 48.0;
+const AXIS_LEN: f32 = 38.0;
+const AXIS_W: f32 = 3.0;
+const TIP_R: f32 = 9.0;
+/// The gizmo panel's padding, as the room's other dark frames.
+const GIZMO_PAD: f32 = 14.0;
+
+/// The measurements' ink, as the v4 sheet draws them: orange lines with end
+/// ticks and the length on a white plate rimmed in half the orange.
+const MEASURE_INK: &str = "#fd6012";
+const MEASURE_RIM: &str = "rgba(253, 96, 18, 0.5)";
+const MEASURE_PLATE: &str = "#ffffff";
+/// A measurement's stroke, its ticks' half length, its type size, px.
+const MEASURE_W: f32 = 1.6;
+const TICK: f32 = 6.0;
+const MEASURE_FONT: f32 = 13.0;
+/// About one character of the plate's text ("1.75 m": digits, a stop, a
+/// space), px at [`MEASURE_FONT`]: the plate is sized from it and centred
+/// on the line, its text centred in it, so a measure that is a little off
+/// shows as a little more margin. A box wide enough to centre any text in
+/// would take the taps meant for what is under it.
+const MEASURE_CHAR_W: f32 = 7.4;
+
+/// One axis as drawn: its tip in the gizmo's canvas, px, and its place in
+/// the drawing order (0 drawn first).
+#[derive(Clone, Copy, PartialEq)]
+struct Axis {
+    tip: (f32, f32),
+    rank: usize,
+}
+
+#[derive(Clone, PartialEq)]
+struct GizmoLook {
+    at: String,
+    axes: [Axis; 3],
+}
+
+/// A measurement on the screen: from, to, px in the library's root.
+#[derive(Clone, Copy, PartialEq)]
+struct Measure {
+    a: (f32, f32),
+    b: (f32, f32),
+}
+
+/// The measurements: where each of the three is (`measured_edges`' order),
+/// and what each plate says, apart so a line that moves does not rebuild
+/// its text.
+struct Measures {
+    geo: Signal<[Option<Measure>; 3]>,
+    text: [Signal<String>; 3],
+}
+
+struct Overlays {
+    /// The views the gizmo's buttons asked for.
+    views: Rc<RefCell<Vec<(f32, f32)>>>,
+    /// The way in or out the veil last started for, and when (real seconds).
+    flash_seen: u32,
+    flash_at: f64,
+    veil: Option<Signal<f32>>,
+    gizmo: Option<Signal<GizmoLook>>,
+    measures: Option<Measures>,
+}
+
+thread_local! {
+    static OVERLAYS: RefCell<Option<Overlays>> = const { RefCell::new(None) };
+}
+
+/// A tenth of a px: what moves less is not drawn again.
+fn tenth(v: f32) -> f32 {
+    (v * 10.0).round() / 10.0
+}
+
+/// A straight stroke from `a` to `b`, `w` wide: a box as long as the stroke,
+/// centred on its middle and turned to its angle.
+fn stroke(a: (f32, f32), b: (f32, f32), w: f32, ink: &str, z: usize) -> String {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy);
+    let deg = dy.atan2(dx).to_degrees();
+    let (mx, my) = ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5);
+    boxed(
+        mx - len * 0.5,
+        my - w * 0.5,
+        len,
+        w,
+        &format!("background: {ink}; transform: rotate({deg:.1}deg); z-index: {z}"),
+    )
+}
+
+/// The veil, the gizmo and the measurements: mounted while there is
+/// something to show, restyled each frame from what moved. `PostUpdate`,
+/// before `DriveUi`, as every library screen.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn drive_lib_design_room_overlays(
+    _main: NonSendMarker,
+    lib: Res<LibScreens>,
+    room: Res<DesignRoom>,
+    mut camera_state: ResMut<CameraState>,
+    real: Res<Time<bevy::time::Real>>,
+    metrics: Res<UiMetrics>,
+    camera: Query<(&Camera, &GlobalTransform), With<FreeCamera>>,
+    figure: Query<&GlobalTransform, With<ScaleFigure>>,
+    selected: Query<(&GlobalTransform, &Transform), (With<Selected>, With<Prim>)>,
+) {
+    if !lib.design_room {
+        return;
+    }
+    let k = px_scale(metrics.ui_scale());
+    let now = real.elapsed_secs_f64();
+    let open = room.spot.is_some();
+    OVERLAYS.with(|o| {
+        let mut o = o.borrow_mut();
+        let s = o.get_or_insert_with(|| Overlays {
+            views: Rc::new(RefCell::new(Vec::new())),
+            flash_seen: 0,
+            flash_at: 0.0,
+            veil: None,
+            gizmo: None,
+            measures: None,
+        });
+
+        // The gizmo's taps: the view it names.
+        let asked: Vec<(f32, f32)> = std::mem::take(&mut *s.views.borrow_mut());
+        if let Some(&(yaw, pitch)) = asked.last() {
+            camera_state.orbit_yaw = yaw;
+            camera_state.orbit_pitch = pitch;
+        }
+
+        // The way in and the way out: the screen goes white and the new view
+        // comes up through it, so the street and its controls dissolve into
+        // the room rather than vanish (and the camera's jump to the spot is
+        // never seen). Fully white on the first frame, eased out over
+        // `motion::ambient_time` — nothing under reduced motion.
+        let flash = room.veil_flash();
+        if flash != s.flash_seen {
+            s.flash_seen = flash;
+            s.flash_at = now;
+        }
+        let secs = motion::ambient_time();
+        let alpha = if flash == 0 || secs <= 0.0 {
+            0.0
+        } else {
+            let t = ((now - s.flash_at) as f32 / secs).clamp(0.0, 1.0);
+            1.0 - motion::ease_out(t)
+        };
+        match (alpha > 0.0, s.veil.as_ref()) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                s.veil = None;
+                crate::systems::lib_host::clear_keyed(VEIL);
+            }
+            (true, Some(v)) => put(v, alpha),
+            (true, None) => {
+                let v = signal(alpha);
+                // Dark while the room is open, as its panels; out of it the
+                // app's own, so the veil does not turn the map's screens dark.
+                let dark = open || theme::p().ink == theme::DARK.ink;
+                crate::systems::lib_host::mount_keyed(
+                    VEIL,
+                    veil_view(v.clone()),
+                    dark,
+                    theme::touch_layout(),
+                );
+                s.veil = Some(v);
+            }
+        }
+
+        // The navigation gizmo at the top right: the three axes as the camera
+        // sees them, and the views to jump to. Not on a narrow screen while
+        // the outliner is up: there they took the same corner, and the gizmo
+        // drew over the outliner's header (the scripts panel gives way there
+        // for the same reason).
+        let narrow = metrics.viewport_pts().x < crate::systems::egui_manager::COMPACT_WIDTH_PTS;
+        let crowded = narrow && !room.tree.is_empty();
+        let gizmo = (open && !crowded).then(|| {
+            let c = (GIZMO_W * 0.5, GIZMO_CANVAS_H * 0.5);
+            let axes =
+                gizmo_axes(camera_state.orbit_yaw, camera_state.orbit_pitch).map(|(dir, rank)| {
+                    Axis {
+                        tip: (tenth(c.0 + dir.x * AXIS_LEN), tenth(c.1 + dir.y * AXIS_LEN)),
+                        rank,
+                    }
+                });
+            GizmoLook {
+                at: format!(
+                    "position: absolute; right: {:.0}px; top: {:.0}px",
+                    theme::OSD_MARGIN * k,
+                    theme::OSD_MARGIN * k
+                ),
+                axes,
+            }
+        });
+        let views = s.views.clone();
+        keep(&mut s.gizmo, GIZMO, gizmo, |st| gizmo_view(st, views));
+
+        // The measurements: the figure's height beside it, and the selected
+        // part's width and height along its edges.
+        let shown = open
+            .then(|| camera.single().ok())
+            .flatten()
+            .map(|(cam, cam_gt)| {
+                let edges = measured_edges(
+                    figure.single().ok().map(GlobalTransform::translation),
+                    selected.single().ok(),
+                    cam_gt.translation(),
+                );
+                let to_ui = |p: Vec3| {
+                    cam.world_to_viewport(cam_gt, p)
+                        .ok()
+                        .map(|v| metrics.window_to_ui(v) * k)
+                        .map(|v| (tenth(v.x), tenth(v.y)))
+                };
+                edges.map(|e| {
+                    e.and_then(|(a, b, metres)| {
+                        let (pa, pb) = (to_ui(a)?, to_ui(b)?);
+                        Some((Measure { a: pa, b: pb }, format!("{metres:.2} m")))
+                    })
+                })
+            });
+        match (shown, s.measures.as_ref()) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                s.measures = None;
+                crate::systems::lib_host::clear_keyed(MEASURES);
+            }
+            (Some(m), have) => {
+                let geo = m.clone().map(|x| x.map(|(g, _)| g));
+                let texts = m.map(|x| x.map(|(_, t)| t).unwrap_or_default());
+                if let Some(have) = have {
+                    put(&have.geo, geo);
+                    for (sig, t) in have.text.iter().zip(texts) {
+                        put(sig, t);
+                    }
+                } else {
+                    let ms = Measures {
+                        geo: signal(geo),
+                        text: texts.map(signal),
+                    };
+                    crate::systems::lib_host::mount_keyed(
+                        MEASURES,
+                        measures_view(&ms),
+                        true,
+                        theme::touch_layout(),
+                    );
+                    s.measures = Some(ms);
+                }
+            }
+        }
+    });
+}
+
+/// The veil: the whole screen in the room's white, over everything, at
+/// `alpha`. It listens to nothing, so a world click is not taken by it.
+fn veil_view(alpha: Signal<f32>) -> View {
+    let style = move || {
+        format!(
+            "position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 1000; \
+             background: rgba({VEIL_RGB}, {:.3})",
+            alpha.get()
+        )
+    };
+    view! { <div style={style}></div> }
+}
+
+/// The gizmo's panel: the axes on a disc, then Top, Front, Side and 3D.
+fn gizmo_view(st: Signal<GizmoLook>, views: Rc<RefCell<Vec<(f32, f32)>>>) -> View {
+    let frame = {
+        let st = st.clone();
+        move || {
+            format!(
+                "{}; display: flex; flex-direction: column; gap: 8px; width: {:.0}px; \
+                 padding: {GIZMO_PAD:.0}px; background: var(--m-surface); \
+                 border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); \
+                 box-shadow: var(--m-shadow-lg)",
+                st.get().at,
+                GIZMO_W + 2.0 * GIZMO_PAD
+            )
+        }
+    };
+    let c = (GIZMO_W * 0.5, GIZMO_CANVAS_H * 0.5);
+    let disc = boxed(
+        c.0 - GIZMO_DISC_R,
+        c.1 - GIZMO_DISC_R,
+        2.0 * GIZMO_DISC_R,
+        2.0 * GIZMO_DISC_R,
+        "border-radius: 50%; background: var(--m-surface-raised); z-index: 0",
+    );
+    let mut parts: Vec<View> = vec![view! { <div style={disc}></div> }];
+    for i in 0..3 {
+        // The nearest axis' line and tip over the farther ones'.
+        let line = {
+            let st = st.clone();
+            move || {
+                let a = st.get().axes[i];
+                stroke(c, a.tip, AXIS_W, AXIS_INK[i], 2 * a.rank + 1)
+            }
+        };
+        let tip = {
+            let st = st.clone();
+            move || {
+                let a = st.get().axes[i];
+                boxed(
+                    a.tip.0 - TIP_R,
+                    a.tip.1 - TIP_R,
+                    2.0 * TIP_R,
+                    2.0 * TIP_R,
+                    &format!(
+                        "display: flex; align-items: center; justify-content: center; \
+                         border-radius: 50%; background: {}; color: {AXIS_LETTER_INK}; \
+                         font-size: 11px; line-height: 1; z-index: {}",
+                        AXIS_INK[i],
+                        2 * a.rank + 2
+                    ),
+                )
+            }
+        };
+        let name = AXIS_NAME[i];
+        parts.push(view! { <div style={line}></div> });
+        parts.push(view! { <div style={tip}>{name}</div> });
+    }
+    let canvas = format!("width: {GIZMO_W:.0}px; height: {GIZMO_CANVAS_H:.0}px");
+    let buttons: Vec<View> = VIEWS
+        .iter()
+        .map(|&(label, angles)| {
+            let views = views.clone();
+            let tap = Some(Rc::new(move |_: &Event| views.borrow_mut().push(angles)) as Handler);
+            view! { <Button size=Size::Sm onclick={tap}>{label}</Button> }
+        })
+        .collect();
+    view! {
+        <div style={frame} data-theme="dark" on:click={|_: &Event| {}}>
+            <div style={canvas}>{parts}</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px">{buttons}</div>
+        </div>
+    }
+}
+
+/// The measurements, under every panel (`z-index: -1` at the root): each a
+/// line, a tick across either end and its length on a plate at its middle.
+fn measures_view(ms: &Measures) -> View {
+    const HIDDEN: &str = "display: none";
+    let mut parts: Vec<View> = Vec::new();
+    for i in 0..3 {
+        let line = {
+            let g = ms.geo.clone();
+            move || match g.get()[i] {
+                Some(m) => stroke(m.a, m.b, MEASURE_W, MEASURE_INK, 0),
+                None => HIDDEN.to_string(),
+            }
+        };
+        parts.push(view! { <div style={line}></div> });
+        for end in 0..2 {
+            let tick = {
+                let g = ms.geo.clone();
+                move || match g.get()[i] {
+                    Some(m) => {
+                        let (dx, dy) = (m.b.0 - m.a.0, m.b.1 - m.a.1);
+                        let len = dx.hypot(dy).max(f32::EPSILON);
+                        let (nx, ny) = (-dy / len * TICK, dx / len * TICK);
+                        let p = if end == 0 { m.a } else { m.b };
+                        stroke(
+                            (p.0 - nx, p.1 - ny),
+                            (p.0 + nx, p.1 + ny),
+                            MEASURE_W,
+                            MEASURE_INK,
+                            0,
+                        )
+                    }
+                    None => HIDDEN.to_string(),
+                }
+            };
+            parts.push(view! { <div style={tick}></div> });
+        }
+        let plate = {
+            let g = ms.geo.clone();
+            let t = ms.text[i].clone();
+            move || match g.get()[i] {
+                Some(m) => {
+                    let chars = t.get().chars().count() as f32;
+                    let w = chars * MEASURE_CHAR_W + 10.0;
+                    let h = MEASURE_FONT + 7.0;
+                    let (mx, my) = ((m.a.0 + m.b.0) * 0.5, (m.a.1 + m.b.1) * 0.5);
+                    boxed(
+                        mx - w * 0.5,
+                        my - h * 0.5,
+                        w,
+                        h,
+                        &format!(
+                            "display: flex; align-items: center; justify-content: center; \
+                             box-sizing: border-box; white-space: nowrap; \
+                             background: {MEASURE_PLATE}; border: 1px solid {MEASURE_RIM}; \
+                             border-radius: 5px; color: {MEASURE_INK}; \
+                             font-size: {MEASURE_FONT:.0}px; line-height: 1; z-index: 1"
+                        ),
+                    )
+                }
+                None => HIDDEN.to_string(),
+            }
+        };
+        let text = {
+            let t = ms.text[i].clone();
+            move || -> View { t.get().into_view() }
+        };
+        parts.push(view! { <div style={plate}>{text}</div> });
+    }
+    view! {
+        <div style="position: fixed; left: 0; top: 0; width: 0; height: 0; z-index: -1">{parts}</div>
+    }
+}
+
+// ─── The agent at work in the room ───────────────────────────────────────────
+
+/// Its name in the library's host.
+#[cfg(mcp)]
+const AI: &str = "design_room_ai";
+
+/// The agent's bar at its widest, px.
+#[cfg(mcp)]
+const AI_BAR_W: f32 = 560.0;
+
+#[cfg(mcp)]
+#[derive(Clone, PartialEq)]
+struct AiLook {
+    at: String,
+    paused: bool,
+    head: String,
+    rest: String,
+}
+
+#[cfg(mcp)]
+struct AiBar {
+    /// Pause or Resume was tapped.
+    toggle: Rc<std::cell::Cell<bool>>,
+    look: Option<Signal<AiLook>>,
+}
+
+#[cfg(mcp)]
+thread_local! {
+    static AI_BAR: RefCell<Option<AiBar>> = const { RefCell::new(None) };
+}
+
+/// While an agent works in the room: a bar at the top saying what it is
+/// doing, with Pause (`mcp::overlay::design_room_ai_line`). Wherever the
+/// agent tools are (`mcp`: Unix desktops and Android). `PostUpdate`, before
+/// `DriveUi`, as every library screen.
+#[cfg(mcp)]
+pub fn drive_lib_design_room_ai(
+    _main: NonSendMarker,
+    lib: Res<LibScreens>,
+    mut room: ResMut<DesignRoom>,
+    bridge: Option<Res<crate::systems::mcp::McpBridge>>,
+    real: Res<Time<bevy::time::Real>>,
+    metrics: Res<UiMetrics>,
+) {
+    if !lib.design_room {
+        return;
+    }
+    let size = metrics.viewport_pts();
+    let k = px_scale(metrics.ui_scale());
+    AI_BAR.with(|b| {
+        let mut b = b.borrow_mut();
+        let s = b.get_or_insert_with(|| AiBar {
+            toggle: Rc::new(std::cell::Cell::new(false)),
+            look: None,
+        });
+        if s.toggle.take() {
+            room.ai_paused = !room.ai_paused;
+        }
+        let line = room.spot.is_some().then(|| {
+            crate::systems::mcp::overlay::design_room_ai_line(
+                bridge.as_deref(),
+                real.elapsed_secs_f64(),
+                room.ai_paused,
+            )
+        });
+        let m_ = theme::OSD_MARGIN;
+        let look = line.flatten().map(|(head, rest)| {
+            let width = AI_BAR_W.min(size.x - 2.0 * m_).max(0.0);
+            AiLook {
+                at: format!(
+                    "position: absolute; left: {:.0}px; top: {:.0}px; width: {:.0}px",
+                    ((size.x - width) / 2.0).max(0.0) * k,
+                    m_ * k,
+                    width * k
+                ),
+                paused: room.ai_paused,
+                head,
+                rest,
+            }
+        });
+        let toggle = s.toggle.clone();
+        keep(&mut s.look, AI, look, |st| ai_view(st, toggle));
+    });
+}
+
+/// The agent's bar: a live dot (still when paused), what it does, Pause.
+#[cfg(mcp)]
+fn ai_view(st: Signal<AiLook>, toggle: Rc<std::cell::Cell<bool>>) -> View {
+    let frame = {
+        let st = st.clone();
+        move || {
+            format!(
+                "{}; display: flex; align-items: center; gap: 12px; padding: 10px 14px; \
+                 background: var(--m-surface); border: 1px solid var(--m-border); \
+                 border-radius: var(--m-radius-lg); box-shadow: var(--m-shadow-lg)",
+                st.get().at
+            )
+        }
+    };
+    let body = move || -> View {
+        let a = st.get();
+        let ink = if a.paused {
+            "var(--m-warning)"
+        } else {
+            "var(--m-accent)"
+        };
+        let halo = format!(
+            "position: absolute; left: 0; top: 0; width: 14px; height: 14px; \
+             border-radius: 50%; background: {ink}; opacity: 0.25"
+        );
+        let core = format!(
+            "position: absolute; left: 3px; top: 3px; width: 8px; height: 8px; \
+             border-radius: 50%; background: {ink}"
+        );
+        let (glyph, label, tip) = if a.paused {
+            (icons::PLAY, "Resume", "let the AI carry on building")
+        } else {
+            (
+                icons::STOP,
+                "Pause",
+                "hold the AI's next change until you resume it",
+            )
+        };
+        let toggle = toggle.clone();
+        let tap = Some(Rc::new(move |_: &Event| toggle.set(true)) as Handler);
+        view! {
+            <span style="position: relative; flex: none; width: 14px; height: 14px">
+                <span style={halo}></span>
+                <span style={core}></span>
+            </span>
+            <span style="flex: none; color: var(--m-text-strong); white-space: nowrap">{a.head}</span>
+            <span style="flex: 1; min-width: 0; color: var(--m-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis">{a.rest}</span>
+            <Button icon={icon(glyph)} onclick={tap} title={tip}>{label}</Button>
+        }
+    };
+    view! {
+        <div style={frame} data-theme="dark" on:click={|_: &Event| {}}>{body}</div>
     }
 }

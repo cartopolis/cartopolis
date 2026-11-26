@@ -68,7 +68,7 @@
 //! the main menu and the planner are all suppressed.
 //!
 //! The speed disc carries the posted limit over it, as a painted road sign
-//! rather than a themed readout ([`speed_limit_sign`]) — same reasoning as
+//! rather than a themed readout (`lib_driver`'s sign) — same reasoning as
 //! [`DRIVE_BLUE`]. It is deliberately absent where OSM has no `maxspeed`: the
 //! road class the planner routes on is a cost estimate, not a legal limit, and a
 //! sign confidently showing the wrong number is worse than no sign.
@@ -137,7 +137,6 @@
 
 use crate::components::DriverArrow;
 use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
-use crate::systems::egui_manager::EguiRef;
 use crate::systems::ui_input::{UiInput, UiMetrics};
 use bevy::asset::RenderAssetUsages;
 use bevy::math::DVec3;
@@ -859,14 +858,10 @@ pub struct DriverState {
     /// …and with the overview up once it does (the `--ui overview` preset).
     armed_overview: bool,
 
-    /// The library draws the navigation chrome (`lib_driver`):
-    /// [`render_driver_hud`] draws nothing and publishes
-    /// [`lib_view`](Self::lib_view) instead. Untouched by [`Self::enter`] and
-    /// [`Self::exit`], which are the drive's switch, not the library's.
-    pub lib: bool,
-    /// What the library's edition shows, while `lib` is on and driving.
+    /// What the navigation chrome (`lib_driver`) shows while driving,
+    /// published by [`drive_driver_hud`]; `None` when not driving.
     pub lib_view: Option<DriverView>,
-    /// Taps on the library's edition, done by [`render_driver_hud`] next
+    /// Taps on the navigation chrome, done by [`drive_driver_hud`] next
     /// frame through [`DriverState::apply`].
     pub lib_acts: Vec<DriverAct>,
 }
@@ -2098,8 +2093,8 @@ impl Gesture {
 
 /// Collect this frame's camera input, and keep the drag anchor.
 ///
-/// The drag is gated on egui having the pointer and the wheel is not, which is
-/// `free_camera`'s own split and is not an oversight: `egui_wants_pointer_input()`
+/// The drag is gated on the UI having the pointer and the wheel is not, which is
+/// `free_camera`'s own split and is not an oversight: `UiInput::wants_pointer`
 /// is only meaningful while a pointer button is *down* (see the client's known
 /// issues), so it answers correctly for a drag and would answer `true` over the
 /// bare map for a wheel notch, swallowing every zoom.
@@ -2239,8 +2234,7 @@ impl DriverState {
         self.retry_requested = true;
     }
 
-    /// Do a tap on the navigation chrome: egui's buttons and the library's
-    /// (`lib_driver`) both come here.
+    /// Do a tap on the navigation chrome (`lib_driver`).
     pub fn apply(&mut self, act: DriverAct, right_panel: &mut crate::resources::RightPanel) {
         match act {
             DriverAct::Recentre => self.recentre(),
@@ -2517,12 +2511,14 @@ pub const CARD_MARGIN: f32 = 12.0;
 
 /// The manoeuvre plate at the card's left edge: the turn glyph, big, on a
 /// sign-coloured square — the one part of the card read without reading.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const TILE: f32 = 64.0;
 
 /// The trip bar along the bottom: as wide as the screen allows, up to this.
 const BAR_MAX_WIDTH: f32 = 520.0;
 /// Its height, which everything stacked above it (the speed disc, the overview
 /// button, the GPS note) clears.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const BAR_HEIGHT: f32 = 62.0;
 
 /// The speed disc's diameter.
@@ -2559,17 +2555,19 @@ fn driver_layout(viewport_x: f32, compact: bool) -> DriverLayout {
 }
 
 /// How far the trip bar's bottom edge clears the viewport's.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) fn bar_bottom() -> f32 {
     theme::OSD_MARGIN + 4.0
 }
 
 /// Where the things stacked over the bar's two ends sit: their bottom edge.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) fn above_bar() -> f32 {
     bar_bottom() + BAR_HEIGHT + theme::OSD_GAP
 }
 
-/// A tap on the navigation chrome: one set, for egui's buttons and the
-/// library's (`lib_driver`), done by [`DriverState::apply`].
+/// A tap on the navigation chrome (`lib_driver`), done by
+/// [`DriverState::apply`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriverAct {
     /// Stop, or Done once arrived: leave driver mode.
@@ -2584,7 +2582,7 @@ pub enum DriverAct {
     Recentre,
 }
 
-/// Where the navigation chrome goes, egui points: the viewport's width and
+/// Where the navigation chrome goes, UI points: the viewport's width and
 /// the boxes [`driver_layout`] fitted to it.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
@@ -2596,12 +2594,12 @@ pub struct DriverPlace {
     pub chip_width: f32,
 }
 
-/// The turn card, as [`render_driver_hud`] works it out.
+/// The turn card, as [`drive_driver_hud`] works it out.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct DriverCard {
     /// The plate's signage colour (`DRIVE_BLUE`, `ARRIVE_GREEN` …).
-    pub plate: egui::Color32,
+    pub plate: theme::Rgba8,
     pub glyph: &'static str,
     pub title: String,
     /// Big while instructing, smaller for a state.
@@ -2658,8 +2656,7 @@ pub struct DriverBottom {
 }
 
 /// What the navigation chrome shows this frame, published by
-/// [`render_driver_hud`] for the library's edition (`lib_driver`) while
-/// [`DriverState::lib`] is on.
+/// [`drive_driver_hud`] for `lib_driver`.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct DriverView {
@@ -2669,27 +2666,23 @@ pub struct DriverView {
     pub bottom: Option<DriverBottom>,
 }
 
-/// The navigation chrome: the turn card at the top, the trip bar at the bottom,
-/// the speed above the bar's left end, Overview / Re-centre above its right.
-/// The compass is drawn by [`crate::systems::hud`], which already owns it;
-/// driver mode only moves it down past the card.
-///
-/// **Every box here pins its own width.** An anchored, size-to-content
-/// [`egui::Area`] whose content reaches for the *available* width grows a little
-/// each frame and stretches across the screen (`map-chrome.md`).
+/// What the navigation chrome (`lib_driver`) shows, worked out each frame:
+/// the turn card at the top, the trip bar at the bottom, the speed above the
+/// bar's left end, Overview / Re-centre above its right. The compass is drawn
+/// by [`crate::systems::hud`], which already owns it; driver mode only moves
+/// it down past the card.
 ///
 /// **The bar stands down behind a docked panel, and Stop moves onto the card.**
-/// egui paints floating `Area`s above panels, so a bar left up would be drawn
-/// over the planner's turn list or the Places panel; but Stop has to stay
-/// reachable on a phone, which has no Escape key. So while a panel is open the
-/// card grows a Stop button in its last row, in the height it always reserves.
+/// A bar left up would be drawn over the planner's turn list or the Places
+/// panel; but Stop has to stay reachable on a phone, which has no Escape key.
+/// So while a panel is open the card grows a Stop button in its last row, in
+/// the height it always reserves.
 ///
-/// With [`DriverState::lib`] on (`lib_driver`, `CARTO_UI_LIB=driver`) it
-/// draws nothing: it does the taps the library handed back, through
-/// [`DriverState::apply`] as egui's buttons do, and publishes what to show in
+/// It does the taps the chrome handed back last frame, through
+/// [`DriverState::apply`], and publishes what to show in
 /// [`DriverState::lib_view`].
-pub fn render_driver_hud(
-    egui: EguiRef,
+pub fn drive_driver_hud(
+    metrics: Res<UiMetrics>,
     mut driver: ResMut<DriverState>,
     route: Res<RouteState>,
     ahead: Res<RouteAhead>,
@@ -2698,8 +2691,8 @@ pub fn render_driver_hud(
     data_layers: Res<crate::systems::layer_state::DataLayers>,
     bookmarks: Res<crate::systems::bookmarks::BookmarksState>,
 ) {
-    // The library's taps of last frame, before anything is worked out.
-    if driver.lib && !driver.lib_acts.is_empty() {
+    // The chrome's taps of last frame, before anything is worked out.
+    if !driver.lib_acts.is_empty() {
         let acts = std::mem::take(&mut driver.lib_acts);
         if driver.active {
             for a in acts {
@@ -2719,24 +2712,17 @@ pub fn render_driver_hud(
         }
         return;
     };
-    // Every number on this screen is a function of where the vehicle is, and
-    // driving produces no egui input at all. Without this the HUD is tessellated
-    // once and then re-presented unchanged until something is tapped
-    // (`EguiManager::animating`). Kept with the library's edition too: the
-    // compass `hud` turns with the drive is egui's unless the chrome is the
-    // library's.
-    egui.animating();
     let progress = driver.progress.unwrap_or_default();
     let arrived = driver.arrived;
     let off_route = driver.off_route();
     let rerouting = driver.rerouting;
     let failed = driver.solve_error.clone();
     let step = r.steps.get(progress.step);
-    let viewport_x = egui.viewport_pts().x;
+    let viewport_x = metrics.viewport_pts().x;
     let DriverLayout {
         card_width,
         bar_width,
-    } = driver_layout(viewport_x, egui.compact());
+    } = driver_layout(viewport_x, metrics.compact());
     let usable = (viewport_x - 2.0 * CARD_MARGIN).max(80.0);
     // `RightPanel` is the shared state; the two booleans are the older panels
     // that only publish their own (`hud` ORs the same three for the same reason).
@@ -2751,7 +2737,7 @@ pub fn render_driver_hud(
     // the line is the normal case, and the display is already fixing it), red for
     // what it cannot fix, green for being there. The card itself is the app's
     // glass, so it reads as part of the same screen as everything else.
-    let (plate, glyph, title, sub): (egui::Color32, &'static str, String, String) = if arrived {
+    let (plate, glyph, title, sub): (theme::Rgba8, &'static str, String, String) = if arrived {
         (
             ARRIVE_GREEN,
             icons::FINISH,
@@ -2827,362 +2813,76 @@ pub fn render_driver_hud(
         .or_else(|| driver.gps.chip());
     let chip_width = (usable - 2.0 * (SPEED_DISC + theme::OSD_GAP)).clamp(80.0, 260.0);
 
-    // The library's edition is showing: hand it what to draw, draw nothing.
-    if driver.lib {
-        let view = DriverView {
-            place: DriverPlace {
-                w: viewport_x,
-                card_width,
-                bar_width,
-                chip_width,
-            },
-            card: DriverCard {
-                plate,
-                glyph,
-                title,
-                title_size: if instructing { 30.0 } else { 22.0 },
-                then: then.map(icons::maneuver),
-                sub,
-                retry: failed.is_some(),
-                stop: panel_open,
-                arrived,
-                // As `approach_bar`: shown while instructing with no buttons.
-                approach: (instructing && !panel_open).then(|| {
-                    let filled = 1.0 - (progress.step_distance_m / APPROACH_M).clamp(0.0, 1.0);
-                    (filled * 100.0).round() as u8
-                }),
-            },
-            bottom: (!panel_open).then(|| DriverBottom {
-                bar: DriverBar {
-                    arrived,
-                    arrival,
-                    time_left,
-                    to_go,
-                    driven: (driven * 1000.0).round() as u16,
-                },
-                speed: DriverSpeed {
-                    speed: format!("{speed_kmh:.0}"),
-                    over,
-                    limit,
-                },
-                peeking,
-                overview,
-                chip,
+    let view = DriverView {
+        place: DriverPlace {
+            w: viewport_x,
+            card_width,
+            bar_width,
+            chip_width,
+        },
+        card: DriverCard {
+            plate,
+            glyph,
+            title,
+            title_size: if instructing { 30.0 } else { 22.0 },
+            // The turn after this one, when it follows at once.
+            then: then.map(icons::maneuver),
+            sub,
+            retry: failed.is_some(),
+            stop: panel_open,
+            arrived,
+            // The card's bottom edge filling over the last `APPROACH_M` to the
+            // manoeuvre: the countdown in a form taken in without reading,
+            // while instructing with no buttons in that row.
+            approach: (instructing && !panel_open).then(|| {
+                let filled = 1.0 - (progress.step_distance_m / APPROACH_M).clamp(0.0, 1.0);
+                (filled * 100.0).round() as u8
             }),
-        };
-        if driver.lib_view.as_ref() != Some(&view) {
-            driver.lib_view = Some(view);
-        }
-        return;
-    }
-
-    let ctx = egui.ctx().clone();
-    let mut done = false;
-    let mut retry = false;
-    let mut open_planner = false;
-    let mut toggle_overview = false;
-    let mut recentre = false;
-
-    egui::Area::new(egui::Id::new("driver_maneuver"))
-        .anchor(egui::Align2::LEFT_TOP, egui::vec2(CARD_MARGIN, CARD_MARGIN))
-        .show(&ctx, |ui| {
-            let frame = theme::overlay_frame().inner_margin(egui::Margin::same(10));
-            let inset = frame.inner_margin.sum() + egui::Vec2::splat(2.0 * frame.stroke.width);
-            frame.show(ui, |ui| {
-                ui.set_width(card_width - inset.x);
-                ui.set_height(CARD_HEIGHT - inset.y);
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 12.0;
-                    let (tile, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(TILE), egui::Sense::hover());
-                    ui.painter().rect_filled(tile, 12.0, plate);
-                    ui.painter().text(
-                        tile.center(),
-                        egui::Align2::CENTER_CENTER,
-                        glyph,
-                        egui::FontId::proportional(40.0),
-                        theme::p32().cream,
-                    );
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        ui.horizontal(|ui| {
-                            ui.label(big(
-                                &title,
-                                if instructing { 30.0 } else { 22.0 },
-                                theme::p32().cream,
-                            ));
-                            // The turn after this one, when it follows at once —
-                            // right-aligned, a footnote to the instruction.
-                            if let Some(next) = then {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
-                                        ui.label(
-                                            egui::RichText::new(icons::maneuver(next))
-                                                .size(18.0)
-                                                .color(theme::p32().text),
-                                        );
-                                        ui.label(small("then", theme::p32().text_dim));
-                                    },
-                                );
-                            }
-                        });
-                        if !sub.is_empty() {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(sub.as_str())
-                                        .size(theme::SIZE_BODY)
-                                        .color(theme::p32().text),
-                                )
-                                .truncate(),
-                            );
-                        }
-                        let buttons = failed.is_some() || panel_open;
-                        if buttons {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
-                                if failed.is_some()
-                                    && theme::action_button(ui, "Retry")
-                                        .on_hover_text("Ask for a route from here again")
-                                        .clicked()
-                                {
-                                    retry = true;
-                                }
-                                if panel_open
-                                    && theme::action_button(
-                                        ui,
-                                        if arrived { "Done" } else { "Stop" },
-                                    )
-                                    .on_hover_text("Leave navigation and put the map back")
-                                    .clicked()
-                                {
-                                    done = true;
-                                }
-                            });
-                        } else if instructing {
-                            approach_bar(ui, progress.step_distance_m);
-                        }
-                    });
-                });
-            });
-        });
-
-    // Nothing else while a panel is docked: the bar, the speed and the buttons
-    // above the bar are all on the bottom edge the planner sheet rises from, and
-    // the card carries Stop meanwhile.
-    if !panel_open {
-        // ── The trip bar, bottom centre ──
-        egui::Area::new(egui::Id::new("driver_bar"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -bar_bottom()))
-            .show(&ctx, |ui| {
-                let frame = theme::overlay_frame().inner_margin(egui::Margin::symmetric(8, 8));
-                let inset = frame.inner_margin.sum() + egui::Vec2::splat(2.0 * frame.stroke.width);
-                let shown = frame.show(ui, |ui| {
-                    ui.set_width(bar_width - inset.x);
-                    ui.set_height(BAR_HEIGHT - inset.y);
-                    ui.horizontal_centered(|ui| {
-                        let gap = ui.spacing().item_spacing.x;
-                        if theme::round_button(
-                            ui,
-                            if arrived { icons::CHECK } else { icons::CLEAR },
-                            if arrived { "Done" } else { "Stop navigation" },
-                            false,
-                        )
-                        .clicked()
-                        {
-                            done = true;
-                        }
-                        let stats = (ui.available_width() - theme::ROUND_BUTTON_SIZE - 3.0 * gap)
-                            .max(90.0)
-                            / 3.0;
-                        for (value, caption) in [
-                            (
-                                arrival.as_str(),
-                                if arrived { "arrived" } else { "arrival" },
-                            ),
-                            (time_left.as_str(), "left"),
-                            (to_go.as_str(), "to go"),
-                        ] {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(stats, BAR_HEIGHT - inset.y),
-                                egui::Layout::top_down(egui::Align::Center),
-                                |ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(big(value, 19.0, theme::p32().cream));
-                                    ui.label(small(caption, theme::p32().text_dim));
-                                },
-                            );
-                        }
-                        if theme::round_button(
-                            ui,
-                            icons::MENU,
-                            "Route — destination, turn list, travel mode",
-                            false,
-                        )
-                        .clicked()
-                        {
-                            open_planner = true;
-                        }
-                    });
-                });
-                // How much of the trip is behind you, as a hairline along the
-                // bar's top edge — the reference's progress line, drawn on the
-                // frame rather than laid out so it costs the bar no height.
-                let rect = shown.response.rect.shrink2(egui::vec2(14.0, 0.0));
-                let y = rect.top() + 1.5;
-                let p = ui.painter();
-                p.line_segment(
-                    [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
-                    egui::Stroke::new(3.0, theme::p32().overlay_line),
-                );
-                if driven > 0.0 {
-                    p.line_segment(
-                        [
-                            egui::pos2(rect.left(), y),
-                            egui::pos2(rect.left() + rect.width() * driven, y),
-                        ],
-                        egui::Stroke::new(3.0, ROUTE_BLUE),
-                    );
-                }
-            });
-
-        // ── The speed, above the bar's left end, with the limit over it ──
-        let left = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
-        egui::Area::new(egui::Id::new("driver_speed"))
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(left, -above_bar()))
-            .show(&ctx, |ui| {
-                ui.set_width(SPEED_DISC);
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    if let Some(limit) = limit {
-                        speed_limit_sign(ui, limit);
-                    }
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(SPEED_DISC), egui::Sense::hover());
-                    let p = ui.painter();
-                    let c = rect.center();
-                    p.circle_filled(c, SPEED_DISC * 0.5, theme::p32().overlay);
-                    p.circle_stroke(
-                        c,
-                        SPEED_DISC * 0.5,
-                        egui::Stroke::new(1.0, theme::p32().overlay_line),
-                    );
-                    // Over the limit turns the *speed* red, not the sign: the sign
-                    // states a fact about the road and reads the same whatever the
-                    // vehicle is doing.
-                    p.text(
-                        c - egui::vec2(0.0, 5.0),
-                        egui::Align2::CENTER_CENTER,
-                        format!("{speed_kmh:.0}"),
-                        egui::FontId::new(22.0, theme::brand_family()),
-                        if over { SIGN_RED } else { theme::p32().cream },
-                    );
-                    p.text(
-                        c + egui::vec2(0.0, 13.0),
-                        egui::Align2::CENTER_CENTER,
-                        "km/h",
-                        egui::FontId::proportional(theme::SIZE_TINY),
-                        theme::p32().text_dim,
-                    );
-                });
-            });
-
-        // ── Overview and Re-centre, above the bar's right end ──
-        //
-        // Overview is the route judged rather than driven: the rig pulls back
-        // until the rest of it is on screen ([`OverviewFrame`]). Re-centre comes
-        // up beside it only while the view is held off the rig — an offer, not
-        // the mechanism; the peek expires on its own ([`PEEK_TIMEOUT`]).
-        let right = ((viewport_x - bar_width) * 0.5).max(CARD_MARGIN);
-        egui::Area::new(egui::Id::new("driver_view_buttons"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-right, -above_bar()))
-            .show(&ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if peeking
-                        && theme::round_button(
-                            ui,
-                            icons::HERE,
-                            "Put the camera back behind the arrow",
-                            false,
-                        )
-                        .clicked()
-                    {
-                        recentre = true;
-                    }
-                    if theme::round_button(
-                        ui,
-                        icons::CAT_MAP,
-                        if overview {
-                            "Back to following the road"
-                        } else {
-                            "See the rest of the route"
-                        },
-                        overview,
-                    )
-                    .clicked()
-                    {
-                        toggle_overview = true;
-                    }
-                });
-            });
-
-        // ── What the position is worth, centred above the bar ──
-        //
-        // The provider's own message when there is one, otherwise the quality of
-        // the fix itself (`GpsQuality`) — only when there is something to say, so
-        // a good lock adds nothing to the screen.
-        if let Some(chip) = chip {
-            egui::Area::new(egui::Id::new("driver_gps_chip"))
-                .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -above_bar()))
-                .show(&ctx, |ui| {
-                    theme::chip_frame().show(ui, |ui| {
-                        ui.set_width(chip_width);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(chip)
-                                    .size(theme::SIZE_CHIP)
-                                    .color(theme::DARK.warn),
-                            )
-                            .truncate(),
-                        );
-                    });
-                });
-        }
-    }
-
-    // In the order they were always done, through the one method both editions
-    // call.
-    for (pressed, act) in [
-        (recentre, DriverAct::Recentre),
-        (toggle_overview, DriverAct::ToggleOverview),
-        (retry, DriverAct::Retry),
-        (open_planner, DriverAct::OpenPlanner),
-        (done, DriverAct::Done),
-    ] {
-        if pressed {
-            driver.apply(act, &mut right_panel);
-        }
+        },
+        // Nothing on the bottom edge while a panel is docked: the planner
+        // sheet rises from it, and the card carries Stop meanwhile.
+        bottom: (!panel_open).then(|| DriverBottom {
+            bar: DriverBar {
+                arrived,
+                arrival,
+                time_left,
+                to_go,
+                driven: (driven * 1000.0).round() as u16,
+            },
+            speed: DriverSpeed {
+                speed: format!("{speed_kmh:.0}"),
+                over,
+                limit,
+            },
+            peeking,
+            overview,
+            chip,
+        }),
+    };
+    if driver.lib_view.as_ref() != Some(&view) {
+        driver.lib_view = Some(view);
     }
 }
 
 /// The satnav blue the manoeuvre plate is painted in. Not a theme colour: the
 /// palette is the accent's warm one, and a *direction* instruction is the one piece
 /// of chrome that has to read as a road sign rather than as part of the app.
-const DRIVE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x14, 0x6E, 0xD2);
+const DRIVE_BLUE: theme::Rgba8 = theme::Rgba8::from_rgb(0x14, 0x6E, 0xD2);
 
 /// The two colours of a European speed-limit sign. Same argument as
 /// [`DRIVE_BLUE`], only harder: this *is* a road sign, and a road sign recoloured
 /// into a brand palette stops being recognisable at a glance, which is the entire
 /// function it performs.
-pub(crate) const SIGN_WHITE: egui::Color32 = egui::Color32::from_rgb(0xF7, 0xF7, 0xF4);
-pub(crate) const SIGN_RED: egui::Color32 = egui::Color32::from_rgb(0xD0, 0x21, 0x1C);
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const SIGN_WHITE: theme::Rgba8 = theme::Rgba8::from_rgb(0xF7, 0xF7, 0xF4);
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const SIGN_RED: theme::Rgba8 = theme::Rgba8::from_rgb(0xD0, 0x21, 0x1C);
 
 /// The card's colour once the trip is over. Same argument as [`DRIVE_BLUE`]: the
 /// card is read as signage, and "you are there" is green everywhere signage
 /// exists. Dark enough to carry `theme::Palette::cream` at the contrast the theme tests
 /// hold the rest of the UI to.
-const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
+const ARRIVE_GREEN: theme::Rgba8 = theme::Rgba8::from_rgb(0x1B, 0x7A, 0x48);
 
 /// The card's colour while the route is being replaced. Signage again, and here
 /// for a second reason: this was `theme::AMBER`, the palette's second accent,
@@ -3190,16 +2890,17 @@ const ARRIVE_GREEN: egui::Color32 = egui::Color32::from_rgb(0x1B, 0x7A, 0x48);
 /// that is a *type* colour, pale enough to read on a dark panel, and this is a
 /// card fill that has to carry `theme::Palette::cream`. So it is the amber a road sign
 /// would use, dark enough to be a plate.
-const REROUTE_AMBER: egui::Color32 = egui::Color32::from_rgb(0x8A, 0x5A, 0x0C);
+const REROUTE_AMBER: theme::Rgba8 = theme::Rgba8::from_rgb(0x8A, 0x5A, 0x0C);
 
 /// The plate for what the display cannot fix — off the route with no reroute yet,
 /// or a reroute that came back empty. A sign red dark enough to carry
 /// `theme::Palette::cream`; `theme::Palette::error` is a pale *text* colour and cannot be a plate.
-const OFF_ROUTE_RED: egui::Color32 = egui::Color32::from_rgb(0xA3, 0x2A, 0x22);
+const OFF_ROUTE_RED: theme::Rgba8 = theme::Rgba8::from_rgb(0xA3, 0x2A, 0x22);
 
 /// The route line's own blue (`navigation`'s fill), for the trip bar's progress
 /// line: the bar and the line on the map are the same object.
-pub(crate) const ROUTE_BLUE: egui::Color32 = egui::Color32::from_rgb(0x29, 0x87, 0xE6);
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const ROUTE_BLUE: theme::Rgba8 = theme::Rgba8::from_rgb(0x29, 0x87, 0xE6);
 
 /// The distance to the next manoeuvre, as a countdown rather than a measurement.
 ///
@@ -3232,27 +2933,6 @@ pub(crate) fn countdown(m: f64) -> String {
     }
 }
 
-/// The card's bottom edge, filling over the last [`APPROACH_M`] to the manoeuvre.
-///
-/// The countdown above it is exact and has to be read; this is the same fact in a
-/// form that can be taken in without looking away from the road, which is the
-/// whole reason a navigation display is not a table of numbers. Drawn as the edge
-/// of the card rather than as a widget inside it so it costs no layout and cannot
-/// push the compass below out of place.
-fn approach_bar(ui: &mut egui::Ui, step_distance_m: f64) {
-    let filled = 1.0 - (step_distance_m / APPROACH_M).clamp(0.0, 1.0) as f32;
-    ui.add_space(4.0);
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 2.0, theme::p32().ink.gamma_multiply(0.35));
-    if filled > 0.0 {
-        let mut fill = rect;
-        fill.set_width(rect.width() * filled);
-        painter.rect_filled(fill, 2.0, theme::p32().cream);
-    }
-}
-
 /// Metres between the manoeuvre being driven toward and the one after it.
 ///
 /// Off the steps' own `distance_m` rather than the measured polyline: a step's
@@ -3264,35 +2944,6 @@ fn next_step_gap(route: &Route, progress: Progress) -> f64 {
         .steps
         .get(progress.step + 1)
         .map_or(f64::INFINITY, |s| s.distance_m)
-}
-
-/// A European speed-limit sign: the number in a red annulus. Painted rather than
-/// composed from widgets because that is the only way to get the proportions of
-/// the real sign, which is what makes it readable without being read.
-fn speed_limit_sign(ui: &mut egui::Ui, limit: u16) {
-    const R: f32 = 13.0;
-    let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(R * 2.0), egui::Sense::hover());
-    let c = rect.center();
-    let painter = ui.painter();
-    painter.circle_filled(c, R, SIGN_WHITE);
-    painter.circle_stroke(c, R - 1.9, egui::Stroke::new(3.8, SIGN_RED));
-    painter.text(
-        c,
-        egui::Align2::CENTER_CENTER,
-        limit.to_string(),
-        egui::FontId::proportional(if limit >= 100 { 10.0 } else { 12.0 }),
-        egui::Color32::BLACK,
-    );
-}
-
-/// A readout value.
-fn big(text: &str, size: f32, color: egui::Color32) -> egui::RichText {
-    egui::RichText::new(text).size(size).strong().color(color)
-}
-
-/// Its caption.
-fn small(text: &str, color: egui::Color32) -> egui::RichText {
-    egui::RichText::new(text).size(11.0).color(color)
 }
 
 /// Wall-clock time of arrival, `remaining` seconds after `h:m`.

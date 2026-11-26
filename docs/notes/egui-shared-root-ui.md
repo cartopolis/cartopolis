@@ -53,14 +53,17 @@ clique that serialises Update (`render-performance-survey.md`).
 egui paints every floating `Area` above the panels — even `Order::Background`.
 The HUD's compass and locate button avoid it by not drawing while a
 `RightPanel` is open (`hud::render_map_controls`). Pins cannot disappear, so
-`place_pins::render_place_pins` culls every pin against `place_pins::map_area`:
-the root `Ui`'s `available_rect_before_wrap()` — the space the panels *left*, which
-is the map — minus the floating `Area`s that reserve nothing in it (the on-screen
-keyboard's slab, the dock's top and bottom bands, the route sheet). That is the
-map only once every panel has taken its width, so the pins sit at the **tail** of
-the chain, with `locate::render_locate_arrow` after them on the same rule; the
-interaction prompt and the chat bubbles cull the same way and sit near the end.
-Run one earlier and it sees the whole viewport and paints over the Places list.
+the pins cull every marker against `place_pins::map_area`: the map the panels
+*left* — the root `Ui`'s `available_rect_before_wrap()` once, last frame's
+`UiInput::map_rect` since the library took the panels — minus what reserves
+nothing in it (the on-screen keyboard's slab, the dock's top and bottom bands,
+the route sheet, a lens). The pins once sat at the **tail** of the chain for
+that reason, with the device arrow after them. Since 2026-11-26 the map's
+layers (`scenario::place_scenario_map`, `place_names::lay_out_place_names`,
+`plans::place_plans`, `place_pins::place_map_pins`,
+`locate::place_locate_arrow`, in that order) touch no egui and follow the chain
+in a group of their own, after `dock::drive_dock` (whose `MapChrome::holes`
+they keep off) and the camera; the library draws them in `PostUpdate`.
 
 **Cull, do not merely clip.** A pin clipped out with `set_clip_rect` is still an
 interactive `Area`, and still takes the click meant for the panel behind it. The

@@ -1,14 +1,11 @@
 //! The place names over the map drawn by the component library
-//! (`lib_host`), beside egui's (`place_names::render_place_names`): towns
-//! and countries as banners, districts in spaced capitals, stations as a
-//! ringed disc.
+//! (`lib_host`): towns and countries as banners, districts in spaced
+//! capitals, stations as a ringed disc.
 //!
-//! On with `CARTO_UI_LIB=place_names` (or `1`), on the web
-//! `?ui=place_names`. egui's system still chooses the names (by distance,
-//! then by room), places and measures them and opens the ring a name opens;
-//! it publishes the frame's names in `PlaceNames::lib_view` and paints none.
-//! A tap here goes back as `PlaceNames::lib_tapped` and opens the same ring
-//! on the same place.
+//! `place_names::lay_out_place_names` chooses the names (by distance, then
+//! by room), places and measures them and opens the ring a name opens; it
+//! publishes the frame's names in `PlaceNames::lib_view`. A tap here goes
+//! back as `PlaceNames::lib_tapped` and opens the ring on the place.
 //!
 //! Drawn through `lib_pins::Anchored`, the one keyed list everything
 //! anchored to the world goes through: a name that only moved restyles its
@@ -54,7 +51,7 @@ thread_local! {
     static MOUNTED: RefCell<Option<Live>> = const { RefCell::new(None) };
 }
 
-/// Mounts the names once, mirrors egui's frame of names into them, and
+/// Mounts the names once, mirrors `lay_out_place_names`' frame into them, and
 /// hands a tap back. `PostUpdate`, before `DriveUi`.
 pub fn drive_lib_place_names(
     _main: NonSendMarker,
@@ -64,9 +61,6 @@ pub fn drive_lib_place_names(
 ) {
     if !lib.place_names {
         return;
-    }
-    if !names.lib {
-        names.lib = true;
     }
     let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;
@@ -100,9 +94,10 @@ pub fn drive_lib_place_names(
 
 fn view_of(l: &Live) -> View {
     let tapped = l.tapped.clone();
-    // Under the pins (-1), as egui orders them: a saved place stays on top
-    // of a town's name and wins the tap.
-    l.names.view(-2, move |key, look| {
+    // Under the Plans marks (-2) and the pins (-1), over the Plans outlines
+    // (-4), as egui ordered them: a saved place stays on top of a town's
+    // name and wins the tap.
+    l.names.view(-3, move |key, look| {
         let tap: Handler = {
             let (tapped, key) = (tapped.clone(), key.to_string());
             Rc::new(move |_: &Event| *tapped.borrow_mut() = Some(key.clone()))

@@ -26,34 +26,10 @@ pub fn overlay_frame() -> egui::Frame {
 // the attribute with the first conversion**, or the next genuinely dead thing
 // added here goes unnoticed.
 
-/// Padding inside a label chip. Exported beside [`chip_frame`] because half the
-/// chips in this app are painted rather than laid out — a pin label is a galley
-/// and a `rect_filled` under it, which no `Frame` can reach — and those sites
-/// need the same two numbers.
+/// Padding inside a label chip over the map ([`LABEL_CHIP`] behind a few
+/// words, [`RADIUS_SM`] round): the driver's chip and the lens's marks
+/// (`lib_driver`, `lib_scenario_map`) use the same two numbers.
 pub const CHIP_PADDING: egui::Vec2 = egui::vec2(6.0, 3.0);
-
-/// The frame around a small text chip painted over the map: a place-pin label,
-/// the bookmark drag ghost, a feature's hover card.
-///
-/// Sibling of [`overlay_frame`], and here for the same reason: three files
-/// hand-rolled the box around [`LABEL_CHIP`] with three paddings and three
-/// radii, and two of them appear on the map *at once* (a pin label and the ghost
-/// being dragged over it), where "the chips look inconsistent" is not a subtle
-/// difference — it is two designs in one glance.
-///
-/// A chip is not an [`overlay_frame`]: it carries a few words over an arbitrary
-/// tile rather than a box of controls, so it is darker, tighter, and rounded with
-/// [`RADIUS_SM`] because at ~20 pt tall [`RADIUS`] would make it a lozenge. Add a
-/// `.stroke(...)` for the ones that carry a folder's colour.
-pub fn chip_frame() -> egui::Frame {
-    egui::Frame::NONE
-        .fill(LABEL_CHIP.to_egui())
-        .corner_radius(CornerRadius::same(RADIUS_SM))
-        .inner_margin(Margin::symmetric(
-            CHIP_PADDING.x as i8,
-            CHIP_PADDING.y as i8,
-        ))
-}
 
 /// The design's floating card (`.float-top`, `.sheet`): solid since
 /// 2026-11-08 (it was ink at 84 %), a hairline, round corners.
@@ -588,13 +564,6 @@ pub fn card_shadow() -> Shadow {
 /// button at rest: the hub's `--m-shadow`, close and small.
 pub(super) fn segment_shadow() -> Shadow {
     shadow([0, 1], 4, 120)
-}
-
-/// The chosen option of a segmented control, painted: a raised card with the
-/// small shadow (a segmented control, the Community | World switch).
-pub fn paint_raised(painter: &egui::Painter, rect: egui::Rect, corner: CornerRadius) {
-    painter.add(segment_shadow().as_shape(rect, corner));
-    painter.rect_filled(rect, corner, p32().surface_raised);
 }
 
 /// A shadow (or glow) under a disc. Painted before the disc itself.

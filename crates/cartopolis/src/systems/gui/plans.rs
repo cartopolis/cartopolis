@@ -9,7 +9,7 @@
 //! placed by the street names in their titles. Cached for [`FEED_TTL`], read
 //! again when the layer is on and the copy is stale, and kept on a failed read.
 //!
-//! **Painted, not meshed**, for the reason saved places are
+//! **Drawn over the map, not meshed**, for the reason saved places are
 //! (`systems::place_pins`): a notice is a remark *about* a spot, it has to be
 //! findable from the street and from a few kilometres up, and so it is a dot
 //! of fixed screen size over the map. An orange dot's response period still
@@ -24,11 +24,12 @@
 //! nothing is fetched or drawn, and the map ring's *Plans here* still answers
 //! for one spot — it loads the feed for that.
 //!
-//! [`drive_plans`] fetches and takes the ring's request, [`render_plans`]
-//! draws the dots in the panel chain (it culls against the map area, as the
-//! pins do), and [`drive_plans_card`] and [`drive_plans_news`] decide when
-//! the card a tap opens and the news chip stand aside; the library draws
-//! the chip, the card and the news (`lib_plans`).
+//! [`drive_plans`] fetches and takes the ring's request, [`place_plans`]
+//! places the dots, squares and outlines (culled against the map area, as the
+//! pins are) and does what a tap on one asked, and [`drive_plans_card`] and
+//! [`drive_plans_news`] decide when the card a tap opens and the news chip
+//! stand aside; the library draws the marks, the chip, the card and the
+//! news (`lib_plans`).
 
 use cartopolis_core::msg;
 use std::sync::{Arc, Mutex};
@@ -47,10 +48,10 @@ use crate::components::FreeCamera;
 use crate::grid::anchored_position_f64;
 use crate::platform::{http, storage};
 use crate::resources::MapAnchor;
-use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
 use crate::systems::layer_state::DataLayers;
-use crate::systems::place_pins::{map_area, place_delta};
+use crate::systems::place_pins::{clear_of_chrome, map_area, place_delta};
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use crate::systems::{icons, theme};
 
 /// Atlas's feed. The browser build asks its own origin, which is the same
@@ -71,15 +72,30 @@ const RETRY_AFTER: Duration = Duration::from_secs(300);
 const COVERED: [f64; 4] = [53.10, 6.40, 53.33, 6.90];
 
 /// Above this camera altitude the dots are not drawn: a city's year of notices
-/// is one orange smudge from higher, and every dot is a live `Area`.
+/// is one orange smudge from higher, and every dot is a node of its own.
 const MAX_ALTITUDE_M: f64 = 12_000.0;
 /// At most this many dots a frame, the newest first.
 const MAX_DOTS: usize = 400;
+/// At most this many pieces of outline a frame (`PlanStroke`): each is a
+/// node, and a dashed sewer across the view is hundreds of dashes.
+const MAX_STROKES: usize = 3_000;
 /// A dot's radius, points; an open one's.
-const DOT_R: f32 = 5.5;
-const OPEN_R: f32 = 6.5;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const DOT_R: f32 = 5.5;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const OPEN_R: f32 = 6.5;
 /// The council square's half-size, points.
-const COUNCIL_R: f32 = 9.0;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const COUNCIL_R: f32 = 9.0;
+/// The outlines' width, points; a notice area's dash and gap, and a work's
+/// under the street.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const STROKE_W: f32 = 2.0;
+const AREA_DASH: (f32, f32) = (6.0, 4.0);
+const WORK_DASH: (f32, f32) = (7.0, 4.0);
+/// A tree's ring's radius, points.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const TREE_R: f32 = 4.0;
 /// How near counts as "here" for a card's "Also here", metres. The ring's
 /// *Plans here* and a followed place use the shared `HERE_M`.
 const ALSO_HERE_M: f64 = 40.0;
@@ -87,7 +103,8 @@ const ALSO_HERE_M: f64 = 40.0;
 /// orange, but something that will happen in the street (the design's v3).
 pub const WORK: theme::Rgba8 = theme::Rgba8::from_rgb(0xF5, 0xC5, 0x18);
 /// A work's square marker's half-size, points.
-const WORK_R: f32 = 9.0;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub(crate) const WORK_R: f32 = 9.0;
 /// At most this many works a frame.
 const MAX_WORKS: usize = 200;
 
@@ -325,13 +342,16 @@ pub struct Plans {
     /// Notices and works near a followed place not shown yet
     /// ([`PlansFollow::news`]).
     news: Vec<(Card, [f64; 2])>,
-    /// What [`render_plans`], [`drive_plans_card`] and [`drive_plans_news`]
-    /// work out for the library's chip, card and news (`lib_plans`).
+    /// What [`place_plans`], [`drive_plans_card`] and [`drive_plans_news`]
+    /// work out for the library's marks, chip, card and news (`lib_plans`).
     pub lib_view: PlansView,
+    /// The key of the mark the library's tap landed on ([`PlanMark::key`]),
+    /// opened next frame by [`place_plans`].
+    pub lib_tapped: Option<String>,
 }
 
 /// What the plans systems work out for the library (`lib_plans`).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlansView {
     /// The layer's chip, when it is up: dots drawn, how many still open,
     /// works, and whether the view is too high to draw them.
@@ -340,6 +360,75 @@ pub struct PlansView {
     pub card_hidden: bool,
     /// The news chip stands aside (a card, a panel, the menu, driving).
     pub news_hidden: bool,
+    /// The dots and squares over the map this frame, in the order they
+    /// stack (the last on top).
+    pub marks: Vec<PlanMark>,
+    /// The outlines under every mark: a notice's area, a work's lines and
+    /// areas (dashed under the street), rings on its trees.
+    pub strokes: Vec<PlanStroke>,
+}
+
+/// One tappable mark where it stands this frame, in UI points.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct PlanMark {
+    /// Stable across frames: what the library keys the mark's node by, and
+    /// what a tap on it comes back as.
+    pub key: String,
+    pub at: Vec2,
+    /// What a pointer resting on it is told.
+    pub title: String,
+    pub look: MarkLook,
+}
+
+/// What a mark looks like.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum MarkLook {
+    /// A notice's dot: orange while its response period runs, grey after.
+    Notice { open: bool },
+    /// A council item's blue square: a tick once decided, a dot before.
+    Council { decided: bool },
+    /// A work's yellow square, with its kind's glyph.
+    Work { glyph: &'static str },
+}
+
+/// One piece of outline this frame, in UI points, already clipped to the
+/// map.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub struct PlanStroke {
+    /// Stable across frames while the shape stays in view.
+    pub key: String,
+    pub look: StrokeLook,
+}
+
+/// A straight piece `STROKE_W` wide from `a` to `b`, or a tree's ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+pub enum StrokeLook {
+    Line { a: Vec2, b: Vec2, ink: StrokeInk },
+    Ring { at: Vec2 },
+}
+
+/// Which colour an outline is: an open notice's, a closed one's, a work's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrokeInk {
+    Open,
+    Closed,
+    Work,
+}
+
+impl StrokeInk {
+    #[must_use]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub fn colour(self) -> theme::Rgba8 {
+        match self {
+            StrokeInk::Open => theme::BRAND,
+            StrokeInk::Closed => theme::DARK.accent,
+            StrokeInk::Work => WORK,
+        }
+    }
 }
 
 impl Plans {
@@ -548,11 +637,11 @@ fn shown(n: &Notice, dl: &DataLayers, today: &str, since: &str) -> bool {
     }
 }
 
-/// The dots, areas and council squares over the map, and the chip saying how
-/// many. In the panel chain, before the pins, for the reason they are there.
+/// The dots, areas and squares over the map, placed for the library
+/// (`lib_plans`), the counts for the chip, and the card a tap on a mark
+/// opens. Before the pins, which stand over them.
 #[allow(clippy::too_many_arguments)]
-pub fn render_plans(
-    mut egui: EguiMut,
+pub fn place_plans(
     mut plans: ResMut<Plans>,
     dl: Res<DataLayers>,
     globe: Res<GlobeState>,
@@ -565,12 +654,21 @@ pub fn render_plans(
     driver: Res<crate::systems::driver::DriverState>,
     right_panel: Res<crate::resources::RightPanel>,
     chrome: Res<crate::systems::dock::MapChrome>,
+    input: Res<UiInput>,
+    metrics: Res<UiMetrics>,
 ) {
-    let mut anchored = WorldAnchored::new(egui.ctx(), "plans");
     plans.shown = (0, 0, 0);
     if plans.lib_view.chip.is_some() {
         plans.lib_view.chip = None;
     }
+    // Cleared first, so each early return below leaves the map bare.
+    if !plans.lib_view.marks.is_empty() {
+        plans.lib_view.marks.clear();
+    }
+    if !plans.lib_view.strokes.is_empty() {
+        plans.lib_view.strokes.clear();
+    }
+    let tapped_key = plans.lib_tapped.take();
     if !dl.plans_enabled || driver.active {
         return;
     }
@@ -586,30 +684,24 @@ pub fn render_plans(
     let in_space = globe.in_space(cam_cell, cam_tf);
     let high = in_space || globe.altitude_m(cam_cell, cam_tf) > MAX_ALTITUDE_M;
 
-    let map_rect = map_area(&mut egui, &keyboard, &route, &lens);
-    let ui_scale = egui.ui_scale();
-    let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
-    let ctx = egui.ctx_mut().clone();
+    let map_rect = map_area(&input, &metrics, &keyboard, &route, &lens);
     let cam_world = anchored_position_f64(cam_cell, cam_tf.translation);
     // This frame's camera basis, not last frame's (`place_pins` says why).
     let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
-    let project = |lat: f64, lng: f64| -> Option<egui::Pos2> {
+    let project = |lat: f64, lng: f64| -> Option<Vec2> {
         let delta = place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)?;
         let screen = cam.world_to_viewport(&cam_view, delta.as_vec3()).ok()?;
-        Some(to_ui(screen))
+        Some(metrics.window_to_ui(screen))
     };
 
     let now = now_unix();
     let today = civil_date(now);
     let since = dl.plans_period.since(now);
-    let mut tapped: Option<Card> = None;
+    // Every mark in the order it stacks, and the card a tap on it opens.
+    let mut marks: Vec<(PlanMark, Card)> = Vec::new();
+    let mut strokes = Strokes::new(map_rect);
     let (mut drawn, mut open, mut works) = (0usize, 0usize, 0usize);
     if !high {
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("plans_areas"),
-        ));
-        let painter = painter.with_clip_rect(map_rect);
         // The works first, under the notices' dots: this year's and later.
         if dl.plans_works {
             for (i, w) in feed.works.iter().enumerate() {
@@ -626,14 +718,21 @@ pub fn render_plans(
                     continue;
                 }
                 works += 1;
-                work_shape(&painter, w, &project);
-                if !crate::systems::place_pins::clear_of_chrome(&chrome.holes, pin) {
+                work_shape(&mut strokes, i, w, &project);
+                if !clear_of_chrome(&chrome.holes, pin) {
                     continue;
                 }
-                anchored.at(pin);
-                if work_square(&ctx, map_rect, i, pin, w) {
-                    tapped = Some(Card::Work(i));
-                }
+                marks.push((
+                    PlanMark {
+                        key: format!("work:{i}"),
+                        at: pin,
+                        title: format!("Works {}: {}", w.year, w.measure),
+                        look: MarkLook::Work {
+                            glyph: work_icon(w.kind),
+                        },
+                    },
+                    Card::Work(i),
+                ));
             }
         }
         // Newest first, as the feed is: when the cap bites, the old go.
@@ -647,37 +746,34 @@ pub fn render_plans(
             let Some(tip) = project(n.lat, n.lng) else {
                 continue;
             };
-            if !map_rect.contains(tip)
-                || !crate::systems::place_pins::clear_of_chrome(&chrome.holes, tip)
-            {
+            if !map_rect.contains(tip) || !clear_of_chrome(&chrome.holes, tip) {
                 continue;
             }
             let is_open = n.open_on(&today);
             drawn += 1;
             open += usize::from(is_open);
-            anchored.at(tip);
             // Its area's outline, under the dot, when it was published as one.
             if n.area.len() >= 3 {
-                let ring: Option<Vec<egui::Pos2>> =
-                    n.area.iter().map(|p| project(p[0], p[1])).collect();
+                let ring: Option<Vec<Vec2>> = n.area.iter().map(|p| project(p[0], p[1])).collect();
                 if let Some(mut ring) = ring {
                     ring.push(ring[0]);
-                    let colour = if is_open {
-                        theme::BRAND.to_egui()
+                    let ink = if is_open {
+                        StrokeInk::Open
                     } else {
-                        theme::DARK32.accent
+                        StrokeInk::Closed
                     };
-                    painter.extend(egui::Shape::dashed_line(
-                        &ring,
-                        egui::Stroke::new(2.0, colour),
-                        6.0,
-                        4.0,
-                    ));
+                    strokes.dashed(&format!("notice:{i}"), &ring, AREA_DASH, ink);
                 }
             }
-            if dot(&ctx, map_rect, i, tip, is_open, &n.title) {
-                tapped = Some(Card::Notice(i));
-            }
+            marks.push((
+                PlanMark {
+                    key: format!("notice:{i}"),
+                    at: tip,
+                    title: n.title.clone(),
+                    look: MarkLook::Notice { open: is_open },
+                },
+                Card::Notice(i),
+            ));
         }
         if dl.plans_council {
             for (i, c) in feed.council.iter().enumerate() {
@@ -688,120 +784,156 @@ pub fn render_plans(
                     let Some(at) = project(p.lat, p.lng) else {
                         continue;
                     };
-                    if !map_rect.contains(at)
-                        || !crate::systems::place_pins::clear_of_chrome(&chrome.holes, at)
-                    {
+                    if !map_rect.contains(at) || !clear_of_chrome(&chrome.holes, at) {
                         continue;
                     }
-                    anchored.at(at);
-                    if council_square(&ctx, map_rect, (i, j), at, c.decided, &c.title) {
-                        tapped = Some(Card::Council(i));
-                    }
+                    marks.push((
+                        PlanMark {
+                            key: format!("council:{i}:{j}"),
+                            at,
+                            title: c.title.clone(),
+                            look: MarkLook::Council { decided: c.decided },
+                        },
+                        Card::Council(i),
+                    ));
                 }
             }
         }
     }
     plans.shown = (drawn, open, works);
-    if let Some(card) = tapped {
+    // A tap the library took last frame, on a mark that is still here.
+    if let Some(card) = tapped_key
+        .and_then(|key| marks.iter().find(|(m, _)| m.key == key))
+        .map(|(_, card)| *card)
+    {
         plans.card = Some(card);
     }
+    plans.lib_view.marks = marks.into_iter().map(|(m, _)| m).collect();
+    plans.lib_view.strokes = strokes.out;
     if right_panel.is(crate::resources::RightPanel::None) {
-        // The library's chip (`lib_plans`) is drawn from the counts; the
-        // dots stay painted here.
+        // The library's chip (`lib_plans`) is drawn from the counts.
         plans.lib_view.chip = Some((drawn, open, works, high));
     }
 }
 
-/// One notice's dot; whether it was tapped. Its own `Area`, so egui owns the
-/// tap and the map's click handlers leave it alone (`place_pins::pin`).
-fn dot(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    i: usize,
-    at: egui::Pos2,
-    open: bool,
-    title: &str,
-) -> bool {
-    let r = if open { OPEN_R } else { DOT_R };
-    let side = 2.0 * r + 8.0;
-    egui::Area::new(egui::Id::new(("plan_dot", i)))
-        .fixed_pos(at)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
-            let resp = theme::named(ui, resp, title);
-            let r = if resp.hovered() { r * 1.25 } else { r };
-            let p = ui.painter();
-            // Painted at the exact projected point, not the rounded rect.
-            if open {
-                p.circle(
-                    at,
-                    r,
-                    theme::BRAND.to_egui(),
-                    egui::Stroke::new(2.0, theme::DARK32.cream),
-                );
-            } else {
-                p.circle(
-                    at,
-                    r,
-                    theme::DARK32.accent,
-                    egui::Stroke::new(2.0, theme::DARK32.ink),
-                );
-            }
-            resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-        })
-        .inner
-        .clicked()
+/// The outline pieces of one frame, cut to the map and capped at
+/// [`MAX_STROKES`]: what the library draws as thin turned boxes.
+struct Strokes {
+    map: Rect,
+    out: Vec<PlanStroke>,
 }
 
-/// A council item's square on a place its title names; whether it was tapped.
-fn council_square(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    id: (usize, usize),
-    at: egui::Pos2,
-    decided: bool,
-    title: &str,
-) -> bool {
-    let side = 2.0 * COUNCIL_R + 6.0;
-    egui::Area::new(egui::Id::new(("plan_council", id)))
-        .fixed_pos(at)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
-            let resp = theme::named(ui, resp, title);
-            let r = if resp.hovered() {
-                COUNCIL_R * 1.2
+impl Strokes {
+    fn new(map: Rect) -> Self {
+        Strokes {
+            map,
+            out: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, key: String, look: StrokeLook) {
+        if self.out.len() < MAX_STROKES {
+            self.out.push(PlanStroke { key, look });
+        }
+    }
+
+    /// A solid path: a piece per segment, each cut to the map.
+    fn solid(&mut self, key: &str, pts: &[Vec2], ink: StrokeInk) {
+        for (k, w) in pts.windows(2).enumerate() {
+            if let Some((t0, t1)) = clip_params(w[0], w[1], self.map) {
+                let d = w[1] - w[0];
+                let (a, b) = (w[0] + d * t0, w[0] + d * t1);
+                self.push(format!("{key}:{k}"), StrokeLook::Line { a, b, ink });
+            }
+        }
+    }
+
+    /// A dashed path (`dash` on, `gap` off), the pattern running on across
+    /// its corners.
+    fn dashed(&mut self, key: &str, pts: &[Vec2], (dash, gap): (f32, f32), ink: StrokeInk) {
+        for (seg, n, a, b) in dashes(pts, dash, gap, self.map) {
+            self.push(format!("{key}:{seg}:{n}"), StrokeLook::Line { a, b, ink });
+        }
+    }
+
+    /// A tree's ring, when its centre is on the map.
+    fn ring(&mut self, key: String, at: Vec2) {
+        if self.map.contains(at) {
+            self.push(key, StrokeLook::Ring { at });
+        }
+    }
+}
+
+/// Where the segment `a`–`b` runs inside `r`, as the share of the way from
+/// `a` it enters and leaves (Liang–Barsky); `None` when it misses.
+fn clip_params(a: Vec2, b: Vec2, r: Rect) -> Option<(f32, f32)> {
+    if !a.is_finite() || !b.is_finite() {
+        return None;
+    }
+    let d = b - a;
+    let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
+    for (p, q) in [
+        (-d.x, a.x - r.min.x),
+        (d.x, r.max.x - a.x),
+        (-d.y, a.y - r.min.y),
+        (d.y, r.max.y - a.y),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let t = q / p;
+            if p < 0.0 {
+                if t > t1 {
+                    return None;
+                }
+                t0 = t0.max(t);
             } else {
-                COUNCIL_R
-            };
-            let rect = egui::Rect::from_center_size(at, egui::vec2(2.0 * r, 2.0 * r));
-            let p = ui.painter();
-            p.rect(
-                rect,
-                egui::CornerRadius::same(5),
-                theme::COUNCIL,
-                egui::Stroke::new(2.0, theme::DARK32.cream),
-                egui::StrokeKind::Middle,
-            );
-            // A tick for a decision taken, a dot for business still open.
-            let glyph = if decided { icons::CHECK } else { icons::DOT };
-            p.text(
-                at,
-                egui::Align2::CENTER_CENTER,
-                glyph,
-                egui::FontId::proportional(r * 1.3),
-                theme::DARK32.cream,
-            );
-            resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Council business that names this place")
-        })
-        .inner
-        .clicked()
+                if t < t0 {
+                    return None;
+                }
+                t1 = t1.min(t);
+            }
+        }
+    }
+    (t1 > t0).then_some((t0, t1))
+}
+
+/// The dashes of a path, `dash` on and `gap` off, the pattern running on
+/// across its corners: only those inside `clip`, cut to it, each as its
+/// segment, its number along the whole path, and its two ends. A path that
+/// runs far off the screen costs only the part on it.
+fn dashes(pts: &[Vec2], dash: f32, gap: f32, clip: Rect) -> Vec<(usize, usize, Vec2, Vec2)> {
+    let period = dash + gap;
+    let mut out = Vec::new();
+    if period <= 0.0 {
+        return out;
+    }
+    // How far along the path the segment starts.
+    let mut walked = 0.0_f32;
+    for (seg, w) in pts.windows(2).enumerate() {
+        let (a, b) = (w[0], w[1]);
+        let len = a.distance(b);
+        if !len.is_finite() || len <= 0.0 {
+            continue;
+        }
+        if let Some((t0, t1)) = clip_params(a, b, clip) {
+            let (s0, s1) = (walked + t0 * len, walked + t1 * len);
+            let at = |s: f32| a + (b - a) * ((s - walked) / len);
+            let first = (s0 / period).floor().max(0.0) as usize;
+            let last = (s1 / period).floor().max(0.0) as usize;
+            for n in first..=last {
+                let on = n as f32 * period;
+                let (u0, u1) = (on.max(s0), (on + dash).min(s1));
+                if u1 > u0 {
+                    out.push((seg, n, at(u0), at(u1)));
+                }
+            }
+        }
+        walked += len;
+    }
+    out
 }
 
 /// Whether a work is planned for this year or later, `today` being
@@ -817,13 +949,13 @@ fn current(w: &Work, today: &str) -> bool {
 /// A work's shape on the map, in the works' colour, styled by where it
 /// happens: solid on the street, dashed under it, rings on its trees.
 fn work_shape(
-    painter: &egui::Painter,
+    strokes: &mut Strokes,
+    i: usize,
     w: &Work,
-    project: &impl Fn(f64, f64) -> Option<egui::Pos2>,
+    project: &impl Fn(f64, f64) -> Option<Vec2>,
 ) {
-    let stroke = egui::Stroke::new(2.0, WORK.to_egui());
-    let path = |pts: &[[f64; 2]], closed: bool| -> Option<Vec<egui::Pos2>> {
-        let mut out: Vec<egui::Pos2> = pts
+    let path = |pts: &[[f64; 2]], closed: bool| -> Option<Vec<Vec2>> {
+        let mut out: Vec<Vec2> = pts
             .iter()
             .map(|p| project(p[0], p[1]))
             .collect::<Option<_>>()?;
@@ -832,26 +964,26 @@ fn work_shape(
         }
         Some(out)
     };
-    let draw = |pts: Vec<egui::Pos2>| {
+    let draw = |strokes: &mut Strokes, key: String, pts: Vec<Vec2>| {
         if w.kind.underground() {
-            painter.extend(egui::Shape::dashed_line(&pts, stroke, 7.0, 4.0));
+            strokes.dashed(&key, &pts, WORK_DASH, StrokeInk::Work);
         } else {
-            painter.add(egui::Shape::line(pts, stroke));
+            strokes.solid(&key, &pts, StrokeInk::Work);
         }
     };
-    for ring in &w.areas {
+    for (k, ring) in w.areas.iter().enumerate() {
         if let Some(pts) = path(ring, true) {
-            draw(pts);
+            draw(strokes, format!("work:{i}:area:{k}"), pts);
         }
     }
-    for line in &w.lines {
+    for (k, line) in w.lines.iter().enumerate() {
         if let Some(pts) = path(line, false) {
-            draw(pts);
+            draw(strokes, format!("work:{i}:line:{k}"), pts);
         }
     }
-    for p in &w.points {
+    for (k, p) in w.points.iter().enumerate() {
         if let Some(at) = project(p[0], p[1]) {
-            painter.circle_stroke(at, 4.0, stroke);
+            strokes.ring(format!("work:{i}:tree:{k}"), at);
         }
     }
 }
@@ -924,47 +1056,6 @@ fn gloss(measure: &str) -> Option<&'static str> {
         .iter()
         .find(|(word, _)| m.contains(word))
         .map(|(_, line)| *line)
-}
-
-/// A work's square marker at its pin; whether it was tapped.
-fn work_square(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    i: usize,
-    at: egui::Pos2,
-    w: &Work,
-) -> bool {
-    let side = 2.0 * WORK_R + 6.0;
-    egui::Area::new(egui::Id::new(("plan_work", i)))
-        .fixed_pos(at)
-        .pivot(egui::Align2::CENTER_CENTER)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let (_, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
-            let resp = theme::named(ui, resp, &w.measure);
-            let r = if resp.hovered() { WORK_R * 1.2 } else { WORK_R };
-            let rect = egui::Rect::from_center_size(at, egui::vec2(2.0 * r, 2.0 * r));
-            let p = ui.painter();
-            p.rect(
-                rect,
-                egui::CornerRadius::same(5),
-                WORK.to_egui(),
-                egui::Stroke::new(2.0, theme::DARK32.ink),
-                egui::StrokeKind::Middle,
-            );
-            p.text(
-                at,
-                egui::Align2::CENTER_CENTER,
-                work_icon(w.kind),
-                egui::FontId::proportional(r * 1.3),
-                theme::DARK32.ink,
-            );
-            resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(format!("Works {}: {}", w.year, w.measure))
-        })
-        .inner
-        .clicked()
 }
 
 /// The layer's chip's words (`lib_plans` draws it): how many are drawn (or
@@ -1612,6 +1703,42 @@ fn here_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An outline is cut where it leaves the map, and one that misses it
+    /// draws nothing.
+    #[test]
+    fn outlines_are_cut_to_the_map() {
+        let map = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let (t0, t1) = clip_params(Vec2::new(-50.0, 50.0), Vec2::new(150.0, 50.0), map).unwrap();
+        assert!((t0 - 0.25).abs() < 1e-5 && (t1 - 0.75).abs() < 1e-5);
+        assert_eq!(
+            clip_params(Vec2::new(10.0, 10.0), Vec2::new(20.0, 20.0), map),
+            Some((0.0, 1.0))
+        );
+        assert!(clip_params(Vec2::new(-10.0, -10.0), Vec2::new(-1.0, 200.0), map).is_none());
+        assert!(clip_params(Vec2::new(f32::NAN, 0.0), Vec2::new(1.0, 1.0), map).is_none());
+    }
+
+    /// The dash pattern runs on round a corner rather than starting again,
+    /// and only the dashes on the map are made.
+    #[test]
+    fn dashes_run_on_round_corners() {
+        let map = Rect::new(-1000.0, -1000.0, 1000.0, 1000.0);
+        // 8 along, then down: dash 6, gap 4 — the second dash starts 2 past
+        // the corner.
+        let pts = [Vec2::ZERO, Vec2::new(8.0, 0.0), Vec2::new(8.0, 20.0)];
+        let d = dashes(&pts, 6.0, 4.0, map);
+        let near = |a: Vec2, b: Vec2| a.distance(b) < 1e-4;
+        assert_eq!(d.len(), 3);
+        assert_eq!((d[0].0, d[0].1), (0, 0));
+        assert!(near(d[0].2, Vec2::ZERO) && near(d[0].3, Vec2::new(6.0, 0.0)));
+        assert_eq!((d[1].0, d[1].1), (1, 1));
+        assert!(near(d[1].2, Vec2::new(8.0, 2.0)) && near(d[1].3, Vec2::new(8.0, 8.0)));
+        // A path far longer than the map makes only the map's share.
+        let long = [Vec2::new(-1.0e6, 0.0), Vec2::new(1.0e6, 0.0)];
+        let n = dashes(&long, 6.0, 4.0, map).len();
+        assert!((195..=205).contains(&n), "{n} dashes");
+    }
 
     #[test]
     fn dates_read_as_words() {

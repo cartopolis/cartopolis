@@ -6,9 +6,9 @@
 //! `scenarios.md`).
 //!
 //! On with `CARTO_UI_LIB=scenario` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`ScenarioView::lib`) but keeps what only it can do:
-//! it paints the mode's frame round the map (a canvas, egui's until the
-//! canvas step), works out whether the lens stands aside (the dock's
+//! system steps aside (`ScenarioView::lib`) but keeps what only it can do
+//! (the mode's frame round the map and the marks on it are
+//! `lib_scenario_map`'s): it works out whether the lens stands aside (the dock's
 //! reasons, the keyboard, the route sheet, the place card), puts the sheet
 //! away when a drag starts on the map, finds the place under the
 //! crosshair, publishes the lens's slot for the pins (`lens_rect`) and the

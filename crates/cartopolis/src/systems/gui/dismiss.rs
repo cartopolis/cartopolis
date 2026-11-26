@@ -96,6 +96,8 @@ pub struct Talk<'w> {
     pub camera: ResMut<'w, crate::systems::camera_screen::CameraScreen>,
     pub contacts: ResMut<'w, crate::systems::contacts::Contacts>,
     pub bridges: ResMut<'w, crate::systems::bridges::Bridges>,
+    /// A chat's World view, whose header's back is a page's back.
+    pub chats: ResMut<'w, crate::systems::chats::ChatsView>,
 }
 
 /// One rung of the ladder: a surface a dismissal gesture can put away.
@@ -159,9 +161,9 @@ pub enum Rung {
     /// Driver mode. Below the menu because the menu draws over it, and a gesture
     /// should not step past something visibly on top.
     DriverMode,
-    /// A page inside a panel with a back chevron (Community ▸ You ▸ Contacts):
-    /// a press steps back one page, as the chevron does (`theme::page_back`),
-    /// instead of dropping the whole stack with the panel.
+    /// A page with a back chevron (a chat's World view, `ChatsView::lib_world`):
+    /// a press steps back one page, as the chevron does
+    /// (`ChatsView::world_back`), instead of dropping the whole stack.
     PanelPage,
     /// The open right panel.
     RightPanel,
@@ -274,7 +276,7 @@ impl Dismissable<'_> {
     /// already cleared the focus by the time this runs — the question is whether
     /// a field held the keyboard when the frame *began*.
     #[must_use]
-    pub fn surfaces(&self, text_focused: bool, ctx: &egui::Context) -> OpenSurfaces {
+    pub fn surfaces(&self, text_focused: bool) -> OpenSurfaces {
         let world = OpenSurfaces {
             keyboard: self.keyboard.is_open(),
             text_focused,
@@ -286,7 +288,6 @@ impl Dismissable<'_> {
             design_room: self.spaces.room.spot.is_some(),
             driver_mode: self.driver.active,
             right_panel: *self.panel != RightPanel::None,
-            panel_page: crate::systems::theme::page_back_shown(ctx),
             place_card: self.place_card.place.is_some(),
             building_card: self.building.selected.is_some(),
             signed_out_community: self.spaces.welcome.community,
@@ -303,6 +304,8 @@ impl Dismissable<'_> {
                 share_sheet: t.bridges.share.is_some(),
                 person_card: t.contacts.card.is_some(),
                 back_to_community: t.bridges.back.is_some(),
+                // A chat's World view: its header's back steps back a page.
+                panel_page: t.chats.lib_world.is_some(),
                 ..world
             }
         };
@@ -312,8 +315,8 @@ impl Dismissable<'_> {
     /// Put away the innermost open thing, and only that one. Returns the rung
     /// that fired, so `Back` can tell "nothing was open" from "something closed"
     /// and decide whether to quit.
-    pub fn dismiss_innermost(&mut self, text_focused: bool, ctx: &egui::Context) -> Option<Rung> {
-        let rung = self.surfaces(text_focused, ctx).innermost()?;
+    pub fn dismiss_innermost(&mut self, text_focused: bool) -> Option<Rung> {
+        let rung = self.surfaces(text_focused).innermost()?;
         #[cfg(feature = "comms")]
         let t = &mut self.spaces.talk;
         match rung {
@@ -339,7 +342,14 @@ impl Dismissable<'_> {
             Rung::ShareSheet => t.bridges.share = None,
             Rung::DesignRoom => self.spaces.room.close(),
             Rung::DriverMode => self.driver.exit(),
-            Rung::PanelPage => crate::systems::theme::press_page_back(ctx),
+            // The only page with a back chevron is a chat's World view; the
+            // web build has none, and so never reaches this rung.
+            Rung::PanelPage => {
+                #[cfg(feature = "comms")]
+                {
+                    t.chats.world_back = true;
+                }
+            }
             Rung::RightPanel => *self.panel = RightPanel::None,
             #[cfg(feature = "comms")]
             Rung::PersonCard => {
@@ -373,7 +383,7 @@ pub fn handle_escape(keys: Res<ButtonInput<KeyCode>>, egui: EguiRef, mut d: Dism
         return;
     }
     let text_focused = egui.ctx.text_edit_focused();
-    let _ = d.dismiss_innermost(text_focused, &egui.ctx);
+    let _ = d.dismiss_innermost(text_focused);
 }
 
 #[cfg(test)]
@@ -600,10 +610,7 @@ pub fn handle_back_gesture(
     // two gestures is this last rung, which is why it is the only thing written
     // here.
     let text_focused = egui.ctx.text_edit_focused();
-    if dismissable
-        .dismiss_innermost(text_focused, &egui.ctx)
-        .is_none()
-    {
+    if dismissable.dismiss_innermost(text_focused).is_none() {
         // On the phone the last rung is "to the background", not "quit": quitting
         // ends the process there, so coming back was a cold start that had
         // forgotten the tab, the open chat and any call (`move_task_to_back`).

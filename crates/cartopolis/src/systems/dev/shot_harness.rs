@@ -3688,7 +3688,7 @@ pub fn hold_scripted_design_room(
         return;
     }
     // The awning selected, once it has a mesh to tint, so a capture shows the
-    // measurements along a selected part (`design_room::render_design_room_measures`).
+    // measurements along a selected part (`lib_design_room::drive_lib_design_room_overlays`).
     for (entity, part, _, meshed, selected) in &seeded {
         if crate::systems::design_room::DEMO_STALL[part.0].0 == "Awning" && meshed && !selected {
             commands
@@ -4539,7 +4539,7 @@ pub fn select_scripted_building(
 
 /// `--ui locate` lights the device-tracking switch and hands it a fix, so a
 /// capture can photograph the arrow that marks where the phone is
-/// (`systems::locate::render_locate_arrow`).
+/// (`systems::locate::place_locate_arrow`, drawn by `lib_locate`).
 ///
 /// **The fix is invented, and it has to be.** There is no location provider on a
 /// desktop or in a container — `LocationWatch::available()` is `false` and

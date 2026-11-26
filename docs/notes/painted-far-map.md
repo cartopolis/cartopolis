@@ -1,7 +1,7 @@
 ---
 topic: painted-far-map
 triggers: [painted.rs, render_revision.rs, BOLD_BORDER_TILE_M, countries.rs, countries.tsv, "atlas countries", MAP_EV100, DAY_FALL, map_light.wesl, ne-admin0-europe, hex_grid.wesl, hex_tile, apply_hex_grid, CARTO_HEX_GRID, lights_mask, GlobeNight, update_globe_night, GlobeCloudMode, CARTO_GLOBE_CLOUDS, CITY_LIGHT, globe_ocean.wesl, PAINTED_TWIN_ZOOM, PAINTED_FADE_M, PaintedTwin, twin_cache_key, painted_style, FarDetail, far_buildings, far_detail, FAR_STYLE_TILE_M, "palette::painted", place_names.rs, extract_place_labels, PlaceKind, "place names", "city banner", "macro view", "zoomed out"]
-updated: 2026-11-18
+updated: 2026-11-26
 ---
 
 # The far tiles are a painted map, and names come from the same tiles
@@ -142,7 +142,9 @@ synthetic border at a globe tile's size too.
 
 `systems::place_names` reads `place_labels` and `public_transport` from the
 vector tiles at z10 (towns, kept to 250 km up), z12 (districts, to 30 km) and z13
-(stations, to 20 km) around the camera, and paints them as an egui overlay. Each
+(stations, to 20 km) around the camera, and lays them out over the map
+(`place_names::lay_out_place_names`) for the component library to draw
+(`lib_place_names`; egui painted them until 2026-11-26). Each
 kind has a distance it is named to (`shows`), and names are placed biggest place
 first with room around district names, because at 3 km a tile holds dozens of
 neighbourhoods and the first build wrote all of them. Villages, hamlets and
@@ -165,10 +167,10 @@ Every drawn name is a click target (2026-11-02): a click or a long press opens
 the map's action ring on the place (`ContextMenuState::place`), offering
 only Go there, Route here and Lenses (asked to keep it short, 2026-11-02);
 Lenses centres the place under the crosshair, the "here" a lens reads, and
-puts up the shelf (`scenario::open_shelf`). Each name
-senses through its own `Area`, as a saved pin does, because a bare painter
-takes no clicks and the world's click handlers would then act on the ground
-underneath it.
+puts up the shelf (`scenario::open_shelf`). Each name is
+its own library node that takes the tap, as a saved pin is, so the world's
+click handlers do not act on the ground underneath it; the tap comes back to
+`lay_out_place_names` the frame after.
 
 ## From above: clouds as a setting, the night side
 

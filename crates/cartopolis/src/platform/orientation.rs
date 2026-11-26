@@ -519,7 +519,7 @@ mod android {
     /// two consumers.** The argument was that the view eases toward the bearing at
     /// ~8/s (`free_camera`'s follow-and-rotate rig), so anything faster is
     /// filtered away — which holds for the *camera* and does not hold at all for
-    /// the device arrow (`locate::render_locate_arrow`), which paints the reported
+    /// the device arrow (`locate::place_locate_arrow`), which shows the reported
     /// bearing raw, every frame. At 20 Hz a phone turned at a brisk 90°/s moves
     /// that arrow in 4.5° steps three to six frames apart, which is exactly what
     /// "the update rate seems low" looks like. At 60 Hz the step is 1.5° and lands

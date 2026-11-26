@@ -10,9 +10,10 @@
 //! phone. Every change goes through the `DesignerState` methods of
 //! `avatar_designer`.
 //!
-//! Drawn differently, because the library has no widget for them: a colour
-//! is picked from the palette only, and a skin, an eye colour or a colour is a round swatch
-//! button rather than a painted disc.
+//! Drawn differently, because the library has no widget for them: a skin, an
+//! eye colour or a colour is a round swatch button rather than a painted
+//! disc, and "Any colour" (hair, top, bottom) opens hue, saturation and
+//! lightness sliders with a swatch of the result rather than a colour wheel.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -185,7 +186,7 @@ impl Extra {
 }
 
 /// The colours a look can leave as they are.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tint {
     Hair,
     Top,
@@ -193,6 +194,24 @@ enum Tint {
 }
 
 impl Tint {
+    /// Its palette: the swatches, and where "Any colour" starts when the
+    /// look leaves it as it is.
+    fn palette(self) -> &'static [[u8; 3]] {
+        match self {
+            Tint::Hair => &designer::HAIR_COLOURS,
+            Tint::Top | Tint::Bottom => &designer::CLOTH_COLOURS,
+        }
+    }
+
+    /// The word in its controls' titles and ids.
+    fn what(self) -> &'static str {
+        match self {
+            Tint::Hair => "hair",
+            Tint::Top => "top",
+            Tint::Bottom => "bottom",
+        }
+    }
+
     fn get(self, look: &HumanLook) -> Option<[u8; 3]> {
         match self {
             Tint::Hair => look.hair_colour,
@@ -229,6 +248,8 @@ enum Act {
     Brows(&'static str),
     Extra(Extra, Option<&'static str>),
     Colour(Tint, Option<[u8; 3]>),
+    /// "Any colour": open (or shut) the picker for this colour.
+    AnyColour(Tint),
     Separates,
     Outfit(&'static str),
     Shoes(&'static str),
@@ -259,9 +280,73 @@ struct Live {
     fine_tune: Signal<bool>,
     body_parts: Signal<bool>,
     sliders: Rc<Vec<Slider>>,
+    /// Which colour's free picker is open, if any.
+    picking: Signal<Option<Tint>>,
+    /// The picker's hue (0–360), saturation and lightness (0–100), made once
+    /// so a drag is never re-rendered from under the pointer.
+    hsl: [Signal<f64>; 3],
+    /// What the picker's sliders last said, to tell a drag from a colour
+    /// picked elsewhere (a swatch, an undo).
+    hsl_last: Rc<Cell<[f64; 3]>>,
     acts: Rc<RefCell<Vec<Act>>>,
     /// A sheet over the bottom half, for a phone.
     compact: bool,
+}
+
+/// Hue (degrees), saturation and lightness (percent) as a colour.
+fn hsl_to_rgb([h, s, l]: [f64; 3]) -> [u8; 3] {
+    let (s, l) = ((s / 100.0).clamp(0.0, 1.0), (l / 100.0).clamp(0.0, 1.0));
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    [r, g, b].map(|v| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8)
+}
+
+/// A colour as hue (degrees), saturation and lightness (percent).
+fn rgb_to_hsl(c: [u8; 3]) -> [f64; 3] {
+    let [r, g, b] = c.map(|v| f64::from(v) / 255.0);
+    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d == 0.0 {
+        return [0.0, 0.0, l * 100.0];
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    [h * 60.0, s * 100.0, l * 100.0]
+}
+
+/// The picker's sliders, set to `c`, and remembered as not dragged. Whole
+/// steps, as the sliders move, so a slider never snaps a seeded value into
+/// what would look like a drag.
+fn seed_picker(live: &Live, c: [u8; 3]) {
+    let hsl = rgb_to_hsl(c).map(f64::round);
+    for (model, v) in live.hsl.iter().zip(hsl) {
+        if model.get_untracked() != v {
+            model.set(v);
+        }
+    }
+    live.hsl_last.set(hsl);
+}
+
+/// The picker's sliders as they stand.
+fn picker_hsl(live: &Live) -> [f64; 3] {
+    [0, 1, 2].map(|i| live.hsl[i].get_untracked())
 }
 
 impl Live {
@@ -335,6 +420,9 @@ pub fn drive_lib_avatar(
                     fine_tune: signal(false),
                     body_parts: signal(false),
                     sliders: Rc::new(sliders(&look)),
+                    picking: signal(None),
+                    hsl: [signal(0.0), signal(0.0), signal(0.0)],
+                    hsl_last: Rc::new(Cell::new([0.0; 3])),
                     look: signal(look),
                     acts: Rc::new(RefCell::new(Vec::new())),
                     compact: metrics.compact(),
@@ -362,6 +450,15 @@ pub fn drive_lib_avatar(
                         s.last.set(v);
                     }
                 }
+                // The free picker's sliders moved → its colour, as egui's
+                // picker wrote it.
+                if let Some(tint) = live.picking.get_untracked() {
+                    let hsl = picker_hsl(live);
+                    if hsl != live.hsl_last.get() {
+                        live.hsl_last.set(hsl);
+                        tint.set(&mut look, Some(hsl_to_rgb(hsl)));
+                    }
+                }
                 // The taps of the frame.
                 let saved = store.data.appearance.human.clone();
                 let acts: Vec<Act> = std::mem::take(&mut *live.acts.borrow_mut());
@@ -370,6 +467,17 @@ pub fn drive_lib_avatar(
                     match a {
                         Act::Apply => apply = true,
                         Act::Close => close = true,
+                        Act::AnyColour(tint) => {
+                            if live.picking.get_untracked() == Some(tint) {
+                                live.picking.set(None);
+                            } else {
+                                // Starting from the colour worn, or the
+                                // palette's first, as egui's picker did.
+                                let from = tint.get(&look).unwrap_or(tint.palette()[0]);
+                                seed_picker(live, from);
+                                live.picking.set(Some(tint));
+                            }
+                        }
                         a => act(a, &mut look, &mut state, saved.as_ref(), now),
                     }
                 }
@@ -454,6 +562,12 @@ fn mirror(
         }
         s.last.set(v);
     }
+    // A colour picked elsewhere (a swatch, an undo) → the open picker.
+    if let Some(c) = live.picking.get_untracked().and_then(|t| t.get(look)) {
+        if hsl_to_rgb(picker_hsl(live)) != c {
+            seed_picker(live, c);
+        }
+    }
     if live.tab.get_untracked() != state.tab {
         live.tab.set(state.tab);
     }
@@ -508,7 +622,7 @@ fn act(
         Act::Shoes(name) => look.shoes = name.into(),
         Act::Hat(name) => look.hat = name.map(Into::into),
         // The system's own.
-        Act::Apply | Act::Close => {}
+        Act::Apply | Act::Close | Act::AnyColour(_) => {}
     }
 }
 
@@ -642,30 +756,90 @@ fn swatch(l: &Live, c: [u8; 3], chosen: bool, title: &str, a: Act) -> View {
     view! { <button title={title} style={style} on:click={click}></button> }
 }
 
-/// "As it is" and the palette for one of the look's colours.
-fn colours(l: &Live, what: &'static str, palette: &'static [[u8; 3]], tint: Tint) -> View {
-    let l = l.clone();
-    let draw = move || -> View {
-        let look = l.look.get();
-        let value = tint.get(&look);
-        let mut items = vec![chip(
-            &l,
-            "As it is",
-            value.is_none(),
-            Act::Colour(tint, None),
-        )];
-        for c in palette {
-            items.push(swatch(
+/// "As it is", the palette and "Any colour" for one of the look's colours,
+/// and under them the free picker while it is open.
+fn colours(l: &Live, tint: Tint) -> View {
+    let row = {
+        let l = l.clone();
+        move || -> View {
+            let look = l.look.get();
+            let open = l.picking.get() == Some(tint);
+            let value = tint.get(&look);
+            let palette = tint.palette();
+            let mut items = vec![chip(
                 &l,
-                *c,
-                value == Some(*c),
-                what,
-                Act::Colour(tint, Some(*c)),
-            ));
+                "As it is",
+                value.is_none(),
+                Act::Colour(tint, None),
+            )];
+            for c in palette {
+                items.push(swatch(
+                    &l,
+                    *c,
+                    value == Some(*c),
+                    tint.what(),
+                    Act::Colour(tint, Some(*c)),
+                ));
+            }
+            // Pressed while its picker is open, or while the colour worn is
+            // none of the palette's.
+            let any = open || value.is_some_and(|c| !palette.contains(&c));
+            items.push(chip(&l, "Any colour", any, Act::AnyColour(tint)));
+            wrap(items)
         }
-        wrap(items)
     };
-    draw.into_view()
+    // Apart from the row, which the look redraws: the picker's sliders must
+    // not be rebuilt by the colour they are dragging.
+    let picker = {
+        let l = l.clone();
+        move || -> View {
+            if l.picking.get() == Some(tint) {
+                picker(&l, tint)
+            } else {
+                View::Empty
+            }
+        }
+    };
+    view! {
+        {row}
+        {picker}
+    }
+}
+
+/// The free colour picker: a swatch of the colour as it stands, and hue,
+/// saturation and lightness sliders.
+fn picker(l: &Live, tint: Tint) -> View {
+    let swatch = {
+        let hsl = l.hsl.clone();
+        move || {
+            let [r, g, b] = hsl_to_rgb([hsl[0].get(), hsl[1].get(), hsl[2].get()]);
+            format!(
+                "flex: none; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--m-border); background: rgb({r}, {g}, {b})"
+            )
+        }
+    };
+    let degrees: Rc<dyn Fn(f64) -> String> = Rc::new(|v: f64| format!("{:.0}°", v));
+    let percent: Rc<dyn Fn(f64) -> String> = Rc::new(|v: f64| format!("{:.0}%", v));
+    let what = tint.what();
+    let title = format!("Any {what} colour");
+    let [hue, sat, light] = l.hsl.clone();
+    let (hue_id, sat_id, light_id) = (
+        format!("av-any-{what}-hue"),
+        format!("av-any-{what}-saturation"),
+        format!("av-any-{what}-lightness"),
+    );
+    view! {
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 12px; border: 1px solid var(--m-border); border-radius: var(--m-radius-lg); background: var(--m-surface-raised)">
+            <div style="display: flex; align-items: center; gap: 12px">
+                <div style={swatch} title={title}></div>
+                <span style="flex: 1; color: var(--m-text-dim); font-size: var(--m-font-size-sm)">"Any colour: slide to mix it."</span>
+                <Button variant=Variant::Ghost size=Size::Sm onclick={l.act(Act::AnyColour(tint))}>"Done"</Button>
+            </div>
+            <FieldSlider model={hue} min=0.0 max=360.0 step=1.0 format={Some(degrees)} label="Hue" id={hue_id} />
+            <FieldSlider model={sat} min=0.0 max=100.0 step=1.0 format={Some(percent.clone())} label="Saturation" id={sat_id} />
+            <FieldSlider model={light} min=0.0 max=100.0 step=1.0 format={Some(percent)} label="Lightness" id={light_id} />
+        </div>
+    }
 }
 
 /// The swatches for a choice by name (skin, eyes).
@@ -863,7 +1037,7 @@ fn skin_and_hair_tab(l: &Live) -> View {
         {note("Your age and body shape choose among the family's skins; the tone shades it.")}
         {block("Eyes", named_swatches(l, &designer::EYES, |look| look.eyes.as_str(), Act::Eyes))}
         {block("Hair", hair)}
-        {colours(l, "hair", &designer::HAIR_COLOURS, Tint::Hair)}
+        {colours(l, Tint::Hair)}
         {block("Brows", brows)}
         {block("Beard", extra_chips(l, Extra::Beard, true))}
         {note("Brows, lashes and beard take the hair's colour.")}
@@ -935,11 +1109,11 @@ fn clothes_tab(l: &Live) -> View {
     });
     let top = view! {
         {separates(Extra::Top)}
-        {colours(l, "top", &designer::CLOTH_COLOURS, Tint::Top)}
+        {colours(l, Tint::Top)}
     };
     let bottom = view! {
         {separates(Extra::Bottom)}
-        {colours(l, "bottom", &designer::CLOTH_COLOURS, Tint::Bottom)}
+        {colours(l, Tint::Bottom)}
     };
     view! {
         {block("Outfit", outfits)}
@@ -1068,6 +1242,27 @@ mod tests {
             let mut again = look.clone();
             s.key.write(&mut again, v);
             assert_eq!(again, look, "{:?}", s.key);
+        }
+    }
+
+    /// The free picker's mixing: the corners of the colour space, and a
+    /// colour read back through it comes out within a step of itself.
+    #[test]
+    fn hsl_mixes_the_colour_it_reads() {
+        assert_eq!(hsl_to_rgb([0.0, 100.0, 50.0]), [255, 0, 0]);
+        assert_eq!(hsl_to_rgb([120.0, 100.0, 50.0]), [0, 255, 0]);
+        assert_eq!(hsl_to_rgb([240.0, 100.0, 50.0]), [0, 0, 255]);
+        assert_eq!(hsl_to_rgb([0.0, 0.0, 100.0]), [255, 255, 255]);
+        assert_eq!(hsl_to_rgb([360.0, 0.0, 0.0]), [0, 0, 0]);
+        for c in designer::HAIR_COLOURS
+            .iter()
+            .chain(designer::CLOTH_COLOURS.iter())
+        {
+            assert_eq!(hsl_to_rgb(rgb_to_hsl(*c)), *c, "{c:?} exactly");
+            let rounded = hsl_to_rgb(rgb_to_hsl(*c).map(f64::round));
+            for (a, b) in rounded.iter().zip(c) {
+                assert!(a.abs_diff(*b) <= 3, "{c:?} → {rounded:?} in whole steps");
+            }
         }
     }
 

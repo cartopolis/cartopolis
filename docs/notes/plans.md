@@ -1,15 +1,18 @@
 ---
 topic: plans
 triggers: [plans.rs, plans_watch, UITVOERINGPROGRAMMA, maintenance programme, WorkKind, FollowPlans, PlansFollow, plans_follow, crates/atlas/src/plans.rs, systems::plans, "/plans/groningen.json", plans_refresh, CARTO_PLANS_URL, bekendmakingen, Gemeenteblad, gemeenteraad, raadsinformatie]
-updated: 2026-11-18
+updated: 2026-11-26
 ---
 
 # Plans: notices and council business on the map
 
 Layers ▸ Places ▸ Plans draws what Gemeente Groningen publishes about a place,
 at the place, and the council business that names it. Atlas builds one feed
-from three open sources (`atlas::plans`), the client draws it
-(`systems::plans`). The design is `docs/mockups/plans-and-decisions/`.
+from three open sources (`atlas::plans`), the client places it over the map
+(`systems::plans`, `place_plans`: the marks, the outlines, a tap) and the
+component library draws the marks, the card and the news chip
+(`lib_plans`; egui painted them until 2026-11-26). The design is
+`docs/mockups/plans-and-decisions/`.
 
 ## The sources, measured 2026-10-30
 

@@ -35,12 +35,15 @@
 //! The component library (`lib_chats` and the screens it holds) draws the
 //! panel; [`drive_chats`] is the panel's state: what is read, the pictures
 //! being picked, and what the library's dialogs and picture viewer are
-//! handed. A chat's World view has no library edition yet, and is drawn in
-//! [`world_view`].
+//! handed. A chat's World view (its header and composer pills, drawn by
+//! `lib_chat_overlay`) has its state in [`world_view`].
 
 mod world_view;
 
-pub use world_view::render_chat_world;
+pub use world_view::drive_chat_world;
+#[cfg(feature = "ui-lib")]
+pub(crate) use world_view::{AttachMenu, WorldComposer};
+pub(crate) use world_view::{WorldBar, WorldTap};
 
 use crate::utils::clock::unix_ms;
 use bevy::prelude::*;
@@ -55,7 +58,7 @@ use crate::systems::user_store::SavedScreen;
 use crate::systems::{icons, theme};
 // The discs and buttons the world draws too (`systems::discs`), named here as
 // they were before they moved out for the web build.
-pub(crate) use crate::systems::discs::{circle_button, kind_of, paint_avatar, tone_for, ChatKind};
+pub(crate) use crate::systems::discs::{kind_of, paint_avatar, tone_for, ChatKind};
 
 #[derive(Resource, Default)]
 pub struct ChatsView {
@@ -126,6 +129,16 @@ pub struct ChatsView {
     /// hand it over (the panel shut).
     #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     pub lib_viewing: Option<crate::systems::chat_pictures::PictureRef>,
+    /// A chat's World view this frame, for `lib_chat_overlay` to draw;
+    /// `None` when it is not up. Written by [`drive_chat_world`].
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+    pub(crate) lib_world: Option<WorldBar>,
+    /// The World view's taps since [`drive_chat_world`] last ran, left by
+    /// `lib_chat_overlay`.
+    pub(crate) lib_world_taps: Vec<WorldTap>,
+    /// Back or Escape for the World view: the dismissal ladder's page rung
+    /// (`dismiss`), done by [`drive_chat_world`] as its back.
+    pub(crate) world_back: bool,
 }
 
 impl ChatsView {

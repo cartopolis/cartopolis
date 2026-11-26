@@ -305,7 +305,7 @@ pub struct LocateTracking {
     /// not the raw fix.
     ///
     /// Two consumers, and they must agree or the marker and the map it sits on
-    /// move to different clocks. `render_locate_arrow` projects it, and the
+    /// move to different clocks. `place_locate_arrow` projects it, and the
     /// camera arms measure this frame's step from it — the globe's especially,
     /// which rotates the whole planet by the arc between the previous value and
     /// this one and would swing by a whole fix's worth on *every* frame if it
@@ -596,21 +596,30 @@ fn move_camera_to_place(
 /// (`systems::place_pins`): this marker has to stay findable at 2 m and at
 /// 20,000 km, and no size in metres does both.
 pub(crate) const ARROW_HALF_LENGTH: f32 = 11.0;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const ARROW_HALF_WIDTH: f32 = 6.3;
 /// The contact shadow's radius, the heading-less disc's, and the two rims.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const SHADOW_R: f32 = ARROW_HALF_LENGTH * 0.55;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const DOT_R: f32 = ARROW_HALF_WIDTH * 0.72;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const DOT_RIM: f32 = 2.0;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const KITE_RIM: f32 = 1.6;
 /// The halo's wash (alpha of the accent, of 255) and hairline (share of
 /// `accent_ring`'s alpha), and the hairline's width.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const HALO_FILL_ALPHA: u8 = 26;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const HALO_RIM_ALPHA: f32 = 0.55;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const HALO_RIM: f32 = 1.0;
 
 /// The kite's outline — nose, left tail, notch, right tail — as (along,
-/// across) the heading, in screen points from the fix. One table for egui's
-/// painter and the library's boxes (`lib_locate`).
+/// across) the heading, in screen points from the fix, for the library's
+/// boxes (`lib_locate`).
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub(crate) const KITE: [(f32, f32); 4] = [
     (ARROW_HALF_LENGTH, 0.0),
     (-0.72 * ARROW_HALF_LENGTH, -ARROW_HALF_WIDTH),
@@ -618,27 +627,25 @@ pub(crate) const KITE: [(f32, f32); 4] = [
     (-0.72 * ARROW_HALF_LENGTH, ARROW_HALF_WIDTH),
 ];
 
-/// The device arrow for the component library (`lib_locate`): with
-/// [`Self::lib`] on, [`render_locate_arrow`] keeps every decision — whether
-/// it shows, where, how far the halo reaches, which way the kite points —
-/// and publishes it in [`Self::lib_view`] instead of painting. Inserted by
-/// `lib_locate` the first frame it is on; absent, egui paints.
+/// The device arrow for the component library (`lib_locate`):
+/// [`place_locate_arrow`] keeps every decision — whether it shows, where,
+/// how far the halo reaches, which way the kite points — and publishes it
+/// in [`Self::lib_view`]. Inserted by `lib_locate` the first frame.
 #[derive(Resource, Default)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct LocateArrow {
-    pub lib: bool,
     /// This frame's arrow, `None` when nothing is drawn.
     pub lib_view: Option<ArrowView>,
 }
 
-/// One frame of the device arrow, in egui points.
+/// One frame of the device arrow, in UI points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
 pub struct ArrowView {
     /// The map's rect, which everything is clipped to.
-    pub clip: egui::Rect,
+    pub clip: Rect,
     /// Where the fix is drawn.
-    pub here: egui::Pos2,
+    pub here: Vec2,
     /// The accuracy halo's radius, already floored out and clamped
     /// ([`halo_radius`]); `None` draws none.
     pub halo: Option<f32>,
@@ -698,20 +705,20 @@ const HEADING_MIN_SCREEN: f32 = 0.75;
 /// nothing anywhere on screen distinguished a receiver locked on from one that
 /// had been refused permission.
 ///
-/// **Painted, not meshed, and the reasons are `place_pins`' verbatim.** A marker
-/// sized in metres vanishes from altitude and is a tower at street level; this one
-/// must read from both. It also has to work in the space tier, where the flat
-/// frame the geometry would live in does not exist. So it is projected and drawn
-/// in screen points, through the same two helpers the saved-place pins use.
+/// **Drawn over the map, not meshed, and the reasons are `place_pins`' verbatim.**
+/// A marker sized in metres vanishes from altitude and is a tower at street
+/// level; this one must read from both. It also has to work in the space tier,
+/// where the flat frame the geometry would live in does not exist. So it is
+/// projected into screen points, through the same two helpers the saved-place
+/// pins use, and the library draws it (`lib_locate`).
 ///
-/// **It paints and never senses.** The pins each own an `Area` because they are
-/// clickable, and that is why they must *cull* rather than clip — a clipped-away
-/// pin is still an interactive rectangle stealing taps. This arrow answers a
-/// question and offers no action, so it is a bare painter: clipping it is enough,
-/// and it can never take a tap meant for the dock underneath it.
+/// **It shows and never senses.** The pins are tappable, and that is why they
+/// must *cull* rather than clip — a clipped-away pin is still an interactive
+/// rectangle stealing taps. This arrow answers a question and offers no
+/// action, so clipping it is enough, and it can never take a tap meant for the
+/// dock underneath it.
 #[allow(clippy::too_many_arguments)]
-pub fn render_locate_arrow(
-    mut egui: crate::systems::egui_manager::EguiMut,
+pub fn place_locate_arrow(
     tracking: Res<LocateTracking>,
     camera_state: Res<CameraState>,
     cameras: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
@@ -722,17 +729,18 @@ pub fn render_locate_arrow(
     lens: Res<crate::systems::scenario::LensSlot>,
     route: Res<crate::systems::navigation::RouteState>,
     driver: Res<DriverState>,
-    mut arrow: Option<ResMut<LocateArrow>>,
+    arrow: Option<ResMut<LocateArrow>>,
     chrome: Res<crate::systems::dock::MapChrome>,
+    input: Res<crate::systems::ui_input::UiInput>,
+    metrics: Res<crate::systems::ui_input::UiMetrics>,
 ) {
-    // Redrawn on the frames the map moves under it, as the pins are.
-    let mut anchored = crate::systems::egui_manager::WorldAnchored::new(egui.ctx(), "locate_arrow");
-    // With the library drawing, every early return below leaves no arrow.
-    let lib = arrow.as_ref().is_some_and(|a| a.lib);
-    if let Some(a) = arrow.as_mut() {
-        if a.lib_view.is_some() {
-            a.lib_view = None;
-        }
+    // Inserted by `lib_locate` the first frame. Cleared first, so every early
+    // return below leaves no arrow.
+    let Some(mut arrow) = arrow else {
+        return;
+    };
+    if arrow.lib_view.is_some() {
+        arrow.lib_view = None;
     }
     // Driver mode draws its own arrow, in the world, and owns the screen besides.
     // Two "you are here" markers is one too many.
@@ -758,12 +766,10 @@ pub fn render_locate_arrow(
         return;
     };
 
-    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route, &lens);
+    let map_rect = crate::systems::place_pins::map_area(&input, &metrics, &keyboard, &route, &lens);
     if map_rect.width() < 4.0 * ARROW_HALF_LENGTH || map_rect.height() < 4.0 * ARROW_HALF_LENGTH {
         return; // panels have taken the screen (compact layout)
     }
-    let ui_scale = egui.ui_scale();
-    let ctx = egui.ctx_mut().clone();
 
     let cam_world = crate::grid::anchored_position_f64(cam_cell, cam_tf.translation);
     let in_space = globe.in_space(cam_cell, cam_tf);
@@ -772,15 +778,14 @@ pub fn render_locate_arrow(
     // `Update`, so the global one is a frame stale and the marker would swim over
     // a map that is standing still. `place_pins` documents the whole trap.
     let cam_view = GlobalTransform::from(Transform::from_rotation(cam_tf.rotation));
-    let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
 
-    let project = |lat: f64, lng: f64| -> Option<egui::Pos2> {
+    let project = |lat: f64, lng: f64| -> Option<Vec2> {
         let delta = crate::systems::place_pins::place_delta(
             &globe, anchor, cam_world, in_space, lat, lng, &terrain,
         )?;
         cam.world_to_viewport(&cam_view, delta.as_vec3())
             .ok()
-            .map(|p| to_ui(p))
+            .map(|p| metrics.window_to_ui(p))
     };
     let Some(here) = project(here_lat, here_lng) else {
         return; // over the horizon, behind the camera, or off the flat frame
@@ -789,7 +794,6 @@ pub fn render_locate_arrow(
     {
         return;
     }
-    anchored.at(here);
 
     // The compass first and the GNSS course second. The compass is where the
     // phone is *pointing*, which is what a "you are here" arrow means and what
@@ -811,7 +815,7 @@ pub fn render_locate_arrow(
         let (lat, lng) = step_along_bearing(here_lat, here_lng, b, probe);
         let ahead = project(lat, lng)?;
         let dir = ahead - here;
-        (dir.length() >= HEADING_MIN_SCREEN).then(|| dir.normalized())
+        (dir.length() >= HEADING_MIN_SCREEN).then(|| dir.normalize())
     });
 
     // The accuracy halo, measured the same way the heading is: project a second
@@ -827,47 +831,26 @@ pub fn render_locate_arrow(
         let (lat, lng) = step_along_bearing(here_lat, here_lng, 90.0, f64::from(m));
         Some((project(lat, lng)? - here).length())
     });
-    // The arrow turns and the halo grows where the marker stands still — a
-    // camera orbiting the avatar it follows does both — so those are part of the
-    // picture too. The facing is scaled out so the move threshold stays a hair.
-    if let Some(f) = facing {
-        anchored.at(here + f * 100.0);
-    }
-    if let Some(r) = accuracy_px {
-        anchored.at(egui::pos2(r, -1.0));
-    }
     let halo = halo_radius(accuracy_px, map_rect);
-    if lib {
-        // The library draws the same picture from the same numbers; egui
-        // paints nothing.
-        let marker = match (want_marker, facing) {
-            (false, _) => MarkerLook::None,
-            (true, None) => MarkerLook::Disc,
-            // `rotate(θ)` takes up the screen, (0, −1), to (sin θ, −cos θ).
-            (true, Some(f)) => MarkerLook::Arrow {
-                turn_deg: f.x.atan2(-f.y).to_degrees(),
-            },
-        };
-        if let Some(a) = arrow.as_mut() {
-            a.lib_view = Some(ArrowView {
-                clip: map_rect,
-                here,
-                halo,
-                marker,
-            });
-        }
-        return;
-    }
-    let painter = ctx
-        .layer_painter(egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("locate_arrow"),
-        ))
-        .with_clip_rect(map_rect);
-    paint_accuracy_halo(&painter, here, halo);
-    if want_marker {
-        paint_device_marker(&painter, here, facing);
-    }
+    // The kite when a heading is known, a plain disc when it is not. **The
+    // disc is not a lesser arrow, it is a different claim**: a phone with no
+    // magnetometer that has not moved knows where it is and genuinely does not
+    // know which way it faces; an arrow anyway would point somewhere with total
+    // confidence and be wrong most of the time.
+    let marker = match (want_marker, facing) {
+        (false, _) => MarkerLook::None,
+        (true, None) => MarkerLook::Disc,
+        // `rotate(θ)` takes up the screen, (0, −1), to (sin θ, −cos θ).
+        (true, Some(f)) => MarkerLook::Arrow {
+            turn_deg: f.x.atan2(-f.y).to_degrees(),
+        },
+    };
+    arrow.lib_view = Some(ArrowView {
+        clip: map_rect,
+        here,
+        halo,
+        marker,
+    });
 }
 
 /// The smallest halo worth drawing, in screen points. Below this it is inside the
@@ -893,87 +876,9 @@ const HALO_MAX_FRACTION: f32 = 0.45;
 ///
 /// Nothing is drawn when the halo is smaller than the marker: a fix that good has
 /// no uncertainty worth showing, and the absence *is* the report.
-fn halo_radius(radius: Option<f32>, map_rect: egui::Rect) -> Option<f32> {
+fn halo_radius(radius: Option<f32>, map_rect: Rect) -> Option<f32> {
     let radius = radius.filter(|r| r.is_finite() && *r >= HALO_MIN_PTS)?;
     Some(radius.min(map_rect.width().min(map_rect.height()) * HALO_MAX_FRACTION))
-}
-
-/// Paint the halo [`halo_radius`] measured.
-fn paint_accuracy_halo(painter: &egui::Painter, here: egui::Pos2, radius: Option<f32>) {
-    use crate::systems::theme;
-    let Some(radius) = radius else {
-        return;
-    };
-    // A wash and a hairline rather than a filled disc: the halo lies over the map
-    // the marker is being read against, and anything heavier hides the street the
-    // fix is claiming to be on. The alpha is low enough that overlapping it with
-    // the route line, a place pin or the avatar leaves all of them legible.
-    painter.circle_filled(
-        here,
-        radius,
-        egui::Color32::from_rgba_unmultiplied(
-            theme::p32().accent.r(),
-            theme::p32().accent.g(),
-            theme::p32().accent.b(),
-            HALO_FILL_ALPHA,
-        ),
-    );
-    painter.circle_stroke(
-        here,
-        radius,
-        egui::Stroke::new(
-            HALO_RIM,
-            theme::p32().accent_ring.gamma_multiply(HALO_RIM_ALPHA),
-        ),
-    );
-}
-
-/// Paint the marker: the navigation kite when a heading is known, a plain disc
-/// when it is not.
-///
-/// **The disc is not a lesser arrow, it is a different claim.** A phone with no
-/// magnetometer that has not moved knows where it is and genuinely does not know
-/// which way it faces; drawing an arrow anyway would point somewhere with total
-/// confidence and be wrong most of the time. This is the same rule the GPS
-/// accuracy chip follows in driver mode — say the weaker thing rather than
-/// dress it up as the stronger one.
-fn paint_device_marker(painter: &egui::Painter, here: egui::Pos2, facing: Option<egui::Vec2>) {
-    use crate::systems::theme;
-    // A soft contact shadow, so the marker reads as lying on the map rather than
-    // floating over it — the pins do the same and for the same reason.
-    painter.circle_filled(here, SHADOW_R, egui::Color32::from_black_alpha(50));
-    let Some(forward) = facing else {
-        painter.circle_filled(here, DOT_R, theme::p32().accent);
-        painter.circle_stroke(here, DOT_R, egui::Stroke::new(DOT_RIM, theme::p32().cream));
-        return;
-    };
-    // Screen-space right, for a screen whose y grows downward.
-    let right = egui::vec2(-forward.y, forward.x);
-    let at = |along: f32, across: f32| here + forward * along + right * across;
-
-    // The same silhouette as the locate button's icon and driver mode's kite
-    // (`driver::arrow_mesh`) — nose, left tail, the notch between them, right
-    // tail — which is the point: the button, the marker and the vehicle read as
-    // one object rather than as three unrelated pointers.
-    let [nose, left, notch, right_tail] = KITE.map(|(along, across)| at(along, across));
-
-    // Filled as two triangles about the notch rather than as one polygon: the
-    // kite is *concave* there, and epaint's fill assumes convexity — a concave
-    // `convex_polygon` renders as a bow tie. The two share the nose–notch edge,
-    // so with one colour and no per-triangle stroke there is no seam.
-    for tri in [[nose, left, notch], [nose, notch, right_tail]] {
-        painter.add(egui::Shape::convex_polygon(
-            tri.to_vec(),
-            theme::p32().accent,
-            egui::Stroke::NONE,
-        ));
-    }
-    // The rim goes round the whole outline in one closed path, which is what
-    // hides the shared edge the fill was split on.
-    painter.add(egui::Shape::closed_line(
-        vec![nose, left, notch, right_tail],
-        egui::Stroke::new(KITE_RIM, theme::p32().cream),
-    ));
 }
 
 /// The point `distance_m` away from `(lat, lng)` along a great circle on the

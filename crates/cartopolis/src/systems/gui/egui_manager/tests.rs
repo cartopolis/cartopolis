@@ -21,50 +21,6 @@ fn animating_ui_is_redrawn_on_its_deadline_and_not_before() {
     assert!(!geometry_still_current(ANIMATING_REDRAW, 0.3));
 }
 
-/// Pins that stood still on the frames nobody touched the screen.
-///
-/// A world-anchored overlay has to defeat the skip on the frames it moved and
-/// on no others: the first is the bug, the second would tessellate the whole
-/// UI sixty times a second for as long as one pin is on a still map.
-#[test]
-fn an_overlay_on_the_world_is_redrawn_when_the_world_moves_under_it() {
-    let ctx = egui::Context::default();
-    let pass = |at: Option<egui::Pos2>| {
-        ctx.begin_pass(egui::RawInput::default());
-        let mut anchored = WorldAnchored::new(&ctx, "test");
-        if let Some(p) = at {
-            anchored.at(p);
-        }
-        drop(anchored);
-        ctx.end_pass_unpainted()
-            .viewport_output
-            .get(&egui::ViewportId::ROOT)
-            .map_or(std::time::Duration::MAX, |v| v.repaint_delay)
-    };
-    let still = |at| {
-        for _ in 0..4 {
-            pass(at);
-        }
-        pass(at)
-    };
-    let here = egui::pos2(100.0, 100.0);
-
-    assert_eq!(
-        still(Some(here)),
-        std::time::Duration::MAX,
-        "a still map keeps the skip"
-    );
-    assert!(
-        !geometry_still_current(pass(Some(here + egui::vec2(0.5, 0.0))), 0.0),
-        "half a point of camera movement is a new picture"
-    );
-    assert_eq!(still(Some(here)), std::time::Duration::MAX);
-    assert!(
-        !geometry_still_current(pass(None), 0.0),
-        "a pin that went has to be drawn gone"
-    );
-}
-
 use bevy::input::InputPlugin;
 use bevy::window::{
     CursorMoved, ExitCondition, PrimaryWindow, WindowCloseRequested, WindowEvent, WindowPlugin,
@@ -976,7 +932,7 @@ fn every_root_ui_panel_is_in_the_chain() {
         .map(|(block, _)| block.to_string())
         .expect("the panel chain still exists in systems/gui/plugin.rs");
     assert!(
-        chain.contains("drive_main_menu") && chain.contains("render_locate_arrow"),
+        chain.contains("drive_main_menu") && chain.contains("drive_dock"),
         "the chain block was extracted but looks wrong — the markers in \
              systems/gui/plugin.rs moved"
     );

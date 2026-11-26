@@ -11,23 +11,17 @@
 //! overlay, exactly as every 2D map draws it, and it never occludes or is
 //! occluded — it hovers over the map like a stuck-on marker.
 //!
-//! **Where it may be drawn.** egui paints floating `Area`s above panels, so pins
-//! are culled against the free central area of the viewport
-//! (`Ui::available_rect_before_wrap` after every side panel has taken its space,
-//! which is why this system runs last of the UI systems). Without that, a pin
-//! behind the Places panel would paint on top of the list it belongs to.
+//! **Where it may be drawn.** Pins are culled against the map: the viewport
+//! less the side panels, the keyboard, the dock's bars, the route sheet and
+//! the lens ([`map_area`]), and clear of the map's round buttons
+//! ([`clear_of_chrome`]). Without that, a pin behind the Places panel would
+//! stand on the list it belongs to, and one over a button would take its tap.
 //!
 //! **Staying put while the camera moves.** A pin is projected every frame, so it
-//! is only as steady as its projection. Two things make one wobble and neither is
-//! about precision in the usual sense: projecting through the camera's
+//! is only as steady as its projection. Projecting through the camera's
 //! `GlobalTransform` uses last frame's orientation (big_space propagates in
-//! `PostUpdate`; this runs in `Update`), and egui rounds each pin's `Area` to a
-//! whole physical pixel. Both are handled below — the camera basis is rebuilt from
-//! this frame's `Transform`, and the silhouette is painted at the exact sub-pixel
-//! tip rather than at the rounded rect. See `docs/notes/screen-overlay-projection.md`.
-//! A third made them stand still and jump: on a frame with no input egui keeps
-//! last frame's drawing, so every tip is recorded in a `WorldAnchored`, which asks
-//! for the redraw when one moved.
+//! `PostUpdate`; this runs in `Update`), so the camera basis is rebuilt from
+//! this frame's `Transform`. See `docs/notes/screen-overlay-projection.md`.
 //!
 //! Below the space tier a place is placed through the anchored Mercator frame
 //! (`crate::grid::lat_lng_to_world`) — the same frame the tiles are laid in, so the
@@ -35,12 +29,11 @@
 //! taken on the globe itself (`globe::GlobeState::direction_local`) and pins on
 //! the far side are dropped by the horizon test.
 //!
-//! **Two editions, one placing.** Where every marker goes, which are culled
-//! and what a tap on one does are worked out here once; egui paints them, or
-//! — with [`PlacePins::lib`] on — the component library does
-//! (`systems::lib_pins`), from the list this system publishes in
-//! [`PlacePins::lib_view`], and its taps come back through
-//! [`PlacePins::lib_tapped`] to the same code a click on egui's pin runs.
+//! **Placed here, drawn by the library.** Where every marker goes, which are
+//! culled and what a tap on one does are worked out here; the component
+//! library draws them (`systems::lib_pins`) from the list this system
+//! publishes in [`PlacePins::lib_view`], and its taps come back through
+//! [`PlacePins::lib_tapped`].
 
 use crate::components::FreeCamera;
 #[cfg(feature = "comms")]
@@ -48,7 +41,6 @@ use crate::components::{Avatar, RemoteAvatar};
 use crate::resources::MapAnchor;
 #[cfg(feature = "comms")]
 use crate::systems::chat_people;
-use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use bevy::ecs::system::SystemParam;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -56,22 +48,18 @@ use big_space::prelude::GridCell;
 
 use crate::grid::anchored_position_f64;
 use crate::grid::lat_lng_to_world;
-use crate::systems::egui_manager::EguiManager;
 use crate::systems::geo_nav::{GeoNavState, Teleport};
 use crate::systems::globe::GlobeState;
+#[cfg(feature = "comms")]
 use crate::systems::theme;
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use crate::systems::user_store::UserStore;
 
-/// Radius of the pin's round head, in points. The body is drawn from it, so this
-/// is the one number that sets the pin's size: overall height is `3 × HEAD_R`.
-const HEAD_R: f32 = 7.5;
-/// The head sits this many head-radii above the tip. At 2.0 the tangents from
-/// the tip meet the circle at ±60°, which is the classic map-pin silhouette.
-const HEAD_LIFT: f32 = 2.0;
-/// White centre hole, as a fraction of the head radius.
-const HOLE_R: f32 = 0.40;
-/// Hovering scales the pin up by this much (and reveals its name).
-const HOVER_SCALE: f32 = 1.18;
+/// The least map, points, worth placing pins on: under it the panels have
+/// taken the screen (the compact layout). A pin's head across and its
+/// height.
+const MIN_MAP_W: f32 = 15.0;
+const MIN_MAP_H: f32 = 22.5;
 #[cfg(feature = "comms")]
 /// First pin id used for a chat's points: far above any bookmark id, which
 /// counts up from 1.
@@ -83,53 +71,9 @@ const CHAT_PIN_IDS: u64 = 1 << 48;
 const POST_PIN_IDS: u64 = 1 << 50;
 
 #[cfg(feature = "comms")]
-/// The "you are sharing your real location" chip: top centre of the screen,
-/// naming who can see it and for how long, with a Stop for each. Answers the
-/// chat whose Stop was pressed.
-///
-/// Drawn from this system because it is the last UI system to run (the module
-/// note says why), so nothing composed later can cover it.
-fn sharing_chip(ctx: &egui::Context, lines: &[(String, String)]) -> Option<String> {
-    let mut stop = None;
-    egui::Area::new(egui::Id::new("real_location_sharing_chip"))
-        // Under the search bar, which has the top edge.
-        .anchor(
-            egui::Align2::CENTER_TOP,
-            egui::vec2(0.0, crate::systems::dock::reserved_top()),
-        )
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(theme::REAL_LOCATION.to_egui())
-                .corner_radius(12.0)
-                .inner_margin(egui::Margin::symmetric(10, 5))
-                .show(ui, |ui| {
-                    for (channel, line) in lines {
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(line).color(theme::DARK32.ink));
-                            // A word on the location-sharing chip, whose fill is one
-                            // colour in both themes, so its ink is the dark theme's
-                            // whatever the palette.
-                            // egui's own: the theme's buttons would take the palette's ink.
-                            let word = egui::Button::new(
-                                egui::RichText::new("Stop")
-                                    .color(theme::DARK32.ink)
-                                    .strong(),
-                            );
-                            if ui.add(word).clicked() {
-                                stop = Some(channel.clone());
-                            }
-                        });
-                    }
-                });
-        });
-    stop
-}
-
-#[cfg(feature = "comms")]
 /// The sharing chip's lines, one per chat this phone's location goes to: the
-/// chat's key, and "◎ sanne sees where your phone is · 12 min". Both
-/// editions' chips say these words (`lib_pins`).
+/// chat's key, and "◎ sanne sees where your phone is · 12 min". The library's
+/// chip says these words (`lib_pins`).
 fn sharing_lines(chat: &crate::systems::chat::ChatState) -> Vec<(String, String)> {
     let now = web_time::SystemTime::now()
         .duration_since(web_time::UNIX_EPOCH)
@@ -156,18 +100,15 @@ fn sharing_lines(chat: &crate::systems::chat::ChatState) -> Vec<(String, String)
         .collect()
 }
 
-/// The pins' own state: whether the component library draws them
-/// (`systems::lib_pins`), and what goes back and forth with it. Inserted by
-/// the library's system when it takes the pins over; absent, egui draws.
+/// The pins' own state: what goes back and forth with the component
+/// library, which draws them (`systems::lib_pins`). Inserted by the
+/// library's system the first frame.
 #[derive(Resource, Default)]
 pub struct PlacePins {
-    /// The library draws the markers; egui's system still places, culls and
-    /// acts, and paints nothing.
-    pub lib: bool,
-    /// What the library draws this frame, written by [`render_place_pins`].
+    /// What the library draws this frame, written by [`place_map_pins`].
     pub lib_view: PinsView,
     /// The key of the marker the library's tap landed on ([`PinItem::key`]),
-    /// done next frame as a click on egui's pin is.
+    /// done next frame by [`place_map_pins`].
     pub lib_tapped: Option<String>,
     /// A Stop on the library's sharing chip: the chat to stop telling.
     pub lib_stop: Option<String>,
@@ -189,8 +130,8 @@ pub struct PinsView {
 pub struct PinItem {
     /// Stable across frames: what the library keys the marker's node by.
     pub key: String,
-    /// The tip, in egui points (the library's px natively).
-    pub tip: egui::Pos2,
+    /// The tip, in UI points (the library's px natively).
+    pub tip: Vec2,
     pub name: String,
     pub look: PinLook,
 }
@@ -200,7 +141,7 @@ pub struct PinItem {
 pub enum PinLook {
     /// A saved place's teardrop, or a community post's, in its colour.
     Place { color: [f32; 3] },
-    /// A chat's point: its number, and the label's width as egui measures it.
+    /// A chat's point: its number, and the label's width ([`text_size`]).
     #[cfg(feature = "comms")]
     Point { number: String, width: f32 },
     /// A person (`chat_people::marker`), with the width of the name's chip.
@@ -247,16 +188,40 @@ enum PinTap {
     Person(String),
 }
 
-/// The width `text` takes at `font`, as egui lays it out: what the library's
-/// edition centres a label of unknown width by (its root has no box to centre
-/// in, and a wide box would take the taps meant for what is under it).
-/// Only people's markers and a chat's points need it (`comms`).
+/// The face a label over the map is set in, for [`text_size`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(feature = "comms"), allow(dead_code))]
-pub(crate) fn text_width(ctx: &egui::Context, text: &str, font: egui::FontId) -> f32 {
-    ctx.layer_painter(egui::LayerId::background())
-        .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE)
-        .size()
-        .x
+pub(crate) enum Face {
+    /// The body face (`theme::BODY_TTF`): a chat point's name.
+    Body,
+    /// The brand face (`theme::BRAND_TTF`): the place names.
+    Brand,
+}
+
+/// The size one line of `text` takes at `size` points in `face`, with
+/// `spacing` points added after every character: what the library centres
+/// a label of unknown width by (its root has no box to centre in, and a wide
+/// box would take the taps meant for what is under it), and what the place
+/// names make room by. Measured with `fontdue` over the face the library
+/// sets the text in; no kerning, near enough to place by.
+pub(crate) fn text_size(text: &str, size: f32, face: Face, spacing: f32) -> Vec2 {
+    static BODY: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
+    static BRAND: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
+    let (cell, bytes) = match face {
+        Face::Body => (&BODY, crate::systems::theme::BODY_TTF),
+        Face::Brand => (&BRAND, crate::systems::theme::BRAND_TTF),
+    };
+    let font = cell
+        .get_or_init(|| fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok())
+        .as_ref();
+    let height = font
+        .and_then(|f| f.horizontal_line_metrics(size))
+        .map_or(size * 1.3, |m| m.new_line_size);
+    let width: f32 = text
+        .chars()
+        .map(|c| font.map_or(size * 0.5, |f| f.metrics(c, size).advance_width) + spacing)
+        .sum();
+    Vec2::new(width, height)
 }
 
 /// The frame around the pins, bundled under Bevy's parameter cap.
@@ -266,9 +231,12 @@ pub struct PinsFrame<'w> {
     lens: Res<'w, crate::systems::scenario::LensSlot>,
     driver: Res<'w, crate::systems::driver::DriverState>,
     route: Res<'w, crate::systems::navigation::RouteState>,
-    lib: Option<ResMut<'w, PlacePins>>,
+    pins: Option<ResMut<'w, PlacePins>>,
     /// The map's buttons, which the pins keep off ([`clear_of_chrome`]).
     chrome: Res<'w, crate::systems::dock::MapChrome>,
+    /// Where the side panels left the map, and the UI's scale ([`map_area`]).
+    input: Res<'w, UiInput>,
+    metrics: Res<'w, UiMetrics>,
 }
 
 /// Beyond this ground distance a pin is dropped below the space tier. The
@@ -277,28 +245,28 @@ pub struct PinsFrame<'w> {
 /// nothing — it is the globe's job to show those.
 const MAX_FLAT_RANGE_M: f64 = 250_000.0;
 
-/// Draw a pin per saved place and jump to the one that gets clicked.
+/// Place a pin per saved place (and the chat's points, a community's posts
+/// and people) for the library, and do what a tap on one asked for.
 ///
-/// Runs after every panel so `available_rect_before_wrap` is the map area (see
-/// the module docs) and after the camera has moved, so pins sit on the frame the
-/// user is actually looking at rather than the previous one.
-pub fn render_place_pins(
-    mut egui: EguiMut,
+/// Runs after the dock has written the map's buttons and after the camera
+/// has moved, so pins sit on the frame the user is actually looking at
+/// rather than the previous one.
+pub fn place_map_pins(
     store: Res<UserStore>,
     mut nav: ResMut<GeoNavState>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
     terrain: Res<crate::systems::terrain::TerrainField>,
     map_anchor: Res<MapAnchor>,
-    // The keyboard, the driver bar, the route sheet, and the library's
-    // edition when it has the pins ([`PlacePins`]).
+    // The keyboard, the driver bar, the route sheet, the map's rect, and the
+    // library's side of the pins ([`PlacePins`]).
     mut frame: PinsFrame,
     // The points of the private chat whose World view is on (the chat panel's
-    // "Map" toggle). Drawn by the same code as saved places so they share the
-    // projection, the culling and the one ordering rule this system obeys.
+    // "Map" toggle). Placed by the same code as saved places so they share the
+    // projection and the culling.
     //
-    // Also where other people's shared real locations are pinned, and where the
-    // "you are sharing your location" chip is drawn — see [`sharing_chip`].
+    // Also where other people's shared real locations are pinned, and what
+    // the "you are sharing your location" chip says ([`sharing_lines`]).
     #[cfg(feature = "comms")] mut chat: ResMut<crate::systems::chat::ChatState>,
     // The people in that chat, where their avatars are (`chat_people`): the
     // server's answer, and this client's own avatars to stand a marker on
@@ -315,40 +283,26 @@ pub fn render_place_pins(
     // sixteen parameters: the next one goes into `PinsFrame`.
     #[cfg(feature = "comms")] identity: Option<Res<crate::resources::AuthIdentity>>,
 ) {
-    // Where every marker went this frame, so egui redraws on the frames the map
-    // moved under them and on no others (`WorldAnchored`). First, so each early
-    // return below reads as the markers going.
-    let mut anchored = WorldAnchored::new(egui.ctx(), "place_pins");
-    // The library's edition, when it has the pins: egui paints nothing, and
-    // an early return below leaves it an empty frame, which reads as the
-    // markers going there too.
-    let mut lib = frame.lib.as_deref_mut().filter(|l| l.lib);
-    let tapped_key = lib.as_mut().and_then(|l| {
-        l.lib_view = PinsView::default();
-        l.lib_tapped.take()
-    });
+    // The library's side, inserted by `lib_pins` the first frame. Cleared
+    // first, so each early return below leaves an empty frame, which reads as
+    // the markers going.
+    let Some(lib) = frame.pins.as_deref_mut() else {
+        return;
+    };
+    lib.lib_view = PinsView::default();
+    let tapped_key = lib.lib_tapped.take();
     #[cfg(not(feature = "comms"))]
-    if let Some(l) = lib.as_mut() {
-        l.lib_stop = None;
+    {
+        lib.lib_stop = None;
     }
     // Before everything else, driver mode included: while anybody can see where
     // this phone is, the screen says so. A share that is on without a sign of it
     // is the one thing this feature must never be.
     #[cfg(feature = "comms")]
     {
-        let stop = lib.as_mut().and_then(|l| l.lib_stop.take());
+        let stop = lib.lib_stop.take();
         if !chat.sharing.is_empty() {
-            let lines = sharing_lines(&chat);
-            let stop = match lib.as_mut() {
-                Some(l) => {
-                    l.lib_view.sharing = lines;
-                    stop
-                }
-                None => {
-                    let ctx = egui.ctx_mut().clone();
-                    sharing_chip(&ctx, &lines)
-                }
-            };
+            lib.lib_view.sharing = sharing_lines(&chat);
             if let Some(channel) = stop {
                 chat.stop_sharing(&channel);
             }
@@ -409,15 +363,18 @@ pub fn render_place_pins(
         return;
     };
 
-    let map_rect = map_area(&mut egui, &frame.keyboard, &frame.route, &frame.lens);
+    let map_rect = map_area(
+        &frame.input,
+        &frame.metrics,
+        &frame.keyboard,
+        &frame.route,
+        &frame.lens,
+    );
     let holes = frame.chrome.holes.clone();
-    // Projection answers in window points; the pins are drawn in egui's. Bound
-    // once here rather than called per pin, so the `ResMut` isn't re-borrowed
-    // inside the loop that owns `ctx`.
-    let ui_scale = egui.ui_scale();
-    let to_ui = |p: Vec2| egui::pos2(p.x / ui_scale, p.y / ui_scale);
-    let ctx = egui.ctx_mut().clone();
-    if map_rect.width() < 2.0 * HEAD_R || map_rect.height() < 3.0 * HEAD_R {
+    // Projection answers in window points; the pins are placed in UI points.
+    let metrics = *frame.metrics;
+    let to_ui = |p: Vec2| metrics.window_to_ui(p);
+    if map_rect.width() < MIN_MAP_W || map_rect.height() < MIN_MAP_H {
         return; // panels have taken the screen (compact layout)
     }
 
@@ -443,18 +400,14 @@ pub fn render_place_pins(
 
     // Where a place stands on the screen this frame: `None` behind the camera,
     // over the horizon, off the map or under the map's buttons.
-    let project = |lat: f64, lng: f64| -> Option<egui::Pos2> {
+    let project = |lat: f64, lng: f64| -> Option<Vec2> {
         let delta = place_delta(&globe, anchor, cam_world, in_space, lat, lng, &terrain)?;
         let screen = cam.world_to_viewport(&cam_view, delta.as_vec3()).ok()?;
         let tip = to_ui(screen);
         shown(&holes, map_rect, tip).then_some(tip)
     };
-    // The library's edition centres its labels by egui's measure of them
-    // (`text_width`); egui's own needs none.
-    #[cfg(feature = "comms")]
-    let for_lib = lib.is_some();
     // Every marker of this frame in the order they stack, the last on top,
-    // and what a tap on each does. Placed once for both editions.
+    // and what a tap on each does.
     let mut placed: Vec<(PinItem, PinTap)> = Vec::new();
     for (i, b) in store.data.bookmarks.iter().enumerate() {
         let Some(tip) = project(b.lat, b.lng) else {
@@ -475,26 +428,22 @@ pub fn render_place_pins(
     // What people last said, over their markers: whose, where (the top of
     // the marker), the words, how strongly, and whether they are yours.
     #[cfg(feature = "comms")]
-    let mut balloons: Vec<(String, egui::Pos2, String, f32, bool)> = Vec::new();
+    let mut balloons: Vec<(String, Vec2, String, f32, bool)> = Vec::new();
     // Everything that comes from a chat or a community (`comms`): the web
     // build pins saved places only, and the page around it has the rest.
     #[cfg(feature = "comms")]
     {
-        // A chat's points, as the design's numbered labels ([`point_pin`]) rather
-        // than teardrops, so they read as "from the conversation" and never as one
-        // of your own saved places. Ids from a range no bookmark reaches, since egui
-        // keys each pin's `Area` by it.
+        // A chat's points, as the design's numbered labels (`lib_pins::point`)
+        // rather than teardrops, so they read as "from the conversation" and
+        // never as one of your own saved places. Ids from a range no bookmark
+        // reaches, since the library keys each marker by it.
         for (i, (point, label)) in chat_points.iter().enumerate() {
             let Some(tip) = project(point.latitude, point.longitude) else {
                 continue;
             };
             // `world_points` numbers each label "<n>  <name>", matching the card.
             let (number, name) = label.split_once("  ").unwrap_or(("", label.as_str()));
-            let width = if for_lib {
-                point_head_width(&ctx, name)
-            } else {
-                0.0
-            };
+            let width = point_head_width(name);
             placed.push((
                 PinItem {
                     key: format!("point:{}", CHAT_PIN_IDS + i as u64),
@@ -530,20 +479,16 @@ pub fn render_place_pins(
                 PinTap::Post(i),
             ));
         }
-        // The width of a person's name chip, for the library's edition.
+        // The width of a person's name chip, which the library centres by.
         let chip = |name: &str| {
-            if for_lib {
-                chat_people::chip_width(
-                    crate::systems::chat_overlay::text_size(
-                        name,
-                        chat_people::NAME_TEXT,
-                        f32::INFINITY,
-                    )
-                    .x,
+            chat_people::chip_width(
+                crate::systems::chat_overlay::text_size(
+                    name,
+                    chat_people::NAME_TEXT,
+                    f32::INFINITY,
                 )
-            } else {
-                0.0
-            }
+                .x,
+            )
         };
         // People's real locations, shared with a private chat: a person's marker,
         // not a place's teardrop, in the blue that means nothing else
@@ -615,7 +560,7 @@ pub fn render_place_pins(
                     PinTap::Person(w.username.clone()),
                 ));
                 if let Some((text, alpha)) = chat_people::latest_said(&chat, &key, &w.username) {
-                    let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
+                    let over = Vec2::new(tip.x, tip.y - chat_people::marker_height());
                     balloons.push((w.username.clone(), over, text, alpha, false));
                 }
             }
@@ -653,7 +598,7 @@ pub fn render_place_pins(
                         PinTap::Jump(Teleport::geo(lat, lng, None), name.clone()),
                     ));
                     if let Some((text, alpha)) = chat_people::latest_mine(&chat, &key) {
-                        let over = egui::pos2(tip.x, tip.y - chat_people::marker_height());
+                        let over = Vec2::new(tip.x, tip.y - chat_people::marker_height());
                         balloons.push((String::new(), over, text, alpha, true));
                     }
                 }
@@ -661,70 +606,31 @@ pub fn render_place_pins(
         }
     }
 
-    // Drawn by egui, or handed to the library; a tap either way is one of the
-    // markers just placed.
+    // Handed to the library; a tap there is one of the markers just placed.
     let drawn = placed.len();
-    let mut tapped: Option<PinTap> = None;
-    match lib.as_mut() {
-        Some(l) => {
-            if let Some(key) = &tapped_key {
-                tapped = placed
-                    .iter()
-                    .find(|(p, _)| &p.key == key)
-                    .map(|(_, t)| t.clone());
-            }
-            #[cfg(feature = "comms")]
-            {
-                let map = Rect::new(
-                    map_rect.min.x,
-                    map_rect.min.y,
-                    map_rect.max.x,
-                    map_rect.max.y,
+    let tapped: Option<PinTap> = tapped_key.as_ref().and_then(|key| {
+        placed
+            .iter()
+            .find(|(p, _)| &p.key == key)
+            .map(|(_, t)| t.clone())
+    });
+    #[cfg(feature = "comms")]
+    {
+        lib.lib_view.balloons = balloons
+            .iter()
+            .map(|(who, over, text, alpha, mine)| {
+                let words = crate::systems::chat_overlay::text_size(
+                    text,
+                    chat_people::BALLOON_TEXT,
+                    chat_people::BALLOON_WRAP,
                 );
-                l.lib_view.balloons = balloons
-                    .iter()
-                    .map(|(who, over, text, alpha, mine)| {
-                        let words = crate::systems::chat_overlay::text_size(
-                            text,
-                            chat_people::BALLOON_TEXT,
-                            chat_people::BALLOON_WRAP,
-                        );
-                        chat_people::balloon_item(
-                            words,
-                            map,
-                            who,
-                            Vec2::new(over.x, over.y),
-                            text,
-                            *alpha,
-                            *mine,
-                        )
-                    })
-                    .collect();
-            }
-            l.lib_view.pins = placed.into_iter().map(|(p, _)| p).collect();
-        }
-        None => {
-            for (p, tap) in &placed {
-                anchored.at(p.tip);
-                let hit = match &p.look {
-                    PinLook::Place { color } => pin(&ctx, map_rect, &p.key, p.tip, *color, &p.name),
-                    #[cfg(feature = "comms")]
-                    PinLook::Point { number, .. } => {
-                        point_pin(&ctx, map_rect, &p.key, p.tip, number, &p.name)
-                    }
-                    // People and their balloons are the library's alone
-                    // (`lib_pins`); egui's marker is gone.
-                    #[cfg(feature = "comms")]
-                    PinLook::Person { .. } => false,
-                };
-                if hit {
-                    tapped = Some(tap.clone());
-                }
-            }
-        }
+                chat_people::balloon_item(words, map_rect, who, *over, text, *alpha, *mine)
+            })
+            .collect();
     }
+    lib.lib_view.pins = placed.into_iter().map(|(p, _)| p).collect();
 
-    // What the tap asked for, the same for both editions.
+    // What the tap asked for.
     //
     // A jump carries the place's name alongside the teleport: the address
     // bar's recents list reads `pending_label`, and a jump that arrives
@@ -864,15 +770,14 @@ fn marker_card(
 
 /// Whether an overlay anchored at `tip` stays clear of the map's buttons.
 /// `holes` are the map's round buttons and their columns
-/// (`dock::MapChrome::holes`, UI points — egui's points), as the dock placed
+/// (`dock::MapChrome::holes`, UI points), as the dock placed
 /// them: a world-anchored overlay culls itself against them as against the
 /// edges in [`map_area`], or a marker paints over a button and takes its tap
 /// (2026-11-11, a friend's marker over the right column in Earth mode). The
 /// dock writes them in `ClientPhase::Present` before the overlays that read
 /// them. A pin or a marker hangs *above* its tip, by up to [`PIN_REACH`], so
 /// a tip that far under a column still draws on it.
-pub(crate) fn clear_of_chrome(holes: &[Rect], tip: egui::Pos2) -> bool {
-    let tip = Vec2::new(tip.x, tip.y);
+pub(crate) fn clear_of_chrome(holes: &[Rect], tip: Vec2) -> bool {
     !holes.iter().any(|h| {
         Rect::from_corners(
             h.min - Vec2::new(PIN_SIDE, 0.0),
@@ -888,42 +793,44 @@ const PIN_REACH: f32 = 56.0;
 const PIN_SIDE: f32 = 22.0;
 
 /// Inside the map, and clear of its buttons.
-fn shown(holes: &[Rect], map_rect: egui::Rect, tip: egui::Pos2) -> bool {
+fn shown(holes: &[Rect], map_rect: Rect, tip: Vec2) -> bool {
     map_rect.contains(tip) && clear_of_chrome(holes, tip)
 }
 
-/// The part of the viewport a world-anchored overlay may paint on: the free
-/// central area, minus every floating `Area` that reserves nothing in the root
-/// `Ui` and would otherwise be painted over.
+/// The part of the viewport a world-anchored overlay may stand on, in UI
+/// points: what the side panels left of the screen, minus everything that
+/// floats over the map's edges — the keyboard, the dock's bars, the route
+/// sheet and the lens.
 ///
-/// Shared with [`crate::systems::locate`]'s device arrow, which has the same
-/// problem and had no business growing a second copy of this list — the list is
-/// the part that goes out of date, one forgotten overlay at a time.
+/// Shared with [`crate::systems::locate`]'s device arrow, the place names and
+/// the plans, which have the same problem and had no business growing their
+/// own copies of this list — the list is the part that goes out of date, one
+/// forgotten overlay at a time.
 ///
 /// **The keyboard, the dock and the route sheet are all here for one reason.**
-/// They are floating `Area`s, so `available_rect_before_wrap` cannot know about
-/// them, and this system runs last at the same `Order::Middle` the dock draws in
-/// — so within that order a pin raised later wins egui's hit test. On a phone the
-/// dock is ~240 pt of a 274 pt viewport, so a saved place projecting anywhere
-/// near the bottom edge was swallowing taps meant for Search and the app menu,
-/// the two controls the whole dock layout exists to put under a thumb. Only the
-/// keyboard ever got this treatment; the other two edges were simply never added.
+/// The side panels' room says nothing about them, and on a phone the dock is
+/// ~240 pt of a 274 pt viewport, so a saved place projecting anywhere near the
+/// bottom edge was swallowing taps meant for Search and the app menu, the two
+/// controls the whole dock layout exists to put under a thumb.
 ///
-/// Read off the shared root `Ui` *before* the caller borrows the context, so the
-/// two borrows of `egui` don't overlap (the context is a cheap `Arc` clone).
-
+/// The panels' room is last frame's (`UiInput::map_rect`, in window points);
+/// before the first frame the whole viewport.
 pub(crate) fn map_area(
-    egui: &mut EguiManager,
+    input: &UiInput,
+    metrics: &UiMetrics,
     keyboard: &crate::systems::onscreen_keyboard::OnScreenKeyboard,
     route: &crate::systems::navigation::RouteState,
     lens: &crate::systems::scenario::LensSlot,
-) -> egui::Rect {
-    let mut map_rect = egui.ui_mut().available_rect_before_wrap();
+) -> Rect {
+    let mut map_rect = input.map_rect().map_or_else(
+        || Rect::from_corners(Vec2::ZERO, metrics.viewport_pts()),
+        |r| Rect::from_corners(metrics.window_to_ui(r.min), metrics.window_to_ui(r.max)),
+    );
     if let Some(slab) = keyboard.slab() {
-        if slab.top() > map_rect.top() {
-            map_rect.max.y = map_rect.max.y.min(slab.top());
+        if slab.min.y > map_rect.min.y {
+            map_rect.max.y = map_rect.max.y.min(slab.min.y);
         } else {
-            map_rect.min.y = map_rect.min.y.max(slab.bottom());
+            map_rect.min.y = map_rect.min.y.max(slab.max.y);
         }
     }
     map_rect.max.y -= crate::systems::dock::reserved_bottom();
@@ -994,254 +901,11 @@ pub(crate) fn place_delta(
     }
 }
 
-/// Paint one pin with its tip at `tip` and return whether it was clicked.
-///
-/// Its own `Area` per pin, so egui owns the hover/click and reports the pointer
-/// as taken — the world-space click handlers (POI info cards, route endpoint
-/// picking, prim selection) then correctly leave a click on a pin alone.
-fn pin(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    id: &str,
-    tip: egui::Pos2,
-    color: [f32; 3],
-    name: &str,
-) -> bool {
-    let hue = egui::Color32::from_rgb(
-        (color[0] * 255.0) as u8,
-        (color[1] * 255.0) as u8,
-        (color[2] * 255.0) as u8,
-    );
-    // Rim: the same hue darkened. A white outline would read as a sticker and a
-    // black one muddies every colour; darkening keeps the pin one object.
-    let rim = egui::Color32::from_rgb(
-        (color[0] * 145.0) as u8,
-        (color[1] * 145.0) as u8,
-        (color[2] * 145.0) as u8,
-    );
-
-    // Keyed by the place's id, not its position: a per-frame id would leave egui
-    // remembering one dead `Area` per pin per frame for the whole session.
-    let response = egui::Area::new(egui::Id::new(("place_pin", id)))
-        .fixed_pos(tip)
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            // Never paint over a panel, even when the tip is just inside the map.
-            ui.set_clip_rect(map_rect);
-            let (_rect, response) = ui.allocate_exact_size(
-                egui::vec2(2.0 * HEAD_R, (HEAD_LIFT + 1.0) * HEAD_R),
-                egui::Sense::click(),
-            );
-            let response = theme::named(ui, response, name);
-            let scale = if response.hovered() { HOVER_SCALE } else { 1.0 };
-            let r = HEAD_R * scale;
-            // Paint from the *exact* projected tip, not the allocated rect's bottom
-            // centre. egui rounds every `Area`'s position to a whole physical pixel
-            // (`containers::area::round_area_position`, so dragged windows don't have
-            // their widgets shimmer against each other), which is right for chrome and
-            // wrong for a marker pinned to the ground: the map slides smoothly under a
-            // pin that can only step a pixel at a time, and the pin reads as wobbling
-            // on its spot. The rect still senses the click — half a pixel of offset
-            // between the hit area and the silhouette is not something you can aim at.
-            let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
-            // A pin seen for the first time pops about its head (`motion::pop`);
-            // one that merely scrolls back into view does not.
-            let pres =
-                crate::systems::motion::presence(ui.ctx(), egui::Id::new(("place_pin", id)), true);
-            crate::systems::motion::pop(ui, pres, centre);
-            let painter = ui.painter();
-
-            // A soft contact shadow at the tip, so the pin reads as standing on
-            // the map rather than floating in the middle of it.
-            painter.circle_filled(tip, r * 0.30, egui::Color32::from_black_alpha(45));
-
-            // The teardrop: the head circle plus the two tangent lines down to
-            // the tip. That outline is convex, so one antialiased polygon draws
-            // the whole silhouette — fill and rim in a single shape, with no
-            // seam where a separate triangle would meet the circle.
-            painter.add(egui::Shape::convex_polygon(
-                teardrop(tip, centre, r),
-                hue,
-                egui::Stroke::new(1.0, rim),
-            ));
-            // The hole. Semi-transparent white so it reads on any basemap.
-            painter.circle_filled(
-                centre,
-                r * HOLE_R,
-                egui::Color32::from_rgba_unmultiplied(
-                    theme::DARK32.cream.r(),
-                    theme::DARK32.cream.g(),
-                    theme::DARK32.cream.b(),
-                    235,
-                ),
-            );
-
-            if response.hovered() {
-                label(ui, map_rect, centre, r, name);
-            }
-            response
-        })
-        .inner;
-
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-}
-
-/// The width of [`point_pin`]'s label for `name`: the number's disc, the
-/// name (cut at 170 pt) and the label's edges.
+/// The width of a chat point's label for `name` (`lib_pins::point`): the
+/// number's disc, the name (cut at 170 pt) and the label's edges.
 #[cfg(feature = "comms")]
-fn point_head_width(ctx: &egui::Context, name: &str) -> f32 {
-    4.0 + 22.0 + 7.0 + text_width(ctx, name, egui::FontId::proportional(12.5)).min(170.0) + 10.0
-}
-
-/// A chat's point on its World view: the design's `.ppin` — a cream label with
-/// the point's number in an ink circle and its name, on a thin stem down to a
-/// dot on the ground. Always labelled: a conversation has a handful of places,
-/// and the number is what ties each to its card in the thread.
-fn point_pin(
-    ctx: &egui::Context,
-    map_rect: egui::Rect,
-    id: &str,
-    tip: egui::Pos2,
-    number: &str,
-    name: &str,
-) -> bool {
-    const STEM: f32 = 16.0;
-    const DOT_R: f32 = 4.0;
-    const HEAD_H: f32 = 30.0;
-    let font = egui::FontId::proportional(12.5);
-    let response = egui::Area::new(egui::Id::new(("chat_point_pin", id)))
-        .fixed_pos(tip)
-        .pivot(egui::Align2::CENTER_BOTTOM)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let pres = crate::systems::motion::presence(
-                ui.ctx(),
-                egui::Id::new(("chat_point_pin", id)),
-                true,
-            );
-            crate::systems::motion::pop(ui, pres, tip);
-            let p = ui.painter();
-            let mut job = egui::text::LayoutJob::simple_singleline(
-                name.to_string(),
-                font.clone(),
-                theme::DARK32.ink,
-            );
-            job.wrap = egui::text::TextWrapping::truncate_at_width(170.0);
-            let galley = p.layout_job(job);
-            let head_w = 4.0 + 22.0 + 7.0 + galley.size().x + 10.0;
-            let (_rect, response) = ui.allocate_exact_size(
-                egui::vec2(head_w, HEAD_H + STEM + DOT_R * 2.0),
-                egui::Sense::click(),
-            );
-            let response = theme::named(ui, response, name);
-            // Painted from the exact tip, as [`pin`] is, so it does not step a
-            // whole pixel at a time over a map that is sliding smoothly.
-            let p = ui.painter();
-            let dot = egui::pos2(tip.x, tip.y - DOT_R);
-            let stem_top = dot.y - DOT_R - STEM;
-            let head = egui::Rect::from_min_size(
-                egui::pos2(tip.x - head_w / 2.0, stem_top - HEAD_H),
-                egui::vec2(head_w, HEAD_H),
-            );
-            p.add(
-                egui::epaint::Shadow {
-                    offset: [0, 6],
-                    blur: 16,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(90),
-                }
-                .as_shape(head, egui::CornerRadius::same(14)),
-            );
-            p.rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(tip.x - 1.0, stem_top),
-                    egui::pos2(tip.x + 1.0, dot.y),
-                ),
-                egui::CornerRadius::ZERO,
-                theme::DARK32.cream,
-            );
-            p.circle(
-                dot,
-                DOT_R,
-                theme::DARK32.cream,
-                egui::Stroke::new(2.0, theme::DARK32.ink),
-            );
-            let fill = if response.hovered() {
-                egui::Color32::WHITE
-            } else {
-                theme::DARK32.cream
-            };
-            p.rect_filled(head, egui::CornerRadius::same(14), fill);
-            let n = egui::pos2(head.left() + 4.0 + 11.0, head.center().y);
-            p.circle_filled(n, 11.0, theme::DARK32.ink);
-            p.text(
-                n,
-                egui::Align2::CENTER_CENTER,
-                number,
-                egui::FontId::proportional(12.0),
-                theme::DARK32.cream,
-            );
-            let gs = galley.size();
-            p.galley(
-                egui::pos2(n.x + 11.0 + 7.0, head.center().y - gs.y / 2.0),
-                galley,
-                theme::DARK32.ink,
-            );
-            response
-        })
-        .inner;
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-}
-
-/// Outline of the pin: the tip, then the head circle's arc from one tangent
-/// point round the top to the other. With the centre `HEAD_LIFT × r` above the
-/// tip the tangent points sit `acos(1 / HEAD_LIFT)` either side of straight
-/// down, so the body meets the head smoothly instead of cutting a notch in it.
-fn teardrop(tip: egui::Pos2, centre: egui::Pos2, r: f32) -> Vec<egui::Pos2> {
-    // egui's y grows downward, so "straight down from the centre" is +90°.
-    let half = (1.0f32 / HEAD_LIFT).acos();
-    let (from, to) = (
-        std::f32::consts::FRAC_PI_2 + half,
-        std::f32::consts::FRAC_PI_2 + std::f32::consts::TAU - half,
-    );
-    const SEGMENTS: usize = 24;
-    let mut points = Vec::with_capacity(SEGMENTS + 2);
-    points.push(tip);
-    for i in 0..=SEGMENTS {
-        let a = from + (to - from) * i as f32 / SEGMENTS as f32;
-        points.push(egui::pos2(centre.x + r * a.cos(), centre.y + r * a.sin()));
-    }
-    points
-}
-
-/// The place's name in a chip above the pin, on hover. Kept off the map
-/// otherwise: a saved-places layer with every name always drawn covers the city
-/// it is describing, and the panel is where the list lives.
-fn label(ui: &egui::Ui, map_rect: egui::Rect, centre: egui::Pos2, r: f32, name: &str) {
-    let font = egui::FontId::proportional(theme::SIZE_SUB);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(name.to_string(), font, theme::DARK32.cream);
-    let pad = theme::CHIP_PADDING;
-    let mut chip = egui::Rect::from_center_size(
-        egui::pos2(centre.x, centre.y - r - galley.size().y * 0.5 - 8.0),
-        galley.size() + pad * 2.0,
-    );
-    // Keep it on the map when the pin is near an edge.
-    chip = chip.translate(egui::vec2(
-        (map_rect.left() + 2.0 - chip.left()).max(0.0)
-            + (map_rect.right() - 2.0 - chip.right()).min(0.0),
-        (map_rect.top() + 2.0 - chip.top()).max(0.0),
-    ));
-    let painter = ui.painter();
-    painter.rect_filled(chip, theme::RADIUS_SM, theme::LABEL_CHIP);
-    painter.galley(chip.min + pad, galley, theme::DARK32.cream);
+fn point_head_width(name: &str) -> f32 {
+    4.0 + 22.0 + 7.0 + text_size(name, 12.5, Face::Body, 0.0).x.min(170.0) + 10.0
 }
 
 #[cfg(test)]
@@ -1250,60 +914,16 @@ mod tests {
     use crate::grid::{WORLD_CELL_EDGE, WORLD_SWITCH_THRESHOLD};
     use big_space::prelude::Grid;
 
-    /// The silhouette has to be convex — `Shape::convex_polygon` renders a
-    /// concave outline with folded-over antialiasing, and the whole pin is one
-    /// such polygon. Walk the outline and assert every turn goes the same way.
+    /// A label is measured in the face it is set in: longer words are wider,
+    /// letter spacing adds a step per letter, and the line has a height.
     #[test]
-    fn the_pin_outline_is_convex() {
-        let tip = egui::pos2(100.0, 200.0);
-        let r = HEAD_R;
-        let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
-        let p = teardrop(tip, centre, r);
-        assert!(p.len() > 8);
-        let cross = |a: egui::Pos2, b: egui::Pos2, c: egui::Pos2| {
-            (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
-        };
-        let sign = (1..p.len() - 1)
-            .map(|i| cross(p[i - 1], p[i], p[i + 1]))
-            .find(|v| v.abs() > 1e-4)
-            .expect("the outline has to turn somewhere")
-            .signum();
-        for i in 1..p.len() - 1 {
-            let turn = cross(p[i - 1], p[i], p[i + 1]);
-            assert!(
-                turn.abs() < 1e-4 || turn.signum() == sign,
-                "outline turns back on itself at vertex {i} ({turn})"
-            );
-        }
-        // And the closing edge, back from the last arc point to the tip.
-        let last = p.len() - 1;
-        for (a, b, c) in [(p[last - 1], p[last], p[0]), (p[last], p[0], p[1])] {
-            let turn = cross(a, b, c);
-            assert!(
-                turn.abs() < 1e-4 || turn.signum() == sign,
-                "closing edge is concave"
-            );
-        }
-    }
-
-    /// The tip must be the pin's lowest point and the head must sit above it —
-    /// the pin points *at* the place, and an inverted or offset silhouette would
-    /// mark the wrong spot on the map by its own height.
-    #[test]
-    fn the_pin_points_at_its_place() {
-        let tip = egui::pos2(50.0, 80.0);
-        let r = HEAD_R;
-        let centre = egui::pos2(tip.x, tip.y - HEAD_LIFT * r);
-        let p = teardrop(tip, centre, r);
-        assert!(
-            p.iter().skip(1).all(|q| q.y < tip.y),
-            "the tip is the bottom of the pin"
-        );
-        let top = p.iter().map(|q| q.y).fold(f32::INFINITY, f32::min);
-        assert!(
-            ((tip.y - top) - (HEAD_LIFT + 1.0) * r).abs() < 0.01,
-            "pin height must match the space the widget allocates"
-        );
+    fn labels_are_measured() {
+        let short = text_size("Ede", 12.0, Face::Brand, 0.0);
+        let long = text_size("Groningen", 12.0, Face::Brand, 0.0);
+        assert!(short.x > 0.0 && long.x > short.x);
+        assert!(long.y >= 12.0);
+        let spaced = text_size("Groningen", 12.0, Face::Brand, 1.4);
+        assert!((spaced.x - long.x - 9.0 * 1.4).abs() < 1e-3);
     }
 
     /// Pins are projected through a camera basis rebuilt from the camera's

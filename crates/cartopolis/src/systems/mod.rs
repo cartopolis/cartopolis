@@ -82,7 +82,7 @@ pub use gui::{
     lib_action_ring, lib_app_update, lib_avatar, lib_chrome, lib_cosmos, lib_design_room,
     lib_driver, lib_face_viewfinder, lib_interact, lib_locate, lib_main_menu, lib_map_osd,
     lib_models, lib_pins, lib_place_names, lib_plans, lib_poi_card, lib_satellite_menu,
-    lib_scenario, lib_script, lib_splash, lib_walk_guide,
+    lib_scenario, lib_scenario_map, lib_script, lib_splash, lib_walk_guide,
 };
 #[cfg(all(feature = "ui-lib", feature = "comms"))]
 pub use gui::{

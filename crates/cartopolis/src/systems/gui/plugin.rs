@@ -50,7 +50,9 @@ impl Plugin for GuiPlugin {
                     systems::lib_script::drive_lib_script,
                     systems::lib_plans::drive_lib_plans,
                     systems::lib_scenario::drive_lib_scenario,
+                    systems::lib_scenario_map::drive_lib_scenario_map,
                     systems::lib_design_room::drive_lib_design_room,
+                    systems::lib_design_room::drive_lib_design_room_overlays,
                 ),
             )
             .add_systems(
@@ -165,7 +167,7 @@ impl Plugin for GuiPlugin {
             Update,
             // After the calendar's reminder too, which that one says.
             systems::app_update::render_app_update
-                .after(systems::place_pins::render_place_pins)
+                .after(systems::place_pins::place_map_pins)
                 .in_set(ClientPhase::Present),
         );
         // A release in front of the owner (`systems::release_approval`): over
@@ -193,7 +195,7 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Input)
                     .before(systems::chats::drive_chats),
                 systems::calendar::drive_reminder
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .before(systems::app_update::render_app_update)
                     .in_set(ClientPhase::Present),
             ),
@@ -210,7 +212,7 @@ impl Plugin for GuiPlugin {
                     .after(systems::ui::drive_context_menu)
                     .in_set(ClientPhase::Input),
                 systems::plans::drive_plans_card
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
                 // News near a followed place, at the top of the map.
                 systems::plans::drive_plans_news
@@ -238,32 +240,11 @@ impl Plugin for GuiPlugin {
                     systems::design_room::draw_script_pulses
                         .after(systems::design_room::watch_scripts)
                         .in_set(ClientPhase::Present),
-                    // What the library does not draw yet: the navigation
-                    // gizmo, the measurements and the veil (egui's).
-                    systems::design_room::render_design_room_views
-                        .after(systems::design_room::render_design_room_veil)
-                        .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_measures
-                        .after(systems::design_room::render_design_room_veil)
-                        .in_set(ClientPhase::Present),
                     systems::design_room::shade_design_room
                         .after(systems::design_room::layer_design_room)
                         .in_set(ClientPhase::Present),
-                    systems::design_room::render_design_room_veil
-                        .after(systems::place_pins::render_place_pins)
-                        .in_set(ClientPhase::Present),
                 ),
             );
-
-        // The agent at work in the design room, with Pause: wherever the agent
-        // tools are (`mcp`, Unix desktops and Android).
-        #[cfg(mcp)]
-        app.add_systems(
-            Update,
-            systems::mcp::overlay::render_design_room_ai
-                .after(systems::design_room::render_design_room_veil)
-                .in_set(ClientPhase::Present),
-        );
 
         // The camera (`systems::camera_screen`): in Mixed it drives the world
         // camera after any teleport has landed and before the camera system reads
@@ -279,7 +260,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::free_camera::camera_controls)
                     .in_set(ClientPhase::Anchor),
                 systems::camera_screen::render_camera
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
                 systems::camera_screen::hand_picture_to_post.in_set(ClientPhase::Present),
                 systems::camera_screen::play_clip_sound.in_set(ClientPhase::Present),
@@ -313,12 +294,12 @@ impl Plugin for GuiPlugin {
                     .in_set(ClientPhase::Input),
                 systems::cosmos::drive_galaxies.in_set(ClientPhase::Stream),
                 systems::scenario::drive_scenario_lens
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
                 // The board's scale before its map layer and the lens areas
                 // read it.
                 systems::scenario::scale_scenario
-                    .before(systems::scenario::render_scenario_map)
+                    .before(systems::scenario::place_scenario_map)
                     .in_set(ClientPhase::Present),
             ),
         )
@@ -334,7 +315,7 @@ impl Plugin for GuiPlugin {
                     .before(systems::ui::drive_main_menu)
                     .in_set(ClientPhase::Input),
                 systems::faces::render_face_viewfinder
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             ),
         );
@@ -557,10 +538,9 @@ impl Plugin for GuiPlugin {
         // the halves are chained to each other, so it is still one total order
         // (see `crate::phase`).
         //
-        // `render_place_pins` must stay last but one: it culls against the root
-        // `Ui`'s leftover space, which is only the map area once every side panel
-        // has taken its width. `locate::render_locate_arrow` reads the same
-        // leftover space and is ordered after it for the same reason.
+        // The map's layers (the pins, names, plans, a scenario's map and the
+        // device arrow) used to close the chain; the library draws them now, and
+        // they follow it in their own group below.
         //
         // panel-chain:begin
         app.add_systems(
@@ -602,38 +582,7 @@ impl Plugin for GuiPlugin {
                     // (`place_pins::clear_of_chrome`).
                     systems::dock::drive_dock,
                     // (The person card goes here: `comms` below.)
-                    // Layers ▸ Places ▸ Plans (`systems::plans`): dots over the
-                    // map, culled against the leftover space as the pins are, and
-                    // under them — a saved place stays on top of a notice.
-                    // Cities, districts and stations named from a distance
-                    // (`systems::place_names`): each a click area that opens the
-                    // ring, under the plans and the pins so a saved place stays
-                    // on top and wins the tap.
-                    // A scenario's region states and tracks
-                    // (`systems::scenario`): painted under the names, so a city
-                    // stays readable over a coloured province.
-                    systems::scenario::render_scenario_map
-                        .after(systems::free_camera::camera_controls),
-                    systems::place_names::render_place_names
-                        .after(systems::free_camera::camera_controls),
-                    systems::plans::render_plans.after(systems::free_camera::camera_controls),
-                    // Also after the camera has moved, so pins project onto this
-                    // frame's view.
-                    // And after the people it stands markers on have moved
-                    // (`place_chat_bubbles` says why).
-                    systems::place_pins::render_place_pins
-                        .after(systems::free_camera::camera_controls)
-                        .after(systems::avatar::smooth_remote_avatars),
-                    // The device arrow: where the phone is, in the views where the
-                    // avatar isn't standing in for it. Same placement rules as the
-                    // pins above — it reads the root `Ui`'s leftover space to find
-                    // the map area, so it must run after every panel, and after the
-                    // camera so it projects onto this frame's view. It paints and
-                    // never senses, so unlike a pin it cannot take a tap and needs
-                    // no ordering against the dock beyond that.
-                    systems::locate::render_locate_arrow
-                        .after(systems::free_camera::camera_controls)
-                        .after(systems::place_pins::render_place_pins),
+                    // (The map's layers follow the dock: below the chain.)
                 )
                     .chain()
                     .in_set(ClientPhase::Present),
@@ -681,7 +630,7 @@ impl Plugin for GuiPlugin {
                     systems::chat_overlay::drive_chat_sheet,
                     // A chat's World view has a text field, so it is ordered
                     // before the on-screen keyboard for the composer's reason.
-                    systems::chats::render_chat_world,
+                    systems::chats::drive_chat_world,
                 )
                     .chain()
                     .after(systems::interact::drive_interaction_prompt)
@@ -690,11 +639,42 @@ impl Plugin for GuiPlugin {
                 // (`systems::contacts`): the sheet is a text field too.
                 systems::contacts::drive_person_card
                     .after(systems::dock::drive_dock)
-                    .before(systems::scenario::render_scenario_map),
+                    .before(systems::scenario::place_scenario_map),
             )
                 .in_set(ClientPhase::Present),
         );
         // panel-chain:end
+
+        // The map's layers: what stands over the map at a place, worked out
+        // here and drawn by the library in `PostUpdate` (`lib_scenario_map`,
+        // `lib_place_names`, `lib_plans`, `lib_pins`, `lib_locate`). None of
+        // them touches egui any more, so they are out of the panel chain, but
+        // in its order: **after the dock**, which writes `MapChrome::holes`
+        // they keep off (`place_pins::clear_of_chrome`), and after the camera
+        // has moved, so they project onto this frame's view. Bottom to top:
+        // a scenario's region states and tracks under the names, so a city
+        // stays readable over a coloured province; the names (each opens the
+        // ring) under the plans' dots; those under the pins, so a saved place
+        // stays on top of a notice and wins the tap; the device arrow last.
+        app.add_systems(
+            Update,
+            (
+                systems::scenario::place_scenario_map,
+                systems::place_names::lay_out_place_names,
+                systems::plans::place_plans,
+                // And after the people it stands markers on have moved
+                // (`place_chat_bubbles` says why).
+                systems::place_pins::place_map_pins.after(systems::avatar::smooth_remote_avatars),
+                // The device arrow: where the phone is, in the views where the
+                // avatar isn't standing in for it. It never senses, so unlike a
+                // pin it cannot take a tap.
+                systems::locate::place_locate_arrow,
+            )
+                .chain()
+                .after(systems::dock::drive_dock)
+                .after(systems::free_camera::camera_controls)
+                .in_set(ClientPhase::Present),
+        );
 
         app.add_systems(
             Update,
@@ -732,12 +712,12 @@ impl Plugin for GuiPlugin {
                 // edit dialog was a third; the library draws it now, with its
                 // own fields.)
                 systems::onscreen_keyboard::render_onscreen_keyboard
-                    .after(systems::place_pins::render_place_pins),
+                    .after(systems::place_pins::place_map_pins),
                 // Escape's single dismissal ladder. It reads state every panel has
                 // already written this frame, so it runs after the panel chain —
                 // which used to hold only because it was registered after it; the
                 // edge to the chain's last system says so now.
-                systems::dismiss::handle_escape.after(systems::locate::render_locate_arrow),
+                systems::dismiss::handle_escape.after(systems::locate::place_locate_arrow),
                 systems::splash::boot_splash,
             )
                 .in_set(ClientPhase::Present),

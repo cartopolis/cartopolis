@@ -211,8 +211,12 @@ and drops in its shader what the camera cannot see past the horizon (the
 `place_delta` test, 200 m margin), so the far side of the globe does not show
 through. The board is laid on the Earth's curve, not on the relief. The
 pointer's area is found by casting the pointer onto the ground and asking the
-board (`area_at`), not by hit-testing triangles; the outline of the area being
-read and its card are still egui, one area's worth.
+board (`area_at`), not by hit-testing triangles. The outline of the area being
+read, its card, the tracks and the mode's frame are the component library's
+(`lib_scenario_map`, 2026-11-26): `scenario::place_scenario_map` projects them
+to screen points and the library draws each line as a run of thin turned boxes,
+restyled every frame from one mount; an outline drops points under 2 px apart,
+so a country-scale ring costs a few hundred boxes, not thousands.
 
 ## A rung is stored as a number
 

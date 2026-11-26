@@ -1249,11 +1249,11 @@ pub struct ContextMenuState {
     /// Set when the ring was opened on a place's name; `lat_lng` is then the
     /// place itself, and the ring offers the place's actions.
     pub place: Option<MapPlace>,
-    /// The ring's Go there was chosen: taken by `place_names::render_place_names`,
+    /// The ring's Go there was chosen: taken by `place_names::lay_out_place_names`,
     /// which hands it to `GeoNavState` as a teleport with the place's name.
     pub go_there: Option<(f64, f64, f64, String)>,
     /// The ring's Lenses was chosen on a place: taken by
-    /// `place_names::render_place_names`, which centres the map on it and puts
+    /// `place_names::lay_out_place_names`, which centres the map on it and puts
     /// up the shelf of lenses.
     pub lenses_at: Option<(f64, f64, String)>,
 }

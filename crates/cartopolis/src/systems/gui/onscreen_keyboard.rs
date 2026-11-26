@@ -381,10 +381,8 @@ impl Slab {
 /// bottom wins, because at least the caret is then above the keyboard rather
 /// than below it.
 ///
-/// A field that gets out of the way itself says so with [`field_makes_room`],
-/// and the caller then passes `None` here: the flip is for fields that cannot
-/// move, and for one that can it only puts the keys over what it was lifted
-/// to reveal.
+/// A library field passes `None` here: its screens get out of the keys' way
+/// themselves, and the flip would only put the keys over what they lifted.
 fn layout(viewport: egui::Rect, min_key_h: f32, field: Option<egui::Rect>) -> Slab {
     layout_with(viewport, min_key_h, field, Spacing::EGUI)
 }
@@ -486,32 +484,6 @@ pub fn expected_height_in(size: bevy::math::Vec2, ui_scale: f32, display_scale: 
         ui_scale,
         display_scale,
     )
-}
-
-/// Declare, for this pass, that `field` lifts itself above the keys while they
-/// are up, so the keyboard stays on the bottom edge instead of flipping to the
-/// top to dodge it.
-///
-/// For a composer pinned to the bottom of a panel — the chat thread's. It can
-/// only lift *after* the keyboard is open (a panel takes its size from the
-/// previous frame), so on the frame the field is tapped it still sits where
-/// the keys will land. Without this that one frame flips the keyboard to the
-/// top, over the conversation, and the flip is re-decided every frame, so the
-/// keys stay up there until the field has moved. Call it every frame the field
-/// is drawn; the claim lapses with the pass it was made in.
-pub fn field_makes_room(ctx: &egui::Context, field: egui::Id) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(makes_room_key(), (field, pass)));
-}
-
-fn makes_room_key() -> egui::Id {
-    egui::Id::new("onscreen_keyboard_makes_room")
-}
-
-/// Has `field` claimed [`field_makes_room`] in the current pass?
-fn makes_room(ctx: &egui::Context, field: egui::Id) -> bool {
-    ctx.data(|d| d.get_temp::<(egui::Id, u64)>(makes_room_key()))
-        .is_some_and(|(id, pass)| id == field && pass == ctx.cumulative_pass_nr())
 }
 
 // ─── Resource ─────────────────────────────────────────────────────────────────
@@ -865,7 +837,6 @@ impl OnScreenKeyboard {
         // is ordered after the panels: `read_response` reads the *current* pass.
         let field = kb
             .target
-            .filter(|&id| !makes_room(ctx, id))
             .and_then(|id| ctx.read_response(id))
             .map(|r| r.rect);
         let slab = layout(viewport, min_key_h, field);
@@ -1020,7 +991,6 @@ impl OnScreenKeyboard {
 
         let field = if self.open {
             self.target
-                .filter(|&id| !makes_room(ctx, id))
                 .and_then(|id| ctx.read_response(id))
                 .map(|r| r.rect)
         } else {

@@ -169,6 +169,7 @@ pub(crate) fn present_rate(
     camera: Query<&Transform, With<crate::components::FreeCamera>>,
     prefs: Res<crate::resources::AppPrefs>,
     ui_input: Res<crate::systems::ui_input::UiInput>,
+    scenario: Option<Res<crate::systems::scenario::ScenarioView>>,
     mut rate: ResMut<PresentationRate>,
     mut watch: Local<IdleWatch>,
 ) {
@@ -199,7 +200,11 @@ pub(crate) fn present_rate(
         || touches.iter_just_released().next().is_some()
         // A card arriving over a still map is the moment somebody is looking
         // hardest; at the idle rate it arrived in steps.
-        || ui_input.ui_animating();
+        || ui_input.ui_animating()
+        // A scenario's clock playing, or its lens's colours easing, over a
+        // still map: the tracks and areas move while nothing else does
+        // (egui's repaint request did this before the library drew them).
+        || scenario.is_some_and(|s| s.animating());
 
     watch.quiet_s = if busy {
         0.0

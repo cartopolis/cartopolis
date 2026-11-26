@@ -1,8 +1,8 @@
 //! Time and curve, in one place — as [`theme`](super::theme) is for colour.
 //!
-//! Five durations and two curves, the midas hub's own (`web/src/app.css`:
+//! Five durations and a curve, the midas hub's own (`web/src/app.css`:
 //! `--dur-press` 120 ms, `--dur-state` 200 ms, `--dur-enter` 360 ms,
-//! `--ease-out`, `--ease-spring`), so the app and the web UI move alike. A
+//! `--ease-out`), so the app and the web UI move alike. A
 //! panel never writes a time of its own: it says what kind of change this is
 //! (a press, a state, a surface coming or going) and takes the duration from
 //! here. `docs/mockups/fluid-ui/` is the design; the second sheet has one
@@ -102,14 +102,6 @@ pub fn ease_out(t: f32) -> f32 {
     bezier(0.2, 0.8, 0.2, 1.0, t)
 }
 
-/// The hub's `--ease-spring`: `cubic-bezier(0.34, 1.56, 0.64, 1)`, which
-/// overshoots by 6 % and comes back. For what is *new* and small — a marker
-/// appearing, a count arriving — never for a surface.
-#[must_use]
-pub fn spring(t: f32) -> f32 {
-    bezier(0.34, 1.56, 0.64, 1.0, t)
-}
-
 /// A CSS cubic Bézier timing function: `y` at the `s` where `x(s) == t`, with
 /// the endpoints (0, 0) and (1, 1). Newton on `x`, eight steps, which is
 /// well under a thousandth for these two curves.
@@ -159,19 +151,15 @@ impl Presence {
     }
 }
 
-/// The presence of a surface keyed by `id`: [`ENTER`] towards shown, [`LEAVE`]
-/// towards gone. A surface first seen while open starts from nothing, as
-/// egui's own `Area` fade-in does, rather than appearing settled.
+/// The presence of a surface keyed by `id`, `enter` towards shown, `leave`
+/// towards gone ([`ENTER`] and [`LEAVE`] for a card; the keyboard answers a
+/// tap and takes [`LEAVE`] to come). A surface first seen while open starts
+/// from nothing, as egui's own `Area` fade-in does, rather than appearing
+/// settled. Both go to nothing under reduced motion.
 ///
 /// A caller keeps drawing while [`Presence::visible`], and makes the surface
 /// non-interactive (`Area::interactable(pres.open)`, or `ui.disable()`) while
 /// it leaves, so a tap in the last 240 ms lands on what is underneath.
-pub fn presence(ctx: &Context, id: Id, open: bool) -> Presence {
-    presence_timed(ctx, id, open, ENTER, LEAVE)
-}
-
-/// [`presence`] with its own times (the keyboard answers a tap and takes
-/// [`LEAVE`] to come). Both go to nothing under reduced motion.
 pub fn presence_timed(ctx: &Context, id: Id, open: bool, enter: f32, leave: f32) -> Presence {
     let id = id.with("presence");
     let seen_id = id.with("seen");
@@ -242,26 +230,6 @@ pub fn shift_painted(ctx: &Context, layer: egui::LayerId, pres: Presence, lift: 
     }
 }
 
-/// Apply a presence to a floating `Area` that is *new* and small, the ring and
-/// a marker: it pops about `about` (scale 0.6 → 1 on [`spring`]) and fades
-/// in; it leaves by shrinking and fading on [`ease_out`].
-pub fn pop(ui: &mut Ui, pres: Presence, about: egui::Pos2) {
-    let scale = if pres.open {
-        0.6 + 0.4 * spring(pres.linear)
-    } else {
-        0.6 + 0.4 * pres.t
-    };
-    ui.multiply_opacity(pres.t.clamp(0.0, 1.0));
-    let layer = ui.layer_id();
-    let about = about.to_vec2();
-    ui.ctx().set_transform_layer(
-        layer,
-        TSTransform::from_translation(about)
-            * TSTransform::from_scaling(scale)
-            * TSTransform::from_translation(-about),
-    );
-}
-
 /// The scale of a control under the finger: 1 at rest, 0.94 pressed, over
 /// [`PRESS`] each way. Read from the response of the previous pass, as every
 /// hand-painted control reads its hover.
@@ -311,12 +279,6 @@ mod tests {
             "{}",
             ease_out(2.0 / 3.0)
         );
-        // The spring overshoots and comes back.
-        let peak = (0..100)
-            .map(|i| spring(i as f32 / 100.0))
-            .fold(0.0, f32::max);
-        assert!(peak > 1.04 && peak < 1.12, "{peak}");
-        assert_eq!(spring(1.0), 1.0);
     }
 
     #[test]
@@ -353,7 +315,7 @@ mod tests {
                 ..Default::default()
             };
             ctx.begin_pass(raw);
-            let pres = presence(&ctx, id, open);
+            let pres = presence_timed(&ctx, id, open, ENTER, LEAVE);
             let out = ctx.end_pass_unpainted();
             let delay = out
                 .viewport_output

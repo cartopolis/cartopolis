@@ -12,7 +12,7 @@
 //! floating box here follows: egui paints `Area`s above panels even at
 //! `Order::Background`, so disappearing is the only way to be *behind* one.
 
-use crate::systems::egui_manager::{EguiMut, EguiRef};
+use crate::systems::egui_manager::EguiRef;
 use bevy::prelude::*;
 
 use super::{McpBridge, Outcome};
@@ -194,89 +194,37 @@ fn publish(lib: &mut Option<ResMut<McpActivityLib>>, view: Option<ActivityView>)
 const AI_ACTIVE_SECS: f64 = 15.0;
 
 /// While an agent works in the room (an MCP client, or a session on the Midas
-/// page through the device link): a bar at the top saying what it is doing,
-/// with Pause. Paused, its building tools answer that the person paused it
+/// page through the device link), what the room's bar at the top says it is
+/// doing: `(head, rest)`, `None` for no bar. The bar (`lib_design_room`) has
+/// Pause; paused, the agent's building tools answer that the person paused it
 /// (`mcp::agent`), so it waits and the person steers — in the room, or in the
 /// session's chat. Fed by the same activity log the desktop's editor overlay
 /// draws (`McpBridge::log`), so every tool shows here with no extra wiring.
-pub fn render_design_room_ai(
-    egui: EguiMut,
-    mut room: ResMut<crate::systems::design_room::DesignRoom>,
-    bridge: Option<Res<McpBridge>>,
-    real: Res<Time<bevy::time::Real>>,
-) {
-    if room.spot.is_none() {
-        return;
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[must_use]
+pub fn design_room_ai_line(
+    bridge: Option<&McpBridge>,
+    now: f64,
+    paused: bool,
+) -> Option<(String, String)> {
+    if paused {
+        return Some(("Paused".to_string(), "the AI waits for you".to_string()));
     }
-    let now = real.elapsed_secs_f64();
-    let latest = bridge.as_ref().and_then(|b| {
-        b.log
-            .iter()
-            .filter(|e| e.outcome == Outcome::Working || now - e.at <= AI_ACTIVE_SECS)
-            .max_by(|a, b| a.at.total_cmp(&b.at))
-            .cloned()
-    });
-    if latest.is_none() && !room.ai_paused {
-        return;
-    }
-    let mut paused = room.ai_paused;
-    crate::systems::design_room::room_panel(
-        egui.ctx(),
-        "design_room_ai",
-        egui::Align2::CENTER_TOP,
-        egui::vec2(0.0, theme::OSD_MARGIN),
-        None,
-        |ui| {
-            ui.horizontal(|ui| {
-                // A live dot: the agent at work, still when paused.
-                let (dot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                let colour = if paused {
-                    theme::p32().warn
-                } else {
-                    theme::p32().accent_bright
-                };
-                ui.painter()
-                    .circle_filled(dot.center(), 7.0, colour.gamma_multiply(0.25));
-                ui.painter().circle_filled(dot.center(), 4.0, colour);
-                let (head, rest) = if paused {
-                    ("Paused".to_string(), "the AI waits for you".to_string())
-                } else {
-                    match &latest {
-                        Some(e) if e.outcome == Outcome::Working => (
-                            "The AI is building".to_string(),
-                            format!("{} {}", e.label, e.detail),
-                        ),
-                        Some(e) => ("The AI".to_string(), format!("{}: {}", e.label, e.detail)),
-                        None => (String::new(), String::new()),
-                    }
-                };
-                ui.label(egui::RichText::new(head).color(theme::p32().cream));
-                let rest: String = rest.chars().take(56).collect();
-                ui.label(egui::RichText::new(rest).color(theme::p32().text_dim));
-                ui.add_space(8.0);
-                let (icon, label, tip) = if paused {
-                    (
-                        crate::systems::icons::PLAY,
-                        "Resume",
-                        "let the AI carry on building",
-                    )
-                } else {
-                    (
-                        crate::systems::icons::STOP,
-                        "Pause",
-                        "hold the AI's next change until you resume it",
-                    )
-                };
-                if theme::secondary_button(ui, icon, label, 0.0)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    paused = !paused;
-                }
-            });
-        },
-    );
-    if paused != room.ai_paused {
-        room.ai_paused = paused;
-    }
+    let latest = bridge?
+        .log
+        .iter()
+        .filter(|e| e.outcome == Outcome::Working || now - e.at <= AI_ACTIVE_SECS)
+        .max_by(|a, b| a.at.total_cmp(&b.at))?;
+    let (head, rest) = if latest.outcome == Outcome::Working {
+        (
+            "The AI is building".to_string(),
+            format!("{} {}", latest.label, latest.detail),
+        )
+    } else {
+        (
+            "The AI".to_string(),
+            format!("{}: {}", latest.label, latest.detail),
+        )
+    };
+    Some((head, rest.chars().take(56).collect()))
 }

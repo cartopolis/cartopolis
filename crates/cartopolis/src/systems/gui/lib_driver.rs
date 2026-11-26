@@ -1,21 +1,20 @@
-//! The navigation chrome drawn by the component library (`lib_host`), beside
-//! egui's (`driver::render_driver_hud`): the turn card at the top left, the
-//! trip bar along the bottom, the speed and the limit over the bar's left end,
-//! Overview / Re-centre over its right, and the GPS chip between them.
+//! The navigation chrome drawn by the component library (`lib_host`): the
+//! turn card at the top left, the trip bar along the bottom, the speed and
+//! the limit over the bar's left end, Overview / Re-centre over its right,
+//! and the GPS chip between them.
 //!
-//! On with `CARTO_UI_LIB=driver` (or `1`), on the web `?ui=lib`. egui's
-//! system steps aside (`DriverState::lib`) but still works out what shows —
-//! the card's state and colour, the bar standing down behind a docked panel,
-//! the chip only when there is something to say — and publishes it in
-//! `DriverState::lib_view`. A tap here goes back in `DriverState::lib_acts`
-//! and is done by `DriverState::apply`, the code egui's buttons call.
+//! `driver::drive_driver_hud` works out what shows — the card's state and
+//! colour, the bar standing down behind a docked panel, the chip only when
+//! there is something to say — and publishes it in `DriverState::lib_view`.
+//! A tap here goes back in `DriverState::lib_acts` and is done by
+//! `DriverState::apply`.
 //!
-//! **Placement.** As egui's: the card `CARD_MARGIN` in from the top left,
+//! **Placement.** The card `CARD_MARGIN` in from the top left,
 //! `card_width` × `CARD_HEIGHT`, 10 inside; the bar centred
 //! `driver::bar_bottom` over the bottom edge, `bar_width` × `BAR_HEIGHT`, 8
 //! inside; the speed and the view buttons with their bottom edge at
 //! `driver::above_bar`, in from the screen's edges where the bar's ends are;
-//! the chip centred between them. egui works the widths out
+//! the chip centred between them. `drive_driver_hud` works the widths out
 //! (`driver_layout`) and publishes them in `DriverView::place`.
 //!
 //! **Drawn from boxes.** What egui paints: the plate a rounded box, the
@@ -106,9 +105,6 @@ pub fn drive_lib_driver(
     if !lib.driver {
         return;
     }
-    if !driver.lib {
-        driver.lib = true;
-    }
     let dark = theme::p().ink == theme::DARK.ink;
     let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
         metrics.ui_scale()
@@ -117,7 +113,7 @@ pub fn drive_lib_driver(
     };
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        // The taps of the frame, for egui's system to do next frame.
+        // The taps of the frame, for `drive_driver_hud` to do next frame.
         if let Some(live) = m.as_ref() {
             let acts: Vec<DriverAct> = std::mem::take(&mut *live.acts.borrow_mut());
             if !acts.is_empty() {
@@ -732,7 +728,8 @@ fn chip_fill() -> String {
     alpha(chip, f32::from(chip.a()) / 2.55)
 }
 
-/// What the position is worth, centred above the bar in `theme::chip_frame`.
+/// What the position is worth, centred above the bar in a label chip
+/// (`theme::LABEL_CHIP`, `theme::CHIP_PADDING`).
 fn chip_view(text: &str, p: &DriverPlace, k: f32) -> View {
     let band = format!(
         "position: absolute; left: 0; bottom: {}; width: {}; display: flex; \

@@ -74,7 +74,9 @@ impl Plugin for UiProbePlugin {
                     crate::systems::lib_script::drive_lib_script,
                     crate::systems::lib_plans::drive_lib_plans,
                     crate::systems::lib_scenario::drive_lib_scenario,
+                    crate::systems::lib_scenario_map::drive_lib_scenario_map,
                     crate::systems::lib_design_room::drive_lib_design_room,
+                    crate::systems::lib_design_room::drive_lib_design_room_overlays,
                     crate::systems::lib_walk_guide::drive_lib_walk_guide,
                     crate::systems::lib_interact::drive_lib_interact,
                     crate::systems::lib_interact::drive_lib_attach_chip,
@@ -148,6 +150,15 @@ impl Plugin for UiProbePlugin {
                 crate::systems::lib_midas_link::drive_lib_midas_link,
                 crate::systems::lib_release_approval::drive_lib_release_approval,
             )
+                .after(crate::systems::lib_host::prepare_bevy)
+                .before(crate::systems::lib_host::bridge_input),
+        );
+        // The bar over the design room while an agent works in it, wherever
+        // the agent tools are.
+        #[cfg(mcp)]
+        app.add_systems(
+            PostUpdate,
+            crate::systems::lib_design_room::drive_lib_design_room_ai
                 .after(crate::systems::lib_host::prepare_bevy)
                 .before(crate::systems::lib_host::bridge_input),
         );

@@ -291,8 +291,8 @@ pub struct LensAreas {
     inbox: Arc<Mutex<Vec<Built>>>,
 }
 
-/// Raised while a colour is still easing, for the egui side to keep the
-/// frames coming (`scenario::render_scenario_map`).
+/// Raised while a colour is still easing, so that the frames keep coming
+/// (`ScenarioView::animating`).
 static EASING: AtomicBool = AtomicBool::new(false);
 
 /// Whether a lens colour is still on its way to its state's.

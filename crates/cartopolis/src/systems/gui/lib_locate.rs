@@ -1,14 +1,13 @@
 //! The "you are here" arrow and its accuracy halo drawn by the component
-//! library (`lib_host`), beside egui's (`locate::render_locate_arrow`).
+//! library (`lib_host`).
 //!
-//! On with `CARTO_UI_LIB=locate` (or `1`), on the web `?ui=locate`. egui's
-//! system keeps every decision — tracking on and not driving, where the fix
-//! projects, culled to `place_pins::map_area` and the map's buttons, how
-//! many screen points the reported accuracy spans (floored and clamped by
-//! `locate::halo_radius`), which way the heading points on screen — and
-//! publishes the frame in `LocateArrow::lib_view`; with `LocateArrow::lib`
-//! on it paints nothing. Nothing here listens: the arrow answers a question
-//! and offers no action, so a tap goes through it to the map.
+//! `locate::place_locate_arrow` keeps every decision — tracking on and not
+//! driving, where the fix projects, culled to `place_pins::map_area` and the
+//! map's buttons, how many screen points the reported accuracy spans
+//! (floored and clamped by `locate::halo_radius`), which way the heading
+//! points on screen — and publishes the frame in `LocateArrow::lib_view`.
+//! Nothing here listens: the arrow answers a question and offers no action,
+//! so a tap goes through it to the map.
 //!
 //! **One mount, restyled.** The arrow moves every frame the map does, so
 //! nothing is rebuilt per frame: the clip, the spot, the halo's radius and
@@ -105,16 +104,10 @@ pub fn drive_lib_locate(
     if !lib.locate {
         return;
     }
-    let Some(mut arrow) = arrow else {
-        commands.insert_resource(LocateArrow {
-            lib: true,
-            ..Default::default()
-        });
+    let Some(arrow) = arrow else {
+        commands.insert_resource(LocateArrow::default());
         return;
     };
-    if !arrow.lib {
-        arrow.lib = true;
-    }
     let view: Option<ArrowView> = arrow.lib_view;
     let k = px_scale(metrics.ui_scale());
     let dark = theme::p().ink == theme::DARK.ink;

@@ -1,11 +1,22 @@
-//! The Plans layer's chrome drawn by the component library (`lib_host`):
-//! the chip at the top while the layer is on, the card a dot, a square or
-//! the ring's *Plans here* opens, and the chip that says a followed place
-//! has news.
+//! The Plans layer drawn by the component library (`lib_host`): its marks
+//! over the map, the chip at the top while the layer is on, the card a dot,
+//! a square or the ring's *Plans here* opens, and the chip that says a
+//! followed place has news.
 //!
-//! The dots, squares and outlines are still painted over the map by
-//! `plans::render_plans`, which counts what it drew for the chip; the
-//! card's and the news chip's reasons to stand aside are worked out by
+//! **The marks** — a notice's dot, a council item's and a work's square,
+//! and under them the outlines of notice areas and works — are placed by
+//! `plans::place_plans` (`PlansView::marks`, `PlansView::strokes`) and drawn
+//! here through `lib_pins::Anchored`, the keyed list everything anchored to
+//! the world goes through. A dot is a bordered disc, a square a bordered
+//! box with its glyph; an outline is a run of thin boxes, each turned onto
+//! its piece of line (a dash, or a whole segment of a solid line), and a
+//! tree's ring a bordered circle. Nothing in an outline listens; a tap on a
+//! mark goes back as `Plans::lib_tapped` and opens its card there. The
+//! outlines stand under the place names (-3), the marks over them and under
+//! the pins (-1), as egui stacked them. The library has no hover, so a mark
+//! does not grow under the pointer; its words are the node's `title`.
+//!
+//! The card's and the news chip's reasons to stand aside are worked out by
 //! `plans::drive_plans_card` and `plans::drive_plans_news`
 //! (`Plans::lib_view`). What a card shows is one model
 //! (`Plans::card_model`, a list of `plans::Block`s), and a tap goes through
@@ -27,11 +38,13 @@ use mithril::prelude::*;
 use mithril::prelude::{Button, Event};
 
 use crate::systems::layer_state::DataLayers;
+use crate::systems::lib_pins::{boxed, css, px_scale, Anchored, Spot};
 use crate::systems::lib_place_card::{icon, Placement, CARD_WIDTH};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::plans::{
-    chip_words, follow_explained, follow_tip, Block, CardAct, CardModel, Ink, Marker, Plans,
-    TextSize, WORK,
+    chip_words, follow_explained, follow_tip, Block, CardAct, CardModel, Ink, MarkLook, Marker,
+    PlanStroke, Plans, StrokeInk, StrokeLook, TextSize, COUNCIL_R, DOT_R, OPEN_R, STROKE_W, TREE_R,
+    WORK, WORK_R,
 };
 use crate::systems::theme::tokens::hex;
 use crate::systems::ui_input::UiMetrics;
@@ -42,6 +55,19 @@ use crate::systems::{icons, theme};
 const CHIP: &str = "plans_chip";
 const CARD: &str = "plans_card";
 const NEWS: &str = "plans_news";
+/// The marks over the map, and their outlines.
+const MARKS: &str = "plans_marks";
+
+/// The stacking of the marks' two lists, as egui's: the outlines under the
+/// place names (`lib_place_names`, -3), the marks over them and under the
+/// pins (`lib_pins`, -1).
+const STROKES_Z: i32 = -4;
+const MARKS_Z: i32 = -2;
+/// A piece of outline's length is kept in quarter px and its turn in tenths
+/// of a degree: finer than shows, coarse enough that a still map restyles
+/// nothing.
+const LEN_STEPS: f32 = 4.0;
+const TURN_STEPS: f32 = 10.0;
 
 /// Points from the top of the map chrome to a chip's top, as egui's.
 const CHIP_TOP_PTS: f32 = 52.0;
@@ -83,11 +109,35 @@ struct NewsState {
     line: String,
 }
 
+/// A mark as drawn: everything but where it is.
+#[derive(Clone, PartialEq)]
+struct MarkStyle {
+    title: String,
+    look: MarkLook,
+}
+
+/// A piece of outline as drawn: a line's length and turn (in [`LEN_STEPS`]
+/// and [`TURN_STEPS`]) and colour, or a tree's ring.
+#[derive(Clone, PartialEq)]
+enum Piece {
+    Line { len: i32, turn: i32, ink: StrokeInk },
+    Ring,
+}
+
+/// The marks' mount: its two lists, and the key of the mark tapped since
+/// the last frame.
+struct Marks {
+    marks: Anchored<MarkStyle>,
+    pieces: Anchored<Piece>,
+    tapped: Rc<RefCell<Option<String>>>,
+}
+
 struct Screens {
     acts: Rc<RefCell<Vec<Act>>>,
     chip: Option<Signal<ChipState>>,
     card: Option<Signal<CardState>>,
     news: Option<Signal<NewsState>>,
+    marks: Marks,
 }
 
 thread_local! {
@@ -132,8 +182,9 @@ fn keep<T: Clone + PartialEq + 'static>(
     }
 }
 
-/// Mounts, bridges and unmounts the chip, the card and the news chip.
-/// `PostUpdate`, before `DriveUi`, as every library screen.
+/// Mounts the marks once and mirrors `place_plans`' frame of them; mounts,
+/// bridges and unmounts the chip, the card and the news chip. `PostUpdate`,
+/// before `DriveUi`, as every library screen.
 pub fn drive_lib_plans(
     _main: NonSendMarker,
     lib: Res<LibScreens>,
@@ -149,19 +200,53 @@ pub fn drive_lib_plans(
     let ui_scale = metrics.ui_scale();
     // The library's px are egui's points on the Bevy backend; as DOM they are
     // the page's (`Placement::over_the_dock` says why).
-    let k = if cfg!(all(feature = "ui-dom", target_arch = "wasm32")) {
-        ui_scale
-    } else {
-        1.0
-    };
+    let k = px_scale(ui_scale);
     MOUNTED.with(|m| {
         let mut m = m.borrow_mut();
-        let screens = m.get_or_insert_with(|| Screens {
-            acts: Rc::new(RefCell::new(Vec::new())),
-            chip: None,
-            card: None,
-            news: None,
+        let screens = m.get_or_insert_with(|| {
+            let marks = Marks {
+                marks: Anchored::new(),
+                pieces: Anchored::new(),
+                tapped: Rc::new(RefCell::new(None)),
+            };
+            // Mounted once and kept: the marks' colours are the layer's
+            // own, the same in both themes, and empty lists draw nothing.
+            crate::systems::lib_host::mount_keyed(
+                MARKS,
+                marks_view(&marks),
+                theme::p().ink == theme::DARK.ink,
+                theme::touch_layout(),
+            );
+            Screens {
+                acts: Rc::new(RefCell::new(Vec::new())),
+                chip: None,
+                card: None,
+                news: None,
+                marks,
+            }
         });
+        // The marks: last frame's tap back to `place_plans`, this frame's
+        // marks and outlines in.
+        if let Some(key) = screens.marks.tapped.borrow_mut().take() {
+            plans.lib_tapped = Some(key);
+        }
+        screens
+            .marks
+            .pieces
+            .sync(plans.lib_view.strokes.iter().map(|s| piece(s, k)));
+        screens
+            .marks
+            .marks
+            .sync(plans.lib_view.marks.iter().map(|m| {
+                (
+                    m.key.clone(),
+                    Spot::at(m.at.x * k, m.at.y * k),
+                    MarkStyle {
+                        title: m.title.clone(),
+                        look: m.look,
+                    },
+                )
+            }));
         // The taps of the frame, before anything else moves.
         let acts: Vec<Act> = std::mem::take(&mut *screens.acts.borrow_mut());
         for a in acts {
@@ -213,6 +298,144 @@ pub fn drive_lib_plans(
         };
         keep(&mut screens.news, NEWS, news, |s| news_view(s, &acts));
     });
+}
+
+/// One piece of outline for the list: keyed, placed at its middle (a line)
+/// or its centre (a ring), in the library's px.
+fn piece(s: &PlanStroke, k: f32) -> (String, Spot, Piece) {
+    match s.look {
+        StrokeLook::Line { a, b, ink } => {
+            let (a, b) = (a * k, b * k);
+            let (d, mid) = (b - a, (a + b) / 2.0);
+            (
+                s.key.clone(),
+                Spot::at(mid.x, mid.y),
+                Piece::Line {
+                    len: (d.length() * LEN_STEPS).round() as i32,
+                    turn: (d.y.atan2(d.x).to_degrees() * TURN_STEPS).round() as i32,
+                    ink,
+                },
+            )
+        }
+        StrokeLook::Ring { at } => (s.key.clone(), Spot::at(at.x * k, at.y * k), Piece::Ring),
+    }
+}
+
+/// The marks' mount: the outlines' list under the marks' list.
+fn marks_view(m: &Marks) -> View {
+    let pieces = m.pieces.view(STROKES_Z, |_, p| piece_view(p));
+    let marks = {
+        let tapped = m.tapped.clone();
+        m.marks
+            .view(MARKS_Z, move |key, s| mark_view(key, s, &tapped))
+    };
+    view! {
+        {pieces}
+        {marks}
+    }
+}
+
+/// A piece of outline about its item's origin: a thin box as long as the
+/// piece, turned onto it, or a tree's ring. Nothing in it listens.
+fn piece_view(p: &Piece) -> View {
+    let style = match p {
+        Piece::Line { len, turn, ink } => {
+            let len = *len as f32 / LEN_STEPS;
+            let deg = *turn as f32 / TURN_STEPS;
+            boxed(
+                -len / 2.0,
+                -STROKE_W / 2.0,
+                len,
+                STROKE_W,
+                &format!(
+                    "background: {}; pointer-events: none; transform: rotate({deg:.1}deg)",
+                    css(ink.colour())
+                ),
+            )
+        }
+        Piece::Ring => {
+            // The stroke centred on the ring's radius, as egui's.
+            let o = TREE_R + STROKE_W / 2.0;
+            boxed(
+                -o,
+                -o,
+                2.0 * o,
+                2.0 * o,
+                &format!(
+                    "box-sizing: border-box; border-radius: {o:.1}px; border: {STROKE_W:.1}px solid {}; pointer-events: none",
+                    css(WORK)
+                ),
+            )
+        }
+    };
+    view! { <div style={style}></div> }
+}
+
+/// A mark about its item's origin: the tappable square it answers in, and
+/// the dot or square drawn in its middle.
+fn mark_view(key: &str, m: &MarkStyle, tapped: &Rc<RefCell<Option<String>>>) -> View {
+    let tap: Handler = {
+        let (tapped, key) = (tapped.clone(), key.to_string());
+        Rc::new(move |_: &Event| *tapped.borrow_mut() = Some(key.clone()))
+    };
+    let (cream, ink) = (css(theme::DARK.cream), css(theme::DARK.ink));
+    let (side, inner) = match m.look {
+        MarkLook::Notice { open } => {
+            // Orange on cream while its response period runs, grey on ink after.
+            let (r, fill, rim) = if open {
+                (OPEN_R, css(theme::BRAND), cream)
+            } else {
+                (DOT_R, css(theme::DARK.accent), ink)
+            };
+            let side = 2.0 * r + 8.0;
+            let o = r + STROKE_W / 2.0;
+            let disc = boxed(
+                side / 2.0 - o,
+                side / 2.0 - o,
+                2.0 * o,
+                2.0 * o,
+                &format!(
+                    "box-sizing: border-box; border-radius: {o:.1}px; background: {fill}; border: {STROKE_W:.1}px solid {rim}"
+                ),
+            );
+            (side, view! { <div style={disc}></div> })
+        }
+        // A tick for a decision taken, a dot for business still open.
+        MarkLook::Council { decided } => square(
+            COUNCIL_R,
+            css(theme::COUNCIL),
+            cream.clone(),
+            cream,
+            if decided { icons::CHECK } else { icons::DOT },
+        ),
+        MarkLook::Work { glyph } => square(WORK_R, css(WORK), ink.clone(), ink, glyph),
+    };
+    let frame = boxed(-side / 2.0, -side / 2.0, side, side, "cursor: pointer");
+    let title = m.title.clone();
+    view! {
+        <div style={frame} title={title} on:click={move |e: &Event| tap(e)}>{inner}</div>
+    }
+}
+
+/// A council item's or a work's square of half-size `r`, its rim and its
+/// glyph in `ink`, centred in the square it answers taps in; that square's
+/// side, and the view.
+fn square(r: f32, fill: String, rim: String, ink: String, glyph: &'static str) -> (f32, View) {
+    let side = 2.0 * r + 6.0;
+    let o = r + STROKE_W / 2.0;
+    let style = boxed(
+        side / 2.0 - o,
+        side / 2.0 - o,
+        2.0 * o,
+        2.0 * o,
+        &format!(
+            "box-sizing: border-box; display: flex; align-items: center; justify-content: center; \
+             border-radius: 6px; background: {fill}; border: {STROKE_W:.1}px solid {rim}; \
+             color: {ink}; font-family: 'Material Symbols Rounded'; font-size: {:.1}px; line-height: 1",
+            r * 1.3
+        ),
+    );
+    (side, view! { <div style={style}>{glyph}</div> })
 }
 
 /// A full-width row at `top` that lets the pointer through, centring what

@@ -23,6 +23,15 @@
 //! a bubble's tail is a turned square; the field's hint follows Shout by
 //! rebuilding the field; the field keeps the keyboard after a send only as
 //! far as the library's focus does (egui asks for it again).
+//!
+//! A chat's World view is drawn here too, being the map's chat narrowed to
+//! one chat: its header pill (back, the chat's name, the Chat | World
+//! switch with the live dot) and, while the dock's chat button has it open,
+//! its composer pill ("+" and its menu, the field with the pin, send).
+//! `chats::drive_chat_world` publishes it as `ChatsView::lib_world` and
+//! does its taps (`ChatsView::lib_world_taps`) through the panel's own
+//! `Actions`; the field is bridged to `ChatsView::draft` as the
+//! conversation's is.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -37,8 +46,9 @@ use crate::systems::chat::{ChatState, PersonAction};
 use crate::systems::chat_overlay::{
     ChatOverlay, ChipAct, ChipView, RunView, SheetActs, SheetStrip, SheetView,
 };
+use crate::systems::chats::{Attach, AttachMenu, ChatsView, WorldComposer, WorldTap};
 use crate::systems::discs::ChatKind;
-use crate::systems::lib_chats::{disc, icon, Typed};
+use crate::systems::lib_chats::{disc, icon, note, Typed};
 use crate::systems::lib_pins::{css, px_scale, Anchored, Spot};
 use crate::systems::lib_settings::LibScreens;
 use crate::systems::ui_input::UiMetrics;
@@ -104,11 +114,32 @@ struct Live {
     input: Typed,
     chip_act: Rc<RefCell<Option<ChipAct>>>,
     sheet_act: Rc<RefCell<SheetActs>>,
+    /// A chat's World view: its header (the chat's name, its top in px).
+    world_head: Signal<Option<(String, f32)>>,
+    /// Its composer's place (left, bottom, width in px) and whether the
+    /// field has the pin (a private chat): the composer is built again only
+    /// when these move, its parts follow their own signals.
+    world_frame: Signal<Option<([f32; 3], bool)>>,
+    world_attach: Signal<Option<AttachMenu>>,
+    /// "+" is open: its glyph is ✕.
+    world_plus: Signal<bool>,
+    world_ready: Signal<bool>,
+    /// A new count builds the field again, which takes the keyboard.
+    world_claim: Signal<u32>,
+    /// `ChatsView::draft`, while the World view's composer is up.
+    world_draft: Typed,
+    world_taps: Rc<RefCell<Vec<WorldTap>>>,
     /// The theme it was mounted in: another remounts it.
     dark: bool,
 }
 
 impl Live {
+    /// A handler that leaves a World view tap for `chats::drive_chat_world`.
+    fn world_tap(&self, t: WorldTap) -> Handler {
+        let taps = self.world_taps.clone();
+        Rc::new(move |_: &Event| taps.borrow_mut().push(t))
+    }
+
     /// A handler that fills the sheet's record for the next frame.
     fn act(&self, f: impl Fn(&mut SheetActs) + 'static) -> Handler {
         let acts = self.sheet_act.clone();
@@ -141,6 +172,7 @@ pub fn drive_lib_chat_overlay(
     lib: Res<LibScreens>,
     mut overlay: ResMut<ChatOverlay>,
     mut chat: ResMut<ChatState>,
+    mut chats: ResMut<ChatsView>,
     metrics: Res<UiMetrics>,
 ) {
     if !lib.chat_overlay {
@@ -169,6 +201,14 @@ pub fn drive_lib_chat_overlay(
                 input: Typed::new(&chat.input),
                 chip_act: Rc::new(RefCell::new(None)),
                 sheet_act: Rc::new(RefCell::new(SheetActs::default())),
+                world_head: signal(None),
+                world_frame: signal(None),
+                world_attach: signal(None),
+                world_plus: signal(false),
+                world_ready: signal(false),
+                world_claim: signal(0),
+                world_draft: Typed::new(&chats.draft),
+                world_taps: Rc::new(RefCell::new(Vec::new())),
                 dark,
             };
             let touch = theme::touch_layout();
@@ -191,6 +231,7 @@ pub fn drive_lib_chat_overlay(
             chat.input = typed;
         }
         live.input.follow(&chat.input);
+        world(live, &mut chats, k);
 
         let view = &overlay.lib_view;
         live.bubbles.sync(view.bubbles.iter().map(|b| {
@@ -250,6 +291,47 @@ pub fn drive_lib_chat_overlay(
             }
         }
     });
+}
+
+/// A chat's World view: last frame's taps and what was typed → the chats'
+/// state; what `chats::drive_chat_world` published → the signals. Only what
+/// moved is written, the state's included.
+fn world(live: &Live, chats: &mut ResMut<ChatsView>, k: f32) {
+    let taps: Vec<WorldTap> = std::mem::take(&mut *live.world_taps.borrow_mut());
+    if !taps.is_empty() {
+        chats.lib_world_taps.extend(taps);
+    }
+    if let Some(typed) = live.world_draft.typed(&chats.draft) {
+        chats.draft = typed;
+    }
+    live.world_draft.follow(&chats.draft);
+    let bar = chats.lib_world.as_ref();
+    set(&live.world_head, bar.map(|b| (b.name.clone(), b.top * k)));
+    match bar.and_then(|b| b.composer.as_ref()) {
+        Some(c) => {
+            let WorldComposer {
+                left,
+                bottom,
+                width,
+                attach,
+                pin,
+                ready,
+                claim,
+            } = c;
+            set(
+                &live.world_frame,
+                Some(([left * k, bottom * k, width * k], *pin)),
+            );
+            set(&live.world_plus, attach.is_some());
+            set(&live.world_attach, attach.clone());
+            set(&live.world_ready, *ready);
+            set(&live.world_claim, *claim);
+        }
+        None => {
+            set(&live.world_frame, None);
+            set(&live.world_attach, None);
+        }
+    }
 }
 
 fn head_of(s: &SheetView) -> Head {
@@ -323,9 +405,29 @@ fn view_of(l: &Live) -> View {
             }
         }
     };
+    let world_head = {
+        let l = l.clone();
+        move || -> View {
+            match l.world_head.get() {
+                Some((name, top)) => world_head(&l, name, top),
+                None => View::Empty,
+            }
+        }
+    };
+    let world_composer = {
+        let l = l.clone();
+        move || -> View {
+            match l.world_frame.get() {
+                Some((rect, pin)) => world_composer(&l, rect, pin),
+                None => View::Empty,
+            }
+        }
+    };
     view! {
         {chip}
         {sheet}
+        {world_head}
+        {world_composer}
     }
 }
 
@@ -859,6 +961,234 @@ fn field_row(l: &Live) -> View {
             {plus}
             <div style="flex: 1; min-width: 0">{field}</div>
             {send}
+        </div>
+    }
+}
+
+// ─── A chat's World view ──────────────────────────────────────────────────────
+
+/// A round key of the design's composer (`.circ`), 38 px: raised, or the
+/// accent when it is the one that acts (`.circ.hot`), pale while it cannot.
+fn circle(glyph: &'static str, hot: bool, enabled: bool, hint: &'static str, tap: Handler) -> View {
+    let (fill, ink) = match (hot, enabled) {
+        (true, true) => ("var(--m-accent)", "var(--m-on-accent)"),
+        (true, false) => ("var(--m-accent-soft)", "var(--m-text-dim)"),
+        (false, _) => ("var(--m-surface-raised)", "var(--m-text)"),
+    };
+    let style = format!(
+        "flex: none; width: 38px; height: 38px; border-radius: 19px; display: flex; align-items: center; justify-content: center; background: {fill}; color: {ink}; cursor: pointer"
+    );
+    let mut key = mithril::view::el("div")
+        .attr("style", style)
+        .attr("title", hint)
+        .attr("aria-label", hint);
+    if enabled {
+        key = key.on("click", move |e: &Event| tap(e));
+    }
+    key.child(icon(glyph)).into_view()
+}
+
+/// The header pill (`chats::drive_chat_world`): back, the chat's name and
+/// the Chat | World switch, centred `top` px down.
+fn world_head(l: &Live, name: String, top: f32) -> View {
+    // The row spans the screen and lets taps through; only the pill takes
+    // them. The map's tokens are set on the row for the pill to read.
+    let row = format!(
+        "position: absolute; left: 0; right: 0; top: {top:.0}px; display: flex; justify-content: center; pointer-events: none; {}",
+        theme::map_vars()
+    );
+    let name_style = format!(
+        "color: var(--map-ink); font-size: {:.1}px; white-space: nowrap",
+        theme::SIZE_BODY
+    );
+    view! {
+        <div style={row}>
+            <div style="display: flex; align-items: center; gap: 8px; padding: 4px; border-radius: 24px; background: var(--map-fill); border: 1px solid var(--map-rim); box-shadow: var(--m-shadow); pointer-events: auto" on:click={|_: &Event| {}}>
+                {circle(icons::BACK, false, true, "Back to the chats", l.world_tap(WorldTap::Back))}
+                <span style={name_style}>{name}</span>
+                {switch(l)}
+            </div>
+        </div>
+    }
+}
+
+/// The design's segmented switch (`.seg`), 170 × 40: a sunken track, the
+/// side you are on a raised card. World is the side you are on here, and
+/// carries the live dot; Chat goes to the thread.
+fn switch(l: &Live) -> View {
+    let side = |on: bool| -> String {
+        let (bg, ink, lift) = if on {
+            (
+                "var(--m-surface-raised)",
+                "var(--m-text-strong)",
+                "box-shadow: var(--m-shadow);",
+            )
+        } else {
+            ("transparent", "var(--m-text-dim)", "cursor: pointer;")
+        };
+        format!(
+            "flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: var(--m-radius-sm); background: {bg}; color: {ink}; font-size: 14px; white-space: nowrap; {lift}"
+        )
+    };
+    // The live dot (`.live`): the brand's orange with a soft halo.
+    let halo = format!(
+        "flex: none; width: 13px; height: 13px; border-radius: 7px; display: flex; align-items: center; justify-content: center; background: {}",
+        css(theme::BRAND.with_alpha(64))
+    );
+    let dot = format!(
+        "width: 7px; height: 7px; border-radius: 4px; background: {}",
+        css(theme::BRAND)
+    );
+    let chat = l.world_tap(WorldTap::Chat);
+    view! {
+        <div style="flex: none; width: 170px; height: 40px; box-sizing: border-box; padding: 3px; display: flex; gap: 2px; border-radius: var(--m-radius); background: var(--m-surface-sunken); border: 1px solid var(--m-border)">
+            <div style={side(false)} title="Chat" on:click={move |e: &Event| chat(e)}>
+                <span style="font-family: 'Material Symbols Rounded'; font-size: 16px; line-height: 1">{icons::CHAT}</span>
+                <span>"Chat"</span>
+            </div>
+            <div style={side(true)} title="World">
+                <span style={halo}><span style={dot}></span></span>
+                <span>"World"</span>
+            </div>
+        </div>
+    }
+}
+
+/// The composer pill at `rect` (left, bottom, width in px): the "+" menu
+/// while it is open, over "+", the field (with the pin in a private chat)
+/// and send.
+fn world_composer(l: &Live, rect: [f32; 3], pin: bool) -> View {
+    let [left, bottom, width] = rect;
+    let place = format!(
+        "position: absolute; left: {left:.0}px; bottom: {bottom:.0}px; width: {width:.0}px; {}",
+        theme::map_vars()
+    );
+    let menu = {
+        let l = l.clone();
+        move || -> View {
+            match l.world_attach.get() {
+                Some(a) => world_attach(&l, &a),
+                None => View::Empty,
+            }
+        }
+    };
+    let plus = {
+        let l = l.clone();
+        move || -> View {
+            let glyph = if l.world_plus.get() {
+                icons::CLEAR
+            } else {
+                icons::ADD
+            };
+            circle(
+                glyph,
+                false,
+                true,
+                "Send a place, or share where you are",
+                l.world_tap(WorldTap::Plus),
+            )
+        }
+    };
+    let send_now = l.world_tap(WorldTap::Send);
+    let keys: Handler = {
+        let send = send_now.clone();
+        Rc::new(move |e: &Event| {
+            if e.key.as_deref() == Some("Enter") {
+                send(e);
+            }
+        })
+    };
+    // Built again on a claim, and so takes the keyboard again: the field
+    // keeps its words (they are the model's).
+    let field = {
+        let l = l.clone();
+        move || -> View {
+            let _ = l.world_claim.get();
+            // The pin: send what the camera is looking at. Private chats
+            // only — a point never goes into a public one.
+            let suffix: View = if pin {
+                let tap = l.world_tap(WorldTap::ViewHere);
+                view! {
+                    <Button variant=Variant::Ghost size=Size::Sm icon={icon(icons::PIN)} icon_only=true onclick={Some(tap)} title="Send this view" />
+                }
+            } else {
+                View::Empty
+            };
+            let model = l.world_draft.model.clone();
+            let keys = keys.clone();
+            view! {
+                <FieldText model={model} placeholder="Message" autocomplete="off" autofocus=true onkeydown={Some(keys)} suffix={suffix} id="chat-world-field" />
+            }
+        }
+    };
+    let send = {
+        let l = l.clone();
+        move || -> View {
+            let ready = l.world_ready.get();
+            circle(icons::SEND, true, ready, "Send", send_now.clone())
+        }
+    };
+    view! {
+        <div style={place}>
+            <div style="display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 26px; background: var(--map-fill); border: 1px solid var(--map-rim); box-shadow: var(--m-shadow-lg)" on:click={|_: &Event| {}}>
+                {menu}
+                <div style="display: flex; align-items: center; gap: 10px">
+                    {plus}
+                    <div style="flex: 1; min-width: 0">{field}</div>
+                    {send}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// The "+" menu (`chats::attach_entries`): a round key and its word for
+/// each entry, four to a row, and Location's durations once it is open.
+fn world_attach(l: &Live, a: &AttachMenu) -> View {
+    if a.public {
+        return note("Places and locations go in private chats only: this one is public.");
+    }
+    let cells: Vec<View> = a
+        .entries
+        .iter()
+        .map(|&e| {
+            let on = e == Attach::Location && a.share_open;
+            let variant = if on {
+                Variant::Primary
+            } else {
+                Variant::Secondary
+            };
+            let tap = l.world_tap(WorldTap::Attach(e));
+            view! {
+                <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 25%; padding-block: 4px">
+                    <Button variant={variant} icon={icon(e.icon())} icon_only=true onclick={Some(tap)} title={e.hint()} />
+                    <span style="color: var(--map-ink); font-size: 12px">{e.label()}</span>
+                </div>
+            }
+        })
+        .collect();
+    let share: View = if a.share_open && !a.sharing {
+        let buttons: Vec<View> = crate::systems::chats::SHARE_FOR
+            .iter()
+            .map(|&(label, ms)| {
+                let tap = l.world_tap(WorldTap::ShareFor(ms));
+                view! { <Button size=Size::Sm onclick={Some(tap)}>{label}</Button> }
+            })
+            .collect();
+        view! {
+            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-inline: 4px">
+                <span style="color: var(--m-text-dim)">"for"</span>
+                {buttons}
+            </div>
+            {note(crate::systems::chats::SHARE_NOTE)}
+        }
+    } else {
+        View::Empty
+    };
+    view! {
+        <div style="display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; flex-wrap: wrap; row-gap: 6px">{cells}</div>
+            {share}
         </div>
     }
 }

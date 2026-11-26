@@ -16,15 +16,15 @@
 //!
 //! **Meshed by the GPU, answered here.** The areas are `systems::lens_areas`:
 //! each board meshed once for the frame the map is in and coloured by a texel
-//! an area, so a moving map costs the CPU nothing for them. What is painted
-//! here ([`render_scenario_map`], egui's until the library has a canvas),
-//! projected through [`place_pins::place_delta`] so the flat map and the
-//! globe agree, is only what answers: the outline of the area being read, its
-//! card, and a scenario's tracks.
+//! an area, so a moving map costs the CPU nothing for them. What is placed
+//! here ([`place_scenario_map`], drawn by `lib_scenario_map`), projected
+//! through [`place_pins::place_delta`] so the flat map and the globe agree,
+//! is only what answers: the outline of the area being read, its card, and a
+//! scenario's tracks, as screen points in [`ScenarioView::map`].
 //!
 //! The frame says how real it is (v4-whole): published figures and replays in
 //! green, an exercise striped yellow, Live red and from an official source only
-//! ([`ScenarioView::mode_frame`], painted by [`render_scenario_map`]).
+//! ([`ScenarioView::mode_frame`], drawn by `lib_scenario_map`).
 //!
 //! **A lens, not a layer** (`docs/mockups/lenses/`). Layers are switches about
 //! how the world looks, set and left; a figure is something you read, one at a
@@ -45,7 +45,6 @@
 
 use crate::components::FreeCamera;
 use crate::resources::MapAnchor;
-use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
 use crate::systems::place_pins;
 use crate::systems::theme::{self, scenario as ink};
@@ -276,6 +275,9 @@ pub struct ScenarioView {
     /// The lens as the library draws it (`lib_scenario`): what is up, where
     /// and for which place, worked out by [`drive_scenario_lens`].
     pub lib_view: LensView,
+    /// What answers over the map (`lib_scenario_map`): the place being read
+    /// and its card, and the tracks, placed by [`place_scenario_map`].
+    pub map: LensMapView,
 }
 
 impl Default for ScenarioView {
@@ -286,6 +288,7 @@ impl Default for ScenarioView {
             error: None,
             sheet: Sheet::from_env(),
             lib_view: LensView::default(),
+            map: LensMapView::default(),
         }
     }
 }
@@ -473,8 +476,7 @@ impl ScenarioView {
     /// The open lens's mode, for the line round the whole map in its colour
     /// (striped for an exercise): the one part of a lens that never folds
     /// away. `None` while no lens is open.
-    // Waits for the mode frame's port to the library (`lib_scenario`).
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
     #[must_use]
     pub fn mode_frame(&self) -> Option<ModeChip> {
         self.open
@@ -483,7 +485,9 @@ impl ScenarioView {
     }
 
     /// Whether the lens wants frames coming while nothing else moves: its
-    /// clock plays, or its colours are still easing (`lens_areas`).
+    /// clock plays, or its colours are still easing (`lens_areas`). Read by
+    /// the idle throttle (`frame_pacing::present_rate`), which would
+    /// otherwise run a playing clock over a still map at the idle rate.
     #[must_use]
     pub fn animating(&self) -> bool {
         self.open.as_ref().is_some_and(|o| o.playing) || crate::systems::lens_areas::easing()
@@ -681,16 +685,11 @@ impl Projector<'_> {
         Some([lng, lat])
     }
 
-    /// Where a place stands on screen, as egui's point.
-    fn pos(&self, p: LonLat) -> Option<egui::Pos2> {
-        self.screen(p).map(|s| egui::pos2(s.x, s.y))
-    }
-
     /// A line through the points, broken where one does not project.
-    fn runs(&self, pts: &[LonLat]) -> Vec<Vec<egui::Pos2>> {
+    fn runs(&self, pts: &[LonLat]) -> Vec<Vec<Vec2>> {
         let mut out = vec![Vec::new()];
         for p in pts {
-            match self.pos(*p) {
+            match self.screen(*p) {
                 Some(s) => out.last_mut().into_iter().for_each(|r| r.push(s)),
                 None => {
                     if out.last().is_some_and(|r| !r.is_empty()) {
@@ -758,23 +757,79 @@ pub fn scale_scenario(
 }
 
 // ---------------------------------------------------------------------------
-// Over the map, still egui's: the mode's frame, the area under the pointer
-// with its card, and a scenario's tracks. The library has no canvas for
-// them yet.
+// Over the map: the area under the pointer with its card, and a scenario's
+// tracks, placed here as screen points and drawn by the library
+// (`lib_scenario_map`), which also draws the mode's frame
+// ([`ScenarioView::mode_frame`]).
 // ---------------------------------------------------------------------------
 
-fn rgb(c: cartopolis_scenario::region::Rgb, alpha: f32) -> egui::Color32 {
-    let [r, g, b] = c.0;
-    egui::Color32::from_rgba_unmultiplied(r, g, b, (alpha * 255.0) as u8)
+/// What answers over the map this frame, in UI points, for
+/// `lib_scenario_map`. Empty while no lens is open.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensMapView {
+    /// What the marks are clipped to: the map's width, the screen's whole
+    /// height. `None` draws none of them.
+    pub clip: Option<Rect>,
+    /// The place being read, its rings as runs of points: a dark halo under
+    /// a light line.
+    pub outline: Vec<Vec<Vec2>>,
+    /// The card beside the pointer over an area.
+    pub tip: Option<LensTip>,
+    pub tracks: Vec<LensTrackMarks>,
 }
 
-/// Paint the open lens's mode frame round the map, the area being read and
-/// its card, and any tracks. The areas themselves are the GPU's
-/// (`systems::lens_areas`), on the board [`scale_scenario`] picked.
+/// The card beside the pointer over an area: its name, the figure there and
+/// the band that colours it.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensTip {
+    /// The pointer.
+    pub at: Vec2,
+    pub name: String,
+    pub value: String,
+    /// The band's words and the board's rung.
+    pub band: String,
+    pub colour: [u8; 3],
+}
+
+/// One track on screen: the cone, the path behind and ahead, the times
+/// along it, where some stopped, and the head.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensTrackMarks {
+    /// The cone, a quad per step ahead: its left and right edge at one
+    /// step, then its right and left at the next.
+    pub cone: Vec<[Vec2; 4]>,
+    /// The cone's edge, as runs.
+    pub cone_edge: Vec<Vec<Vec2>>,
+    pub behind: Vec<Vec<Vec2>>,
+    /// The path ahead, drawn dashed.
+    pub ahead: Vec<Vec<Vec2>>,
+    /// A time every half hour on the clock, and where it stands.
+    pub times: Vec<(Vec2, String)>,
+    /// Where some were brought down.
+    pub intercepts: Vec<Vec2>,
+    /// The head, when it projects.
+    pub head: Option<LensHeadMark>,
+}
+
+/// A track's head and its chip: its name, and how many still move.
+#[cfg_attr(not(feature = "ui-lib"), allow(dead_code))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct LensHeadMark {
+    pub at: Vec2,
+    pub label: String,
+    /// Its card is open: the chip's rim is heavier.
+    pub selected: bool,
+}
+
+/// Place the open lens's answers over the map for the library: the area
+/// being read and its card, and any tracks. The areas themselves are the
+/// GPU's (`systems::lens_areas`), on the board [`scale_scenario`] picked.
 #[allow(clippy::too_many_arguments)]
-pub fn render_scenario_map(
-    mut egui: EguiMut,
-    view: Res<ScenarioView>,
+pub fn place_scenario_map(
+    mut view: ResMut<ScenarioView>,
     slot: Res<LensSlot>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
@@ -782,72 +837,79 @@ pub fn render_scenario_map(
     map_anchor: Res<MapAnchor>,
     keyboard: Res<crate::systems::onscreen_keyboard::OnScreenKeyboard>,
     route: Res<crate::systems::navigation::RouteState>,
+    input: Res<UiInput>,
+    metrics: Res<UiMetrics>,
+    windows: Query<&Window>,
 ) {
-    let mut anchored = WorldAnchored::new(egui.ctx(), "scenario_map");
-    let Some(o) = view.open.as_ref() else {
-        return;
-    };
-    let ctx = egui.ctx_mut().clone();
-    paint_frame(&ctx, o.play.scenario.meta.mode);
-    // A playing clock, or a colour still easing in `lens_areas`, keeps the
-    // frames coming.
-    if view.animating() {
-        ctx.request_repaint();
-    }
-    let Some(anchor) = map_anchor.geo else {
-        return;
-    };
-    let Ok((cam, cell, tf)) = camera.single() else {
-        return;
-    };
-    let (cam_lat, cam_lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
-    let map_rect = place_pins::map_area(&mut egui, &keyboard, &route, &slot);
-    let proj = Projector {
-        globe: &globe,
-        anchor,
-        cam_world: crate::grid::anchored_position_f64(cell, tf.translation),
-        in_space: globe.in_space(cell, tf),
-        terrain: &terrain,
-        cam,
-        // This frame's camera basis (`docs/notes/screen-overlay-projection.md`).
-        view: GlobalTransform::from(Transform::from_rotation(tf.rotation)),
-        ui_scale: egui.ui_scale(),
-    };
-    // The map's width, but its whole height: the strips the dock reserves
-    // are for taps, and a fill stopping short of them reads as a gap. The
-    // lens's own column is taken out of the map too, but the map runs on
-    // under it, so the fills do: else a bare band stands down the left.
-    let mut x_range = map_rect.x_range();
-    if let Some((lens, false)) = slot.0 {
-        if map_rect.left() >= lens.max.x - 1.0 {
-            x_range.min = ctx.viewport_rect().left();
+    let next = match (view.open.as_ref(), map_anchor.geo, camera.single()) {
+        (Some(o), Some(anchor), Ok((cam, cell, tf))) => {
+            let (cam_lat, cam_lng) = crate::systems::geo_nav::camera_geo(anchor, &globe, cell, tf);
+            let map =
+                crate::systems::place_pins::map_area(&input, &metrics, &keyboard, &route, &slot);
+            let proj = Projector {
+                globe: &globe,
+                anchor,
+                cam_world: crate::grid::anchored_position_f64(cell, tf.translation),
+                in_space: globe.in_space(cell, tf),
+                terrain: &terrain,
+                cam,
+                // This frame's camera basis
+                // (`docs/notes/screen-overlay-projection.md`).
+                view: GlobalTransform::from(Transform::from_rotation(tf.rotation)),
+                ui_scale: metrics.ui_scale(),
+            };
+            // The map's width, but its whole height: the strips the dock
+            // reserves are for taps, and a fill stopping short of them reads
+            // as a gap. The lens's own column is taken out of the map too,
+            // but the map runs on under it, so the marks do: else a bare
+            // band stands down the left.
+            let mut left = map.min.x;
+            if let Some((lens, false)) = slot.0 {
+                if map.min.x >= lens.max.x - 1.0 {
+                    left = 0.0;
+                }
+            }
+            let clip = Rect::new(left, 0.0, map.max.x, metrics.viewport_pts().y);
+            // The pointer, where it rests on the bare map: a finger has no
+            // hover, and over a library screen the map is not what it
+            // points at.
+            let pointer = windows
+                .iter()
+                .next()
+                .and_then(Window::cursor_position)
+                .map(|c| metrics.window_to_ui(c))
+                .filter(|&at| {
+                    !theme::touch_layout() && map.contains(at) && !input.overlay_owns_pointer()
+                });
+            map_marks(o, &proj, [cam_lng, cam_lat], pointer, clip)
         }
+        _ => LensMapView::default(),
+    };
+    if view.map != next {
+        view.map = next;
     }
-    let painter = ctx
-        .layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("scenario_map"),
-        ))
-        .with_clip_rect(egui::Rect::from_x_y_ranges(
-            x_range,
-            ctx.viewport_rect().y_range(),
-        ));
+}
 
-    // The pointer, where it rests on the bare map: a finger has no hover, and
-    // over a disc or a card the map is not what it points at.
-    let pointer = ctx.pointer_hover_pos().filter(|&at| {
-        !theme::touch_layout()
-            && map_rect.contains(at)
-            && ctx
-                .layer_id_at(at)
-                .is_none_or(|l| l.order == egui::Order::Background)
-    });
+/// The open lens's marks over the map: the place being read (the one under
+/// the pointer, else under the crosshair `here`) with the pointer's card,
+/// and every track.
+fn map_marks(
+    o: &Open,
+    proj: &Projector,
+    here: LonLat,
+    pointer: Option<Vec2>,
+    clip: Rect,
+) -> LensMapView {
+    let mut out = LensMapView {
+        clip: Some(clip),
+        ..LensMapView::default()
+    };
     let li = o.layer;
     if let (Some(places), Some(set)) = (o.frame.regions.get(li), o.play.layer_areas(li)) {
         let layer = &o.play.scenario.region_states[li];
         // The area under the pointer, and its band.
         let hovered = pointer
-            .and_then(|at| proj.ground(Vec2::new(at.x, at.y)))
+            .and_then(|at| proj.ground(at))
             .and_then(|p| set.area_at(p))
             .and_then(|a| {
                 places
@@ -857,35 +919,23 @@ pub fn render_scenario_map(
             });
         // The place being read stands out: the one under the pointer, else
         // the one under the crosshair, whose figure the key gives.
-        let marked = hovered
-            .map(|(a, _)| a)
-            .or_else(|| set.area_at([cam_lng, cam_lat]));
+        let marked = hovered.map(|(a, _)| a).or_else(|| set.area_at(here));
         if let Some(a) = marked {
             for ring in set.areas[a].polygons.iter().flatten() {
                 let mut closed = ring.clone();
                 closed.extend(ring.first().copied());
-                for run in proj.runs(&closed) {
-                    painter.add(egui::Shape::line(
-                        run.clone(),
-                        egui::Stroke::new(4.5, ink::AREA_HALO),
-                    ));
-                    painter.add(egui::Shape::line(
-                        run,
-                        egui::Stroke::new(2.0, theme::p32().cream),
-                    ));
-                }
+                out.outline.extend(proj.runs(&closed));
             }
         }
         if let (Some((a, band)), Some(at)) = (hovered, pointer) {
-            let value = shown(o, li, set, a, true);
-            area_tooltip(
-                &ctx,
+            let band = &layer.states[band];
+            out.tip = Some(LensTip {
                 at,
-                &set.areas[a].name,
-                value,
-                &layer.states[band],
-                set.rung,
-            );
+                name: set.areas[a].name.clone(),
+                value: shown(o, li, set, a, true).unwrap_or_else(|| "not published".to_owned()),
+                band: format!("{} · {}", band.label, set.rung.label()),
+                colour: band.colour.0,
+            });
         }
     }
 
@@ -897,7 +947,7 @@ pub fn render_scenario_map(
         let Some(head) = tn.head else { continue };
         let tr = &o.play.scenario.tracks[i];
         let ahead = o.play.ahead(i, o.t, AHEAD, Clock(5 * 60));
-        let mut cone = egui::Mesh::default();
+        let mut marks = LensTrackMarks::default();
         let mut left: Vec<LonLat> = Vec::new();
         let mut right: Vec<LonLat> = Vec::new();
         for a in &ahead {
@@ -905,187 +955,42 @@ pub fn render_scenario_map(
             right.push(track::offset(a.at, a.heading + 90.0, a.cone_km));
         }
         for k in 1..ahead.len() {
-            let q = [left[k - 1], right[k - 1], right[k], left[k]].map(|p| proj.pos(p));
+            let q = [left[k - 1], right[k - 1], right[k], left[k]].map(|p| proj.screen(p));
             if let [Some(a), Some(b), Some(c), Some(d)] = q {
-                let base = cone.vertices.len() as u32;
-                for p in [a, b, c, d] {
-                    cone.colored_vertex(p, ink::CONE.into());
-                }
-                cone.add_triangle(base, base + 1, base + 2);
-                cone.add_triangle(base, base + 2, base + 3);
+                marks.cone.push([a, b, c, d]);
             }
         }
-        if !cone.is_empty() {
-            painter.add(egui::Shape::mesh(cone));
-        }
         let outline: Vec<LonLat> = left.iter().chain(right.iter().rev()).copied().collect();
-        for run in proj.runs(&outline) {
-            painter.add(egui::Shape::line(
-                run,
-                egui::Stroke::new(1.0, ink::CONE_EDGE),
-            ));
-        }
-        for run in proj.runs(&o.play.behind(i, o.t)) {
-            painter.add(egui::Shape::line(
-                run.clone(),
-                egui::Stroke::new(5.0, ink::TRACK_GLOW),
-            ));
-            painter.add(egui::Shape::line(run, egui::Stroke::new(1.6, ink::TRACK)));
-        }
+        marks.cone_edge = proj.runs(&outline);
+        marks.behind = proj.runs(&o.play.behind(i, o.t));
         let ahead_pts: Vec<LonLat> = ahead.iter().map(|a| a.at).collect();
-        for run in proj.runs(&ahead_pts) {
-            painter.extend(egui::Shape::dashed_line(
-                &run,
-                egui::Stroke::new(1.6, ink::TRACK),
-                3.0,
-                6.0,
-            ));
-        }
+        marks.ahead = proj.runs(&ahead_pts);
         // A time every half hour on the clock.
         let first = Clock((o.t.0 + 1799).div_euclid(1800) * 1800);
         for a in o
             .play
             .ahead(i, first, AHEAD.minus(first.minus(o.t)), Clock(1800))
         {
-            let Some(s) = proj.pos(a.at) else { continue };
-            painter.circle_filled(s, 2.6, ink::TRACK);
-            painter.text(
-                s - egui::vec2(0.0, 8.0),
-                egui::Align2::CENTER_BOTTOM,
-                clock.label(a.t),
-                egui::FontId::proportional(theme::SIZE_TINY),
-                ink::TRACK.into(),
-            );
+            if let Some(s) = proj.screen(a.at) {
+                marks.times.push((s, clock.label(a.t)));
+            }
         }
         for &(when, _) in tr.down.iter().filter(|d| d.0 <= o.t && d.0 >= tr.t0) {
-            let Some(p) = tr.position(when).and_then(|p| proj.pos(p)) else {
-                continue;
-            };
-            let d = egui::vec2(4.0, 4.0);
-            let stroke = egui::Stroke::new(1.8, ink::INTERCEPT);
-            painter.line_segment([p - d, p + d], stroke);
-            painter.line_segment(
-                [p + egui::vec2(4.0, -4.0), p + egui::vec2(-4.0, 4.0)],
-                stroke,
-            );
+            if let Some(p) = tr.position(when).and_then(|p| proj.screen(p)) {
+                marks.intercepts.push(p);
+            }
         }
-        let Some(h) = proj.pos(head) else { continue };
-        anchored.at(h);
-        painter.circle_filled(h, 18.0, ink::HEAD);
-        for k in 0..7 {
-            let a = k as f32 * 2.4;
-            let r = 3.0 + (k % 3) as f32 * 3.2;
-            painter.circle_filled(h + egui::vec2(a.cos(), a.sin()) * r, 2.2, ink::HEAD_DOT);
-        }
-        let label = match tn.moving {
-            Some(n) if tr.count.is_some() => format!("{} · {n}", tr.id),
-            _ => tr.id.clone(),
-        };
-        let galley = painter.layout_no_wrap(
-            label,
-            egui::FontId::proportional(theme::SIZE_CHIP),
-            ink::TRACK.into(),
-        );
-        let chip = egui::Rect::from_min_size(
-            h + egui::vec2(14.0, 10.0),
-            galley.size() + theme::CHIP_PADDING * 2.0,
-        );
-        let selected = o.selected == Some(i);
-        painter.rect(
-            chip,
-            egui::CornerRadius::same(theme::RADIUS_SM),
-            theme::LABEL_CHIP,
-            egui::Stroke::new(if selected { 2.0 } else { 1.0 }, ink::HEAD_RIM),
-            egui::StrokeKind::Inside,
-        );
-        painter.galley(chip.min + theme::CHIP_PADDING, galley, ink::TRACK.into());
-    }
-}
-
-/// The card beside the pointer over an area: its name, the figure there and
-/// the band that colours it.
-fn area_tooltip(
-    ctx: &egui::Context,
-    at: egui::Pos2,
-    name: &str,
-    value: Option<String>,
-    band: &cartopolis_scenario::region::State,
-    rung: Rung,
-) {
-    egui::Area::new(egui::Id::new("lens_area_tip"))
-        .order(egui::Order::Tooltip)
-        .fixed_pos(at + egui::vec2(18.0, 18.0))
-        .interactable(false)
-        .show(ctx, |ui| {
-            theme::overlay_frame().show(ui, |ui| {
-                // Pinned, or a size-to-content `Area` grows every frame.
-                ui.set_max_width(220.0);
-                ui.label(
-                    egui::RichText::new(name)
-                        .size(theme::SIZE_BODY)
-                        .color(theme::p32().cream),
-                );
-                ui.label(
-                    egui::RichText::new(value.unwrap_or_else(|| "not published".to_owned()))
-                        .size(theme::SIZE_HEADING)
-                        .strong()
-                        .color(theme::p32().cream),
-                );
-                ui.horizontal(|ui| {
-                    let (r, _) =
-                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter()
-                        .rect_filled(r, theme::RADIUS_SM, rgb(band.colour, 1.0));
-                    ui.label(
-                        egui::RichText::new(format!("{} · {}", band.label, rung.label()))
-                            .size(theme::SIZE_SUB)
-                            .color(theme::p32().text_dim),
-                    );
-                });
-            });
+        marks.head = proj.screen(head).map(|at| LensHeadMark {
+            at,
+            label: match tn.moving {
+                Some(n) if tr.count.is_some() => format!("{} · {n}", tr.id),
+                _ => tr.id.clone(),
+            },
+            selected: o.selected == Some(i),
         });
-}
-
-/// A line round the whole map in the mode's colour, striped for an exercise,
-/// on every screen: the one part of a lens that never folds away.
-fn paint_frame(ctx: &egui::Context, mode: Mode) {
-    let colour = mode_frame(mode).0.to_egui();
-    let screen = ctx.viewport_rect();
-    let edge = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        egui::Id::new("scenario_frame"),
-    ));
-    let band = if mode == Mode::Exercise { 6.0 } else { 3.0 };
-    for r in [
-        egui::Rect::from_min_max(screen.min, egui::pos2(screen.max.x, screen.min.y + band)),
-        egui::Rect::from_min_max(egui::pos2(screen.min.x, screen.max.y - band), screen.max),
-        egui::Rect::from_min_max(screen.min, egui::pos2(screen.min.x + band, screen.max.y)),
-        egui::Rect::from_min_max(egui::pos2(screen.max.x - band, screen.min.y), screen.max),
-    ] {
-        if mode == Mode::Exercise {
-            edge.rect_filled(r, 0.0, theme::p32().ink);
-            stripes(&edge, r, colour);
-        } else {
-            edge.rect_filled(r, 0.0, colour);
-        }
+        out.tracks.push(marks);
     }
-}
-
-/// Diagonal stripes along a rect, for an exercise's frame.
-fn stripes(painter: &egui::Painter, r: egui::Rect, colour: egui::Color32) {
-    let painter = painter.with_clip_rect(r);
-    let step = 12.0;
-    let mut x = r.left() - r.height();
-    while x < r.right() {
-        painter.line_segment(
-            [
-                egui::pos2(x, r.bottom()),
-                egui::pos2(x + r.height(), r.top()),
-            ],
-            egui::Stroke::new(4.0, colour),
-        );
-        x += step;
-    }
+    out
 }
 
 /// The colour and words of a mode's frame.

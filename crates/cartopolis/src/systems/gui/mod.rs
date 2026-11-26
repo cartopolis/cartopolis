@@ -134,6 +134,8 @@ pub mod lib_satellite_menu;
 #[cfg(feature = "ui-lib")]
 pub mod lib_scenario;
 #[cfg(feature = "ui-lib")]
+pub mod lib_scenario_map;
+#[cfg(feature = "ui-lib")]
 pub mod lib_script;
 #[cfg(feature = "ui-lib")]
 pub mod lib_search;

@@ -640,14 +640,14 @@ impl Plugin for MapPlugin {
                 ),
             );
         // A lens's areas (`systems::lens_areas`): after the scale picked this
-        // frame's board (`scenario::render_scenario_map`), so a zoom shows the
+        // frame's board (`scenario::place_scenario_map`), so a zoom shows the
         // board it moved to on the same frame.
         app.init_resource::<systems::lens_areas::LensAreas>()
             .add_systems(
                 Update,
                 systems::lens_areas::draw_lens_areas
                     .after(systems::scenario::scale_scenario)
-                    .after(systems::scenario::render_scenario_map)
+                    .after(systems::scenario::place_scenario_map)
                     .in_set(ClientPhase::Present),
             );
         // After every streamer has said whether it is busy this frame.

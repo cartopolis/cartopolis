@@ -56,7 +56,7 @@ impl Plugin for NetPlugin {
                 // `Foreground` areas, so it is not in the panel chain; after the
                 // pins only so it is drawn over them.
                 systems::call_screen::render_call_screen
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             );
         // Headless call tests (`CARTO_CALL`, `CARTO_ANSWER`): writes the request

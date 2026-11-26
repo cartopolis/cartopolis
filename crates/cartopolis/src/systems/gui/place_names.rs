@@ -28,17 +28,16 @@
 //! actions on the place (`ui::drive_context_menu`): Go there, Route here and
 //! Lenses, which centres the place and puts up the shelf of lenses.
 //!
-//! **Two editions, one placing.** Which names show, where, and what each
-//! looks like is decided here once; egui paints them, or — with
-//! [`PlaceNames::lib`] on — the component library does
+//! **Placed here, drawn by the library.** Which names show, where, and what
+//! each looks like is decided here; the component library draws them
 //! (`systems::lib_place_names`) from [`PlaceNames::lib_view`], and its taps
-//! come back through [`PlaceNames::lib_tapped`] to open the same ring.
+//! come back through [`PlaceNames::lib_tapped`] to open the ring.
 
 use crate::components::FreeCamera;
 use crate::resources::{ContextMenuState, MapAnchor, MapPlace};
-use crate::systems::egui_manager::{EguiMut, WorldAnchored};
 use crate::systems::globe::GlobeState;
-use crate::systems::theme;
+use crate::systems::place_pins::{text_size, Face};
+use crate::systems::ui_input::{UiInput, UiMetrics};
 use crate::systems::vector_tiles::{PlaceKind, PlaceLabel};
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
@@ -145,14 +144,11 @@ pub struct PlaceNames {
     /// Tiles that came back empty or failed, so they are not asked again while
     /// they stay wanted.
     empty: HashSet<TileKey>,
-    /// The library draws the names (`lib_place_names`); egui's system still
-    /// chooses and places them and opens the ring, and paints nothing.
-    pub lib: bool,
-    /// The names the library draws this frame, written by
-    /// [`render_place_names`].
+    /// The names the library draws this frame (`lib_place_names`), written
+    /// by [`lay_out_place_names`].
     pub lib_view: Vec<NameItem>,
     /// The key of the name the library's tap landed on ([`NameItem::key`]),
-    /// opened next frame as a click on egui's is.
+    /// opened next frame by [`lay_out_place_names`].
     pub lib_tapped: Option<String>,
 }
 
@@ -162,13 +158,13 @@ pub struct PlaceNames {
 pub struct NameItem {
     /// The place's kind and name: what the library keys its node by.
     pub key: String,
-    /// The place's point, in egui points (the library's px natively).
-    pub at: egui::Pos2,
+    /// The place's point, in UI points (the library's px natively).
+    pub at: Vec2,
     pub look: NameLook,
 }
 
-/// What a name looks like, its geometry relative to its point as egui
-/// measured it: everything about it that does not move with the camera.
+/// What a name looks like, its geometry relative to its point as measured
+/// here: everything about it that does not move with the camera.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NameLook {
     /// A country, city or town: the pill (left, top, width, height from the
@@ -182,14 +178,14 @@ pub enum NameLook {
         dot: bool,
     },
     /// A station's disc, and its name beside it when it is a town's own,
-    /// with the width and height egui lays the name out in.
+    /// with the width and height the name takes.
     Station {
         name: Option<String>,
         width: f32,
         height: f32,
     },
     /// A district in spaced capitals, centred on its point: its size, and
-    /// the width and height egui lays it out in.
+    /// the width and height it takes.
     District {
         text: String,
         size: f32,
@@ -198,8 +194,7 @@ pub enum NameLook {
     },
 }
 
-/// A place's key in the library's list: one per name and kind, as egui
-/// keys its click area.
+/// A place's key in the library's list: one per name and kind.
 fn name_key(p: &Place) -> String {
     format!("{:?}:{}", p.kind, p.name)
 }
@@ -348,10 +343,10 @@ fn population_label(n: u32) -> String {
     }
 }
 
-/// Paint the names.
+/// Choose, measure and place the names for the library, open the ring on
+/// the one tapped, and fly the ring's Go there.
 #[allow(clippy::too_many_arguments)]
-pub fn render_place_names(
-    mut egui: EguiMut,
+pub fn lay_out_place_names(
     mut names: ResMut<PlaceNames>,
     globe: Res<GlobeState>,
     camera: Query<(&Camera, &GridCell, &Transform), With<FreeCamera>>,
@@ -367,12 +362,16 @@ pub fn render_place_names(
     mut menu: ResMut<ContextMenuState>,
     mut nav: ResMut<crate::systems::geo_nav::GeoNavState>,
     mut lenses: ResMut<crate::systems::scenario::ScenarioView>,
-    // One parameter for three, at Bevy's cap of sixteen. The chrome is the
-    // map's buttons, which a name keeps off (`place_pins::clear_of_chrome`).
-    (night, room, chrome): (
+    // One parameter for five, under Bevy's cap of sixteen. The chrome is the
+    // map's buttons, which a name keeps off (`place_pins::clear_of_chrome`);
+    // the input and metrics say where the panels left the map
+    // (`place_pins::map_area`).
+    (night, room, chrome, input, metrics): (
         Res<crate::systems::globe::GlobeNight>,
         Res<crate::systems::design_room::DesignRoom>,
         Res<crate::systems::dock::MapChrome>,
+        Res<UiInput>,
+        Res<UiMetrics>,
     ),
 ) {
     if let Some((lat, lng, altitude, name)) = menu.go_there.take() {
@@ -390,16 +389,10 @@ pub fn render_place_names(
         nav.pending_label = Some(name);
         crate::systems::scenario::open_shelf(&mut lenses);
     }
-    let mut anchored = WorldAnchored::new(egui.ctx(), "place_names");
-    // The library's edition, when it has the names: egui paints nothing, and
-    // an early return below leaves it no names, which reads as them going.
-    let lib = names.lib;
-    let tapped_key = if lib {
-        names.lib_view.clear();
-        names.lib_tapped.take()
-    } else {
-        None
-    };
+    // Cleared first: an early return below leaves the library no names,
+    // which reads as them going.
+    names.lib_view.clear();
+    let tapped_key = names.lib_tapped.take();
     let mut lib_view: Vec<NameItem> = Vec::new();
     if driver.active || !layers.place_names || room.spot.is_some() {
         return;
@@ -423,9 +416,8 @@ pub fn render_place_names(
     } else {
         return;
     };
-    let map_rect = crate::systems::place_pins::map_area(&mut egui, &keyboard, &route, &lens);
-    let ui_scale = egui.ui_scale();
-    let ctx = egui.ctx_mut().clone();
+    let map_rect = crate::systems::place_pins::map_area(&input, &metrics, &keyboard, &route, &lens);
+    let ui_scale = metrics.ui_scale();
     let cam_world = crate::grid::anchored_position_f64(cell, tf.translation);
     let in_space = globe.in_space(cell, tf);
     // This frame's camera basis, as the pins rebuild it
@@ -434,7 +426,7 @@ pub fn render_place_names(
 
     // Every place once (a town is in several zooms' tiles), nearest tile's copy.
     let mut seen: HashSet<(&str, PlaceKind)> = HashSet::new();
-    let mut places: Vec<(&Place, egui::Pos2)> = Vec::new();
+    let mut places: Vec<(&Place, Vec2)> = Vec::new();
     let mut towns: Vec<&str> = Vec::new();
     for tile in sources {
         for p in tile {
@@ -460,8 +452,8 @@ pub fn render_place_names(
             let Ok(screen) = cam.world_to_viewport(&cam_view, delta.as_vec3()) else {
                 continue;
             };
-            let at = egui::pos2(screen.x / ui_scale, screen.y / ui_scale);
-            if map_rect.shrink(8.0).contains(at)
+            let at = metrics.window_to_ui(screen);
+            if map_rect.inflate(-8.0).contains(at)
                 && crate::systems::place_pins::clear_of_chrome(&chrome.holes, at)
             {
                 places.push((p, at));
@@ -475,68 +467,35 @@ pub fn render_place_names(
             .then(a.0.name.cmp(&b.0.name))
     });
 
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Middle,
-        egui::Id::new("place_names"),
-    ));
-    let painter = painter.with_clip_rect(map_rect);
-    let mut taken: Vec<egui::Rect> = Vec::new();
-    let mut free = |r: egui::Rect| {
-        if taken.iter().any(|t| t.intersects(r)) {
+    let mut taken: Vec<Rect> = Vec::new();
+    let mut free = |r: Rect| {
+        if taken.iter().any(|t| overlaps(*t, r)) {
             false
         } else {
             taken.push(r);
             true
         }
     };
-    let mut opened: Option<(&Place, egui::Pos2)> = None;
-    // Measured and placed for both editions; painted only for egui's.
-    let paint = !lib;
+    let mut opened: Option<(&Place, Vec2)> = None;
     for (p, at) in places {
-        let drawn = match p.kind {
-            PlaceKind::Country | PlaceKind::City | PlaceKind::Town => {
-                banner(&painter, at, p, &mut free, paint)
-            }
+        let look = match p.kind {
+            PlaceKind::Country | PlaceKind::City | PlaceKind::Town => banner(at, p, &mut free),
             PlaceKind::Station => {
                 let named = alt < 20_000.0 && towns.iter().any(|t| p.name.starts_with(t));
-                station(&painter, at, p, named, &mut free, paint)
+                station(at, p, named, &mut free)
             }
             PlaceKind::Suburb | PlaceKind::Quarter | PlaceKind::Neighbourhood => {
-                district(&painter, at, p, &mut free, paint)
+                district(at, p, &mut free)
             }
         };
-        let Some(drawn) = drawn else {
+        let Some(look) = look else {
             continue;
         };
-        if lib {
-            let key = name_key(p);
-            if tapped_key.as_deref() == Some(key.as_str()) {
-                opened = Some((p, at));
-            }
-            lib_view.push(NameItem {
-                key,
-                at,
-                look: drawn.look,
-            });
-            continue;
-        }
-        anchored.at(at);
-        let response = sense(&ctx, map_rect, p, drawn.hit);
-        if response.hovered() {
-            if let Some(pill) = drawn.pill {
-                painter.rect_stroke(
-                    pill,
-                    egui::CornerRadius::same(theme::RADIUS_PILL),
-                    egui::Stroke::new(1.5, theme::DARK32.accent),
-                    egui::StrokeKind::Inside,
-                );
-            }
-        }
-        // A click and a long press open the same ring, so a long press firing
-        // `clicked()` as well is no second action here.
-        if response.clicked() || response.secondary_clicked() {
+        let key = name_key(p);
+        if tapped_key.as_deref() == Some(key.as_str()) {
             opened = Some((p, at));
         }
+        lib_view.push(NameItem { key, at, look });
     }
     if let Some((p, at)) = opened {
         menu.visible = true;
@@ -550,25 +509,22 @@ pub fn render_place_names(
             view_altitude_m: view_altitude_m(p),
         });
     }
-    if lib {
-        names.lib_view = lib_view;
-    }
+    names.lib_view = lib_view;
 }
 
-/// The label's click area: its own `Area`, as a saved place's pin has, so egui
-/// owns the press and the world's click handlers (`picking`, the building
-/// card) leave it alone. Keyed by the place, so egui keeps one per name.
-fn sense(ctx: &egui::Context, map_rect: egui::Rect, p: &Place, hit: egui::Rect) -> egui::Response {
-    egui::Area::new(egui::Id::new(("place_name", p.name.as_str(), p.kind)))
-        .fixed_pos(hit.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.set_clip_rect(map_rect);
-            let resp = ui.allocate_exact_size(hit.size(), egui::Sense::click()).1;
-            theme::named(ui, resp, &p.name)
-        })
-        .inner
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+/// Whether two rects touch or overlap, edges included.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    a.min.x <= b.max.x && b.min.x <= a.max.x && a.min.y <= b.max.y && b.min.y <= a.max.y
+}
+
+/// `r` grown by `by` on each side, across and down.
+fn grown(r: Rect, by: Vec2) -> Rect {
+    Rect::from_corners(r.min - by, r.max + by)
+}
+
+/// A rect from its top-left corner and size.
+fn at_size(min: Vec2, size: Vec2) -> Rect {
+    Rect::from_corners(min, min + size)
 }
 
 /// The pill under the ring: what the place is, and how many live there.
@@ -604,240 +560,101 @@ fn view_altitude_m(p: &Place) -> f64 {
     }
 }
 
-/// The dark pill a banner and a station share.
-const CHIP: egui::Color32 = theme::LABEL_CHIP.to_egui();
-
-/// What one name took on the screen: where it answers a click, the pill to
-/// ring in the accent while the pointer is on it (a banner has one), and its
-/// look for the library's edition.
-struct Drawn {
-    hit: egui::Rect,
-    pill: Option<egui::Rect>,
-    look: NameLook,
-}
-
 /// A rect as `[left, top, width, height]` from `at`, for [`NameLook`].
-fn from(at: egui::Pos2, r: egui::Rect) -> [f32; 4] {
+fn from(at: Vec2, r: Rect) -> [f32; 4] {
     [r.min.x - at.x, r.min.y - at.y, r.width(), r.height()]
 }
 
 /// A city or town: a dot where it is, and over it a pill with the population
 /// and the name. A country is the pill alone, a size up, centred on its
-/// label point: it has no one spot a dot could mark. Measured and placed
-/// always; painted when `paint` (egui's edition).
-fn banner(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    p: &Place,
-    free: &mut impl FnMut(egui::Rect) -> bool,
-    paint: bool,
-) -> Option<Drawn> {
+/// label point: it has no one spot a dot could mark. `None` when it has no
+/// room.
+fn banner(at: Vec2, p: &Place, free: &mut impl FnMut(Rect) -> bool) -> Option<NameLook> {
     let country = p.kind == PlaceKind::Country;
     let name_size = match p.kind {
         PlaceKind::Country => 15.0,
         PlaceKind::City => 13.5,
         _ => 12.0,
     };
-    let font = egui::FontId::new(name_size, theme::brand_family());
-    let name = painter.layout_no_wrap(p.name.clone(), font, theme::DARK32.cream);
-    let pop = (p.population > 0).then(|| {
-        painter.layout_no_wrap(
-            population_label(p.population),
-            egui::FontId::new(name_size - 2.5, theme::brand_family()),
-            theme::DARK32.ink,
-        )
-    });
+    let name_w = text_size(&p.name, name_size, Face::Brand, 0.0).x;
+    let pop = (p.population > 0).then(|| population_label(p.population));
     let h = name_size + 9.5;
-    let pop_w = pop.as_ref().map_or(0.0, |g| g.size().x + 12.0);
-    let w = pop_w + name.size().x + if pop.is_some() { 15.0 } else { 18.0 };
+    let pop_w = pop.as_ref().map_or(0.0, |label| {
+        text_size(label, name_size - 2.5, Face::Brand, 0.0).x + 12.0
+    });
+    let w = pop_w + name_w + if pop.is_some() { 15.0 } else { 18.0 };
     let rect = if country {
-        egui::Rect::from_center_size(at, egui::vec2(w, h))
+        Rect::from_center_size(at, Vec2::new(w, h))
     } else {
-        egui::Rect::from_min_size(egui::pos2(at.x - w / 2.0, at.y - h - 8.0), egui::vec2(w, h))
+        at_size(Vec2::new(at.x - w / 2.0, at.y - h - 8.0), Vec2::new(w, h))
     };
     let hit = if country {
         rect
     } else {
-        rect.union(egui::Rect::from_center_size(at, egui::vec2(10.0, 10.0)))
+        rect.union(Rect::from_center_size(at, Vec2::splat(10.0)))
     };
     if !free(hit) {
         return None;
     }
-    let look = NameLook::Banner {
+    Some(NameLook::Banner {
         name: p.name.clone(),
         size: name_size,
-        population: (p.population > 0).then(|| population_label(p.population)),
+        population: pop,
         pill: from(at, rect),
         badge: pop_w,
         dot: !country,
-    };
-    if !paint {
-        return Some(Drawn {
-            hit,
-            pill: Some(rect),
-            look,
-        });
-    }
-    if !country {
-        painter.circle(
-            at,
-            4.0,
-            theme::DARK32.cream,
-            egui::Stroke::new(1.5, theme::DARK32.ink),
-        );
-    }
-    painter.rect(
-        rect,
-        egui::CornerRadius::same(theme::RADIUS_PILL),
-        CHIP,
-        egui::Stroke::new(1.0, theme::DARK32.overlay_line),
-        egui::StrokeKind::Inside,
-    );
-    let mut x = rect.min.x + 3.0;
-    if let Some(pop) = pop {
-        let badge =
-            egui::Rect::from_min_size(egui::pos2(x, rect.min.y + 3.0), egui::vec2(pop_w, h - 6.0));
-        painter.rect_filled(
-            badge,
-            egui::CornerRadius::same(theme::RADIUS_PILL),
-            theme::DARK32.accent,
-        );
-        painter.galley(badge.center() - pop.size() / 2.0, pop, theme::DARK32.ink);
-        x = badge.max.x + 6.0;
-    } else {
-        x += 6.0;
-    }
-    let y = rect.center().y - name.size().y / 2.0;
-    painter.galley(egui::pos2(x, y), name, theme::DARK32.cream);
-    Some(Drawn {
-        hit,
-        pill: Some(rect),
-        look,
     })
 }
 
 /// A station: a dark disc with a ring and a train in it, and its name beside
 /// it when it is a town's own station.
 fn station(
-    painter: &egui::Painter,
-    at: egui::Pos2,
+    at: Vec2,
     p: &Place,
     named: bool,
-    free: &mut impl FnMut(egui::Rect) -> bool,
-    paint: bool,
-) -> Option<Drawn> {
+    free: &mut impl FnMut(Rect) -> bool,
+) -> Option<NameLook> {
     let r = 9.0;
-    let name = named.then(|| {
-        painter.layout_no_wrap(
-            p.name.clone(),
-            egui::FontId::new(11.5, theme::brand_family()),
-            theme::DARK32.cream,
-        )
-    });
-    let w = name
-        .as_ref()
-        .map_or(2.0 * r, |g| 2.0 * r + 4.0 + g.size().x);
-    let rect = egui::Rect::from_min_size(egui::pos2(at.x - r, at.y - r), egui::vec2(w, 2.0 * r));
+    let size = if named {
+        text_size(&p.name, 11.5, Face::Brand, 0.0)
+    } else {
+        Vec2::ZERO
+    };
+    let w = if named {
+        2.0 * r + 4.0 + size.x
+    } else {
+        2.0 * r
+    };
+    let rect = at_size(Vec2::new(at.x - r, at.y - r), Vec2::new(w, 2.0 * r));
     if !free(rect) {
         return None;
     }
-    let size = name.as_ref().map_or(egui::Vec2::ZERO, |g| g.size());
-    let look = NameLook::Station {
+    Some(NameLook::Station {
         name: named.then(|| p.name.clone()),
         width: size.x,
         height: size.y,
-    };
-    if !paint {
-        return Some(Drawn {
-            hit: rect,
-            pill: None,
-            look,
-        });
-    }
-    painter.circle(at, r, CHIP, egui::Stroke::new(1.6, theme::DARK32.accent));
-    // The train: a body, a window line, two wheels.
-    let s = egui::Stroke::new(1.3, theme::DARK32.cream);
-    let body = egui::Rect::from_min_max(at + egui::vec2(-3.5, -4.0), at + egui::vec2(3.5, 2.0));
-    painter.rect_stroke(body, 1.0, s, egui::StrokeKind::Middle);
-    painter.line_segment([at + egui::vec2(-3.5, 0.0), at + egui::vec2(3.5, 0.0)], s);
-    painter.line_segment([at + egui::vec2(-2.0, 4.0), at + egui::vec2(-3.5, 6.0)], s);
-    painter.line_segment([at + egui::vec2(2.0, 4.0), at + egui::vec2(3.5, 6.0)], s);
-    if let Some(name) = name {
-        let pos = egui::pos2(at.x + r + 4.0, at.y - name.size().y / 2.0);
-        haloed(painter, pos, name);
-    }
-    Some(Drawn {
-        hit: rect,
-        pill: None,
-        look,
     })
 }
 
 /// A district: its name in spaced capitals, centred where it is.
-fn district(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    p: &Place,
-    free: &mut impl FnMut(egui::Rect) -> bool,
-    paint: bool,
-) -> Option<Drawn> {
+fn district(at: Vec2, p: &Place, free: &mut impl FnMut(Rect) -> bool) -> Option<NameLook> {
     let size = if p.kind == PlaceKind::Neighbourhood {
         9.5
     } else {
         10.5
     };
     let text = p.name.to_uppercase();
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &text,
-        0.0,
-        egui::TextFormat {
-            font_id: egui::FontId::new(size, theme::brand_family()),
-            color: theme::DARK32.cream,
-            extra_letter_spacing: 1.4,
-            ..Default::default()
-        },
-    );
-    let galley = painter.layout_job(job);
-    let rect = egui::Rect::from_center_size(at, galley.size());
+    let rect = Rect::from_center_size(at, text_size(&text, size, Face::Brand, 1.4));
     // Wide room around a district name: a town is not a word search.
-    if !free(rect.expand2(egui::vec2(24.0, 10.0))) {
+    if !free(grown(rect, Vec2::new(24.0, 10.0))) {
         return None;
     }
-    let look = NameLook::District {
+    Some(NameLook::District {
         text,
         size,
         width: rect.width(),
         height: rect.height(),
-    };
-    if paint {
-        haloed(painter, rect.min, galley);
-    }
-    // A little more than the letters, so a small-capitals name is not a
-    // pixel hunt for a finger.
-    Some(Drawn {
-        hit: rect.expand2(egui::vec2(4.0, 5.0)),
-        pill: None,
-        look,
     })
-}
-
-/// Text with a dark halo, so it reads over roofs, water and fields alike.
-fn haloed(painter: &egui::Painter, pos: egui::Pos2, galley: std::sync::Arc<egui::Galley>) {
-    let halo = egui::Color32::from_rgba_unmultiplied(0x1A, 0x22, 0x24, 200);
-    for d in [
-        egui::vec2(-1.2, 0.0),
-        egui::vec2(1.2, 0.0),
-        egui::vec2(0.0, -1.2),
-        egui::vec2(0.0, 1.2),
-        egui::vec2(-0.9, -0.9),
-        egui::vec2(0.9, 0.9),
-        egui::vec2(-0.9, 0.9),
-        egui::vec2(0.9, -0.9),
-    ] {
-        painter.galley_with_override_text_color(pos + d, galley.clone(), halo);
-    }
-    painter.galley(pos, galley, theme::DARK32.cream);
 }
 
 #[cfg(test)]

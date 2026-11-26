@@ -278,11 +278,13 @@ press. Escape and Tab are now the two keys exempt from that gate.
 2026-11-04). The pages kept their own state, out of the ladder's sight, so a
 press on Community ▸ You ▸ Contacts closed all three; and the place, building
 and person cards were not on it at all, so Back with only a card up found
-nothing open and sent the app to the background. Every back chevron now goes
-through `theme::page_back`, which records that it was drawn and takes a press
-the ladder leaves for it (`Rung::PanelPage`, before `RightPanel`); the cards
-come after the panel, since on a phone the panel covers them. A new page with
-its own chevron has to call `page_back` too, or Back skips it.
+nothing open and sent the app to the background. A page with a back chevron
+is `Rung::PanelPage`, before `RightPanel`; the cards come after the panel,
+since on a phone the panel covers them. Since egui's pages went (2026-11-26)
+the one such page is a chat's World view, which `dismiss` reads from
+`ChatsView::lib_world` and steps back through `ChatsView::world_back` (egui's
+`theme::page_back` handshake is gone). A new library page with its own
+chevron has to be added to that rung the same way, or Back skips it.
 
 One subtlety that is not obvious and will bite anyone reordering the ladder:
 **egui's `Memory` consumes Escape to clear widget focus whatever this code

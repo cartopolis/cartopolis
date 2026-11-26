@@ -85,7 +85,7 @@ impl Plugin for DevPlugin {
                         .in_set(ClientPhase::Input),
                     systems::midas_link::draw_link_button
                         .in_set(ClientPhase::Present)
-                        .after(systems::locate::render_locate_arrow),
+                        .after(systems::locate::place_locate_arrow),
                 ),
             );
 
@@ -344,7 +344,7 @@ impl Plugin for ShotHarnessPlugin {
                         .after(systems::geo_nav::apply_teleport)
                         .after(systems::locate::track_device_pose)
                         .before(systems::free_camera::camera_controls)
-                        .before(systems::locate::render_locate_arrow)
+                        .before(systems::locate::place_locate_arrow)
                         .in_set(ClientPhase::Move),
                     // `--ui firstperson`: zoom the follow camera into the avatar's
                     // head. Before the device seeding above, which asks whether it
@@ -599,7 +599,7 @@ impl Plugin for McpPlugin {
             app.add_systems(
                 Update,
                 systems::mcp::overlay::render_mcp_activity
-                    .after(systems::place_pins::render_place_pins)
+                    .after(systems::place_pins::place_map_pins)
                     .in_set(ClientPhase::Present),
             );
         }
