@@ -499,7 +499,14 @@ async fn fetch_areas(name: String) -> Result<AreaSet, String> {
     let base = crate::services::tdbag_url();
     let url = format!("{}/areas/{name}.bin", base.trim_end_matches('/'));
     let bytes = crate::platform::http::fetch(crate::platform::http::Request::get(url)).await?;
-    AreaSet::decode(&bytes).map_err(|e| format!("{name}: {e}"))
+    // On a worker: on the web this future runs on the page's one thread, and
+    // a 3–5 MB neighbourhood file froze the page while it decoded.
+    let label = name.clone();
+    crate::platform::workers::compute("lens areas", move || {
+        AreaSet::decode(&bytes).map_err(|e| format!("{label}: {e}"))
+    })
+    .await
+    .unwrap_or_else(|| Err(format!("{name}: decoding failed")))
 }
 
 fn start(key: &str) -> Result<Loading, String> {

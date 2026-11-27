@@ -122,8 +122,18 @@ impl Pool {
                     }),
                 }
             }
-            if items.len() > shown + SPARE {
-                items.truncate(shown);
+            // Grown and shed a [`SPARE`] at a time: a new length remounts
+            // every box, and a zoom that adds a few each frame would
+            // otherwise remount them all every frame.
+            if items.len() > had {
+                let room = items.len().next_multiple_of(SPARE);
+                items.resize_with(room, || Item {
+                    style: signal(HIDDEN.to_string()),
+                    text: signal(String::new()),
+                });
+            }
+            if items.len() > shown + 2 * SPARE {
+                items.truncate(shown.next_multiple_of(SPARE));
             }
             for it in items.iter().skip(shown) {
                 if it.style.peek(|now| now.as_str() != HIDDEN) {
@@ -234,6 +244,26 @@ fn thinned(run: &[Vec2]) -> Vec<Vec2> {
         }
     }
     out
+}
+
+/// The parts of a run with a segment in the box from the origin to `size`,
+/// grown by `margin`: a place's whole outline, read up close, is thousands
+/// of boxes off screen, each restyled every frame the map moves.
+fn on_screen(run: &[Vec2], size: Vec2, margin: f32) -> Vec<Vec<Vec2>> {
+    let (lo, hi) = (Vec2::splat(-margin), size + margin);
+    let mut parts: Vec<Vec<Vec2>> = Vec::new();
+    let mut open = false;
+    for pair in run.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let shown = a.max(b).cmpge(lo).all() && a.min(b).cmple(hi).all();
+        match (shown, open) {
+            (true, true) => parts.last_mut().unwrap().push(b),
+            (true, false) => parts.push(vec![a, b]),
+            _ => {}
+        }
+        open = shown;
+    }
+    parts
 }
 
 /// A line through a run of points, as a box per segment.
@@ -448,14 +478,18 @@ impl Live {
         );
         // Points in the clipping box, px.
         let at = |p: Vec2| (p - clip.min) * k;
-        let run = |r: &Vec<Vec2>| -> Vec<Vec2> { r.iter().map(|&p| at(p)).collect() };
+        let size = clip.size() * k;
+        // Only what is in the box, less a margin past a line's widest.
+        let runs = |r: &Vec<Vec2>| -> Vec<Vec<Vec2>> {
+            let r: Vec<Vec2> = r.iter().map(|&p| at(p)).collect();
+            on_screen(&r, size, 8.0)
+        };
         let mut shapes: Vec<(String, String)> = Vec::new();
         let mut words: Vec<(String, String)> = Vec::new();
 
         // The place being read: a dark halo under a light line.
         let (halo, cream) = (css(ink::AREA_HALO), css(theme::p().cream));
-        for r in &v.outline {
-            let r = run(r);
+        for r in v.outline.iter().flat_map(&runs) {
             line(&r, 4.5, &halo, false, &mut shapes);
             line(&r, 2.0, &cream, true, &mut shapes);
         }
@@ -475,16 +509,15 @@ impl Live {
                     shapes.push((s, String::new()));
                 }
             }
-            for r in &t.cone_edge {
-                line(&run(r), 1.0, &cone_edge, false, &mut shapes);
+            for r in t.cone_edge.iter().flat_map(&runs) {
+                line(&r, 1.0, &cone_edge, false, &mut shapes);
             }
-            for r in &t.behind {
-                let r = run(r);
+            for r in t.behind.iter().flat_map(&runs) {
                 line(&r, 5.0, &glow, false, &mut shapes);
                 line(&r, 1.6, &track, true, &mut shapes);
             }
-            for r in &t.ahead {
-                dashed(&run(r), 1.6, &track, 3.0, 6.0, &mut shapes);
+            for r in t.ahead.iter().flat_map(&runs) {
+                dashed(&r, 1.6, &track, 3.0, 6.0, &mut shapes);
             }
             // A time every half hour: a dot, its time centred over it.
             for (p, label) in &t.times {
@@ -683,6 +716,32 @@ mod tests {
                 Vec2::new(0.0, 0.0),
                 Vec2::new(10.0, 0.0),
                 Vec2::new(10.5, 0.0)
+            ]
+        );
+    }
+
+    /// A line keeps only its parts on screen, split where it leaves.
+    #[test]
+    fn a_line_off_screen_is_not_drawn() {
+        let run = [
+            Vec2::new(-500.0, 50.0),
+            Vec2::new(-400.0, 50.0),
+            Vec2::new(10.0, 50.0),
+            Vec2::new(50.0, 50.0),
+            Vec2::new(900.0, 50.0),
+            Vec2::new(900.0, 900.0),
+            Vec2::new(60.0, 60.0),
+        ];
+        assert_eq!(
+            on_screen(&run, Vec2::new(100.0, 100.0), 8.0),
+            vec![
+                vec![
+                    Vec2::new(-400.0, 50.0),
+                    Vec2::new(10.0, 50.0),
+                    Vec2::new(50.0, 50.0),
+                    Vec2::new(900.0, 50.0)
+                ],
+                vec![Vec2::new(900.0, 900.0), Vec2::new(60.0, 60.0)],
             ]
         );
     }
