@@ -396,6 +396,10 @@ pub struct SwitchView {
     pub width: f32,
     pub on: Space,
     pub unread: usize,
+    /// Standing over a full-screen panel (Community on a phone), whose way
+    /// back it is: drawn above every screen, not under them as the rest of
+    /// the chrome is.
+    pub over_panel: bool,
 }
 
 /// The search bar: how far its right end stands in from the screen's.
@@ -573,7 +577,12 @@ pub fn drive_dock(
     #[cfg(feature = "comms")]
     let switch_shown = !keyboard
         && !(compact && people.talk.say.composing)
-        && (!covered || (community_open && people.talk.view.open.is_none()));
+        && (!covered
+            || (community_open
+                && people.talk.view.open.is_none()
+                // The New sheet rises from the bottom edge, and the switch
+                // stands over every screen there.
+                && !people.talk.view.new_chat));
     #[cfg(not(feature = "comms"))]
     let switch_shown = false;
     let mut picked = None;
@@ -600,6 +609,7 @@ pub fn drive_dock(
             width,
             on: space,
             unread,
+            over_panel: covered,
         });
     }
 

@@ -75,7 +75,12 @@ struct Live {
     /// [`Live::heading`], not the rose's nodes.
     compass: Signal<Option<CompassView>>,
     heading: Signal<f32>,
+    /// The locate disc with its texts emptied: tracking rewrites them with
+    /// every fix and compass reading, which only [`Live::locate_text`]
+    /// follows. Rebuilt for each, the disc stood blank most frames.
     locate: Signal<Option<LocateView>>,
+    /// The locate disc's hover and caption.
+    locate_text: Signal<(String, String)>,
     light: Signal<Option<LightView>>,
     scale: Signal<Option<ScaleView>>,
     floors: Signal<Option<FloorsView>>,
@@ -134,6 +139,7 @@ pub fn drive_lib_chrome(
                 compass: signal(None),
                 heading: signal(0.0),
                 locate: signal(None),
+                locate_text: signal((String::new(), String::new())),
                 light: signal(None),
                 scale: signal(None),
                 floors: signal(None),
@@ -157,7 +163,20 @@ pub fn drive_lib_chrome(
                 c
             }),
         );
-        put(&live.locate, hud.locate.clone());
+        if let Some(l) = &hud.locate {
+            put(
+                &live.locate_text,
+                (l.hover.clone(), l.caption.clone().unwrap_or_default()),
+            );
+        }
+        put(
+            &live.locate,
+            hud.locate.clone().map(|mut l| {
+                l.hover.clear();
+                l.caption = l.caption.map(|_| String::new());
+                l
+            }),
+        );
         put(&live.light, hud.light.clone());
         put(&live.scale, hud.scale.clone());
         put(&live.floors, chrome.lib.floors.clone());
@@ -232,8 +251,8 @@ fn view_of(l: &Live) -> View {
             move || s.get().map(|v| compass_view(&v, &h, k, &a))
         })
         .child({
-            let (s, a) = (l.locate.clone(), acts.clone());
-            move || s.get().map(|v| locate_view(&v, k, &a))
+            let (s, t, a) = (l.locate.clone(), l.locate_text.clone(), acts.clone());
+            move || s.get().map(|v| locate_view(&v, &t, k, &a))
         })
         .child({
             let (s, a) = (l.light.clone(), acts.clone());
@@ -302,8 +321,17 @@ fn round_button(
 /// The World | Community switch: a pill track, the chosen side the accent
 /// plate, an unread count as a badge on Community.
 fn switch_view(v: &SwitchView, k: f32, acts: &Acts) -> View {
+    // The chrome's root lies under every screen (`view_of`); over a
+    // full-screen panel the switch is its way back, so it leaves that
+    // stacking: `position: fixed` with a z-index is a `GlobalZIndex` on the
+    // Bevy backend, above every screen's root.
+    let lift = if v.over_panel {
+        "position: fixed; z-index: 1"
+    } else {
+        "position: absolute"
+    };
     let frame = format!(
-        "position: absolute; left: {}; bottom: {}; width: {}; height: {}; box-sizing: border-box; \
+        "{lift}; left: {}; bottom: {}; width: {}; height: {}; box-sizing: border-box; \
          padding: {p}; display: flex; gap: {g}; background: var(--map-fill); \
          border: 1px solid var(--map-rim); border-radius: var(--m-radius-full); \
          box-shadow: var(--m-shadow); pointer-events: auto",
@@ -798,7 +826,7 @@ fn compass_view(v: &CompassView, heading: &Signal<f32>, k: f32, acts: &Acts) -> 
 /// The locate disc: the location arrow (filled once a fix is in hand), the
 /// arc that travels round the ring while searching, the caption beside it
 /// (under it in a lying row).
-fn locate_view(v: &LocateView, k: f32, acts: &Acts) -> View {
+fn locate_view(v: &LocateView, text: &Signal<(String, String)>, k: f32, acts: &Acts) -> View {
     let tone = match v.tone {
         LocateTone::Ring => "var(--m-accent)",
         LocateTone::Bright => "var(--m-accent-text)",
@@ -859,7 +887,7 @@ fn locate_view(v: &LocateView, k: f32, acts: &Acts) -> View {
         View::Empty
     };
     let caption: View = match &v.caption {
-        Some(t) => {
+        Some(_) => {
             let at = if v.lying {
                 format!(
                     "left: {}; top: {}; width: {}; justify-content: center",
@@ -883,7 +911,10 @@ fn locate_view(v: &LocateView, k: f32, acts: &Acts) -> View {
                         px(theme::SIZE_SUB, k)
                     ),
                 )
-                .child(t.clone())
+                .child({
+                    let t = text.clone();
+                    move || t.get().1
+                })
                 .into_view()
         }
         None => View::Empty,
@@ -897,7 +928,10 @@ fn locate_view(v: &LocateView, k: f32, acts: &Acts) -> View {
                 spot(v.right, v.top, true, 0.0, k)
             ),
         )
-        .attr("title", v.hover.clone())
+        .attr("title", {
+            let t = text.clone();
+            move || t.get().0
+        })
         .attr("aria-label", "Locate me")
         .on("click", tap(acts, ChromeAct::Locate))
         .child(el("div").attr("style", plate_style(DISC, k, v.on, tone)))
