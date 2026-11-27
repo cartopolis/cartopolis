@@ -930,7 +930,7 @@ pub fn drive_onscreen_keyboard(
     time: Res<Time<Real>>,
     touches: Option<Res<Touches>>,
     mut mouse: MessageReader<MouseButtonInput>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
     inset: Option<ResMut<KeyboardInset>>,
     mut commands: Commands,
 ) {
@@ -939,6 +939,16 @@ pub fn drive_onscreen_keyboard(
         return;
     }
     kb.follow_focus(input.overlay_owns_keyboard());
+    // `bevy_ui_widgets` turns the window's IME on whenever a text input has
+    // the focus (`PreUpdate`), and on Android winit answers that with the
+    // platform's soft keyboard: it covers these keys, and under
+    // NativeActivity nothing it types arrives (`android-build.md`). Turned
+    // back off before `Last` hands the window to winit, it never asks.
+    for mut window in &mut windows {
+        if window.ime_enabled {
+            window.ime_enabled = false;
+        }
+    }
 
     let viewport = Rect::from_corners(Vec2::ZERO, metrics.viewport_pts());
     let min_key_h = min_key_height_pts(metrics.ui_scale(), metrics.display_scale());
