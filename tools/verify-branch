@@ -95,6 +95,15 @@ elif command -v gtimeout >/dev/null; then
 else
     bounded="perl -e 'alarm shift; exec @ARGV' 900"
 fi
+# The smokes run the client built with the workspace's features, which the
+# tests step resolved already, not `-p cartopolis`'s: alone the client takes
+# other features of shared crates (rand, regex, libc, serde_core …), so every
+# workspace crate above an edit compiled a second time. After an edit in
+# cartopolis_core on mac-1 (2026-11-27), `cargo build -p cartopolis` behind the
+# tests compiled 6 units in 15 s, this 1 in 2 s. The binary that ships is built
+# by its deploy, with its own flags; the suite already runs on this feature set.
+client_build="cargo build --locked --workspace --exclude cartopolis_android --bin cartopolis"
+client="${CARGO_TARGET_DIR:-$root/target}/debug/cartopolis"
 export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-always}"
 tiles="${CARTO_TILE_URL:-https://tiles.cartopolis.org/tiles/osm/{z}/{x}/{y}}"
 
@@ -418,7 +427,7 @@ fi
 
 if want smoke-orbit; then
     run smoke-orbit "headless orbit capture: a planet is on screen" <<CMD
-$bounded cargo run --locked -p cartopolis -- \\
+$client_build && $bounded "$client" \\
     --shot /tmp/verify_orbit.png --dump-state /tmp/verify_orbit.json \\
     --at 53.2194,6.5665,180000 --look=-90,0 \\
     --size 640x360 --settle 2 --wait 60 \\
@@ -434,7 +443,7 @@ if want smoke-phone; then
     # different sky, and that absent `AtmosphereSettings` is what once deleted
     # the planet on the handset while the tier above kept passing.
     run smoke-phone "the same frame on the tier Android runs" <<CMD
-CARTO_QUALITY=phone $bounded cargo run --locked -p cartopolis -- \\
+$client_build && CARTO_QUALITY=phone $bounded "$client" \\
     --shot /tmp/verify_phone.png --dump-state /tmp/verify_phone.json \\
     --at 53.2194,6.5665,180000 --look=-90,0 \\
     --size 640x360 --settle 2 --wait 60 \\
