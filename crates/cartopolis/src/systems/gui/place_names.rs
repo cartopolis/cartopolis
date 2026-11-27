@@ -560,11 +560,6 @@ fn view_altitude_m(p: &Place) -> f64 {
     }
 }
 
-/// A rect as `[left, top, width, height]` from `at`, for [`NameLook`].
-fn from(at: Vec2, r: Rect) -> [f32; 4] {
-    [r.min.x - at.x, r.min.y - at.y, r.width(), r.height()]
-}
-
 /// A city or town: a dot where it is, and over it a pill with the population
 /// and the name. A country is the pill alone, a size up, centred on its
 /// label point: it has no one spot a dot could mark. `None` when it has no
@@ -583,11 +578,16 @@ fn banner(at: Vec2, p: &Place, free: &mut impl FnMut(Rect) -> bool) -> Option<Na
         text_size(label, name_size - 2.5, Face::Brand, 0.0).x + 12.0
     });
     let w = pop_w + name_w + if pop.is_some() { 15.0 } else { 18.0 };
-    let rect = if country {
-        Rect::from_center_size(at, Vec2::new(w, h))
+    // The pill relative to the point, so the look is bit-identical wherever
+    // the point is: a round trip through screen coordinates differs in the
+    // last bit as the map moves, and a look that differs rebuilds the
+    // banner, which blanks it for a frame.
+    let (left, top) = if country {
+        (-w / 2.0, -h / 2.0)
     } else {
-        at_size(Vec2::new(at.x - w / 2.0, at.y - h - 8.0), Vec2::new(w, h))
+        (-w / 2.0, -h - 8.0)
     };
+    let rect = at_size(at + Vec2::new(left, top), Vec2::new(w, h));
     let hit = if country {
         rect
     } else {
@@ -600,7 +600,7 @@ fn banner(at: Vec2, p: &Place, free: &mut impl FnMut(Rect) -> bool) -> Option<Na
         name: p.name.clone(),
         size: name_size,
         population: pop,
-        pill: from(at, rect),
+        pill: [left, top, w, h],
         badge: pop_w,
         dot: !country,
     })
@@ -644,16 +644,19 @@ fn district(at: Vec2, p: &Place, free: &mut impl FnMut(Rect) -> bool) -> Option<
         10.5
     };
     let text = p.name.to_uppercase();
-    let rect = Rect::from_center_size(at, text_size(&text, size, Face::Brand, 1.4));
+    let measured = text_size(&text, size, Face::Brand, 1.4);
+    let rect = Rect::from_center_size(at, measured);
     // Wide room around a district name: a town is not a word search.
     if !free(grown(rect, Vec2::new(24.0, 10.0))) {
         return None;
     }
+    // The measured size, not the rect's: that wobbles in the last bit with
+    // `at`, and a look that differs rebuilds the name (see `banner`).
     Some(NameLook::District {
         text,
         size,
-        width: rect.width(),
-        height: rect.height(),
+        width: measured.x,
+        height: measured.y,
     })
 }
 
@@ -689,6 +692,34 @@ mod tests {
             .find(|c| c.name == "Netherlands")
             .unwrap();
         assert_eq!(describe(nl), "Country · 17.3M inhabitants");
+    }
+
+    #[test]
+    fn a_names_look_does_not_move_with_it() {
+        // A look that differs rebuilds the name, which blanks it a frame: it
+        // must be the same wherever on screen the place is.
+        fn free(_: Rect) -> bool {
+            true
+        }
+        for kind in [PlaceKind::Country, PlaceKind::City, PlaceKind::Suburb] {
+            let p = Place {
+                name: "Groningen".into(),
+                kind,
+                population: 233_000,
+                lat: 53.22,
+                lng: 6.57,
+                min_label: 0.0,
+            };
+            let look = |at| match kind {
+                PlaceKind::Suburb => district(at, &p, &mut free),
+                _ => banner(at, &p, &mut free),
+            };
+            let a = look(Vec2::new(413.7, 201.3));
+            assert!(a.is_some());
+            for at in [Vec2::new(413.9, 201.31), Vec2::new(1771.137, 903.77)] {
+                assert_eq!(a, look(at), "{kind:?} at {at}");
+            }
+        }
     }
 
     #[test]
