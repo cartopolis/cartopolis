@@ -6,7 +6,9 @@
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input_focus::{AcquireFocus, FocusLost, FocusedInput, InputFocus};
-use bevy::picking::events::{PointerClick, PointerOut, PointerOver, PointerPress, PointerRelease};
+use bevy::picking::events::{
+    PointerCancel, PointerClick, PointerOut, PointerOver, PointerPress, PointerRelease,
+};
 use bevy::prelude::*;
 use bevy::text::{EditableText, TextEditChange};
 use bevy::ui::InteractionDisabled;
@@ -58,11 +60,28 @@ impl UiEvents {
 #[derive(Resource, Default)]
 pub struct UiPointer {
     pub over: std::collections::HashSet<Entity>,
+    /// Nodes a finger lifted from, held for [`LIFT_HOLD`] more
+    /// [`Self::settle`]s: a tap's click reaches the world a frame or two
+    /// after the finger, and must still find the node it landed on.
+    pub lifted: std::collections::HashMap<Entity, u8>,
 }
+
+/// How many [`UiPointer::settle`]s a lifted finger still holds its node.
+const LIFT_HOLD: u8 = 2;
 
 impl UiPointer {
     pub fn owns_pointer(&self) -> bool {
-        !self.over.is_empty()
+        !self.over.is_empty() || !self.lifted.is_empty()
+    }
+
+    /// One frame passed: a lifted finger's node is let go of after
+    /// [`LIFT_HOLD`] of these. The host calls it once a frame, after reading
+    /// [`Self::owns_pointer`].
+    pub fn settle(&mut self) {
+        self.lifted.retain(|_, left| {
+            *left = left.saturating_sub(1);
+            *left > 0
+        });
     }
 }
 
@@ -275,11 +294,34 @@ fn ensure_state_observers(world: &mut World, entity: Entity, id: NodeId) {
                 ev.propagate(false);
             }
         });
-    world
-        .entity_mut(entity)
-        .observe(move |_ev: On<PointerRelease>, mut tree: ResMut<UiTree>| {
-            set_state(&mut tree, id, |s| s.active = false);
-        });
+    world.entity_mut(entity).observe(
+        move |ev: On<PointerRelease>, mut tree: ResMut<UiTree>, mut pointer: ResMut<UiPointer>| {
+            // A lifted finger's pointer is despawned before bevy_picking can
+            // send it PointerOut (0.20 skips an Out for a pointer with no
+            // location), so its hover would hold every camera drag for good.
+            // It is held a moment longer, for the tap's late click.
+            if ev.pointer.id.is_touch() {
+                leave(&mut tree, &mut pointer, ev.entity, id);
+                pointer.lifted.insert(ev.entity, LIFT_HOLD);
+            } else {
+                set_state(&mut tree, id, |s| s.active = false);
+            }
+        },
+    );
+    world.entity_mut(entity).observe(
+        move |ev: On<PointerCancel>, mut tree: ResMut<UiTree>, mut pointer: ResMut<UiPointer>| {
+            leave(&mut tree, &mut pointer, ev.entity, id);
+        },
+    );
+}
+
+/// The pointer is off `entity`: no longer hovered, no longer pressed.
+fn leave(tree: &mut UiTree, pointer: &mut UiPointer, entity: Entity, id: NodeId) {
+    pointer.over.remove(&entity);
+    set_state(tree, id, |s| {
+        s.hover = false;
+        s.active = false;
+    });
 }
 
 /// An element marked `data-keep-focus` (an on-screen keyboard and its keys,
@@ -306,5 +348,25 @@ fn set_state(tree: &mut UiTree, id: NodeId, f: impl FnOnce(&mut mithril::style::
         .unwrap_or_default();
     for c in children {
         tree.mark_restyle(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_lifted_finger_lets_go_after_its_click() {
+        let mut pointer = UiPointer::default();
+        let node = Entity::from_raw_u32(7).unwrap();
+        pointer.lifted.insert(node, LIFT_HOLD);
+        for _ in 0..LIFT_HOLD {
+            assert!(pointer.owns_pointer(), "the tap's click still finds it");
+            pointer.settle();
+        }
+        assert!(
+            !pointer.owns_pointer(),
+            "and then the map has its drags back"
+        );
     }
 }

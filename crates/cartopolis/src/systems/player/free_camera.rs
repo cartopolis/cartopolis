@@ -1934,6 +1934,15 @@ fn follow_mode(ctx: ModeCtx) {
             rig.smoothing.idle_s = 0.0;
             camera_state.azimuth -= touch.twist;
         }
+        // Two fingers sliding together tilt the view, as they do over the
+        // map: down lowers the camera and so looks up, like a one-finger
+        // drag down does.
+        if touch.tilt != 0.0 {
+            camera_state.follow_rotate = false;
+            rig.smoothing.idle_s = 0.0;
+            camera_state.pitch =
+                (camera_state.pitch - touch.tilt * 0.005).clamp(pitch_min, pitch_max);
+        }
     }
 
     // Follow-and-rotate (Tab, or the locate button on a platform with no

@@ -241,7 +241,9 @@ pub fn bridge_input(
     if pointer.over.iter().any(|e| !live.contains(*e)) {
         pointer.over.retain(|e| live.contains(*e));
     }
-    let pointer = pointer.owns_pointer();
+    let owns_pointer = pointer.owns_pointer();
+    pointer.settle();
+    let pointer = owns_pointer;
     if input.overlay_owns_pointer() != pointer || input.overlay_owns_keyboard() != owns {
         input.set_overlay(pointer, owns);
     }
